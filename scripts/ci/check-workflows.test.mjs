@@ -732,38 +732,102 @@ const commandLines = (step) =>
 /** Words that start or join a compound command, after which a command still comes. */
 const RESERVED_WORDS = new Set(["!", "{", "}", "case", "do", "done", "elif", "else", "esac", "fi", "for", "function", "if", "in", "select", "then", "time", "until", "while"]);
 
+/** A redirection's operator, after any file descriptor number, and a descriptor it duplicates. */
+const REDIRECT = /^(&>>|&>|<<<|<<-|<<|<&|>&|>>|>\||<>|<|>)(-|[0-9]+)?/;
+/** The redirections that write to their target. */
+const WRITES = new Set(["&>>", "&>", ">&", ">>", ">|", "<>", ">"]);
+
 /**
- * The simple commands a bash script runs, each as its words: quotes taken
- * off, leading NAME=value assignments and redirections left out, and the
- * commands inside $( ) and backquotes listed too. It reads enough of bash
- * for the workflows' scripts: quotes, escapes, ${ }, $(( )), $( ), ( ),
- * operators, redirections, reserved words, array assignments and function
- * definitions; a function's name shows as a command where it is defined.
+ * The simple commands a bash script runs, as { words, assignments,
+ * redirects } each: words with their quotes taken off; assignments, the
+ * NAME=value words before the command, as { name, value }; redirects, its
+ * redirections, as { op, target }. The commands inside $( ), <( ), >( ),
+ * backquotes, ${ } and $(( )) are listed too, wherever they are, and so are
+ * a function's; a function's name shows as a command where it is defined.
+ * It reads enough of bash for the workflows' scripts: quotes, escapes,
+ * expansions, substitutions, operators, redirections, reserved words and
+ * array assignments. A here-document's text isn't read; the rules refuse
+ * here-documents.
  *
  * @param {string} script
- * @returns {string[][]}
+ * @returns {{ words: string[], assignments: { name: string, value: string }[], redirects: { op: string, target: string }[] }[]}
  */
 function simpleCommands(script) {
   const commands = [];
   let i = 0;
-  /** From an opening bracket at i, the index just past its match, skipping quotes. */
-  const skipBalanced = (open, close) => {
-    let depth = 0;
-    for (; i < script.length; i += 1) {
-      const c = script[i];
-      if (c === "\\") i += 1;
-      else if (c === "'") i = script.indexOf("'", i + 1);
-      else if (c === open) depth += 1;
-      else if (c === close && (depth -= 1) === 0) return (i += 1);
-    }
-    return i;
+  /** Past a single-quoted string, from its opening quote. */
+  const skipSingle = () => {
+    const end = script.indexOf("'", i + 1);
+    i = end === -1 ? script.length : end + 1;
   };
-  /** A list of commands until `closer` (")" or "`"), or to the end. */
+  /**
+   * At a $( ), <( ), >( ), backquote, ${ } or $(( )), read past it, listing
+   * the commands inside: true; else false. <( and >( count where
+   * `processes`, outside double quotes.
+   */
+  const substitution = (processes) => {
+    if (script.startsWith("$((", i)) {
+      i += 3;
+      inside("))");
+    } else if (script.startsWith("$(", i) || (processes && (script.startsWith("<(", i) || script.startsWith(">(", i)))) {
+      i += 2;
+      list(")");
+    } else if (script.startsWith("${", i)) {
+      i += 2;
+      inside("}");
+    } else if (script[i] === "`") {
+      i += 1;
+      list("`");
+    } else {
+      return false;
+    }
+    return true;
+  };
+  /** Past the rest of a ${ } or $(( )), up to `close`, listing the commands of its substitutions. */
+  const inside = (close) => {
+    let depth = 0;
+    while (i < script.length) {
+      if (depth === 0 && script.startsWith(close, i)) {
+        i += close.length;
+        return;
+      }
+      const c = script[i];
+      if (c === "\\") i += 2;
+      else if (c === "'") skipSingle();
+      else if (c === '"') {
+        i += 1;
+        quoted();
+      } else if (!substitution(false)) {
+        if (close === "))" && c === "(") depth += 1;
+        else if (close === "))" && c === ")") depth -= 1;
+        i += 1;
+      }
+    }
+  };
+  /** Past the rest of a double-quoted string, from just inside it; its text, quotes off. */
+  const quoted = () => {
+    let text = "";
+    while (i < script.length && script[i] !== '"') {
+      const start = i;
+      if (script[i] === "\\") {
+        text += script[i + 1] ?? "";
+        i += 2;
+      } else if (substitution(false)) {
+        text += script.slice(start, i);
+      } else {
+        text += script[i];
+        i += 1;
+      }
+    }
+    i += 1;
+    return text;
+  };
+  /** A list of commands, up to `closer` (")" or "`"), or to the end. */
   const list = (closer) => {
-    let words = [];
+    let command = { words: [], assignments: [], redirects: [] };
     let word = null;
     let raw = "";
-    let target = false;
+    let op = null;
     let skipping = false;
     const add = (text, written = text) => {
       word = (word ?? "") + text;
@@ -771,56 +835,32 @@ function simpleCommands(script) {
     };
     const endWord = () => {
       if (word === null) return;
-      if (target) target = false;
-      else if (words.length === 0 && /^[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=/.test(raw)) {
-        // An assignment before the command.
-      } else if (words.length === 0 && RESERVED_WORDS.has(raw)) {
+      const assignment = /^([A-Za-z_][A-Za-z0-9_]*)(\[[^\]]*\])?\+?=/.exec(raw);
+      if (op !== null) {
+        command.redirects.push({ op, target: word });
+        op = null;
+      } else if (command.words.length === 0 && assignment) {
+        command.assignments.push({ name: assignment[1], value: word.slice(word.indexOf("=") + 1) });
+      } else if (command.words.length === 0 && RESERVED_WORDS.has(raw)) {
         // for and select name a variable and a list, not a command.
         if (raw === "for" || raw === "select") skipping = true;
-      } else if (!skipping) words.push(word);
+      } else if (!skipping) {
+        command.words.push(word);
+      }
       word = null;
       raw = "";
     };
     const endCommand = () => {
       endWord();
-      if (words.length > 0) commands.push(words);
-      words = [];
+      if (op !== null) command.redirects.push({ op, target: "" });
+      op = null;
+      if (command.words.length + command.assignments.length + command.redirects.length > 0) commands.push(command);
+      command = { words: [], assignments: [], redirects: [] };
       skipping = false;
-    };
-    /** The rest of a double-quoted string, from just past its opening quote. */
-    const quoted = () => {
-      while (i < script.length && script[i] !== '"') {
-        if (script[i] === "\\") {
-          add(script[i + 1] ?? "", script.slice(i, i + 2));
-          i += 2;
-        } else if (script.startsWith("$((", i)) {
-          const start = i;
-          i += 1;
-          skipBalanced("(", ")");
-          add(script.slice(start, i));
-        } else if (script.startsWith("$(", i)) {
-          i += 2;
-          list(")");
-          add("$(…)");
-        } else if (script.startsWith("${", i)) {
-          const start = i;
-          i += 1;
-          skipBalanced("{", "}");
-          add(script.slice(start, i));
-        } else if (script[i] === "`") {
-          i += 1;
-          list("`");
-          add("`…`");
-        } else {
-          add(script[i]);
-          i += 1;
-        }
-      }
-      i += 1;
     };
     while (i < script.length) {
       const c = script[i];
-      const rest = script.slice(i);
+      const start = i;
       if (closer !== undefined && c === closer) {
         endCommand();
         i += 1;
@@ -830,60 +870,57 @@ function simpleCommands(script) {
         if (script[i + 1] !== "\n") add(script[i + 1] ?? "", script.slice(i, i + 2));
         i += 2;
       } else if (c === "'") {
-        const end = script.indexOf("'", i + 1);
-        add(script.slice(i + 1, end), script.slice(i, end + 1));
-        i = end + 1;
+        skipSingle();
+        add(script.slice(start + 1, i - 1), script.slice(start, i));
       } else if (c === '"') {
         i += 1;
-        add("", '"');
-        quoted();
-      } else if (rest.startsWith("$((")) {
-        const start = i;
-        i += 1;
-        skipBalanced("(", ")");
-        add(script.slice(start, i));
-      } else if (rest.startsWith("$(")) {
-        i += 2;
-        list(")");
-        add("$(…)");
-      } else if (rest.startsWith("${")) {
-        const start = i;
-        i += 1;
-        skipBalanced("{", "}");
-        add(script.slice(start, i));
-      } else if (c === "`") {
-        i += 1;
-        list("`");
-        add("`…`");
+        const text = quoted();
+        add(text, script.slice(start, i));
       } else if (c === "#" && word === null) {
         const end = script.indexOf("\n", i);
         i = end === -1 ? script.length : end;
       } else if (c === "(" && word !== null && raw.endsWith("=")) {
-        // An array assignment's list.
-        const start = i;
-        skipBalanced("(", ")");
-        add(script.slice(start, i));
-      } else if (c === "(" || c === ")") {
-        endCommand();
+        // An array assignment's list, whose words can hold substitutions.
         i += 1;
-      } else if (/^[0-9]*(<<<|<<-?|<&|>&|>>|<>|<|>)/.test(rest) && (word === null || /^[0-9]+$/.test(raw))) {
-        if (word !== null) {
-          word = null;
-          raw = "";
+        while (i < script.length && script[i] !== ")") {
+          if (script[i] === "\\") i += 2;
+          else if (script[i] === "'") skipSingle();
+          else if (script[i] === '"') {
+            i += 1;
+            quoted();
+          } else if (!substitution(true)) i += 1;
         }
-        const [operator, , , fd] = /^([0-9]*)(<<<|<<-?|<&|>&|>>|<>|<|>)(-|[0-9]+)?/.exec(rest);
-        endWord();
-        i += operator.length;
-        target = fd === undefined;
-      } else if (c === "\n" || c === ";" || c === "&" || c === "|") {
-        endCommand();
-        i += /^(&&|\|\||;;|\|&)/.test(rest) ? 2 : 1;
-      } else if (c === " " || c === "\t") {
-        endWord();
         i += 1;
+        add(script.slice(start, i));
+      } else if (substitution(true)) {
+        add(script.slice(start, i));
       } else {
-        add(c);
-        i += 1;
+        const rest = script.slice(i);
+        const redirect = REDIRECT.exec(rest);
+        if (redirect) {
+          // A file descriptor's number before it belongs to the redirection.
+          if (word !== null && /^[0-9]+$/.test(raw)) {
+            word = null;
+            raw = "";
+          } else {
+            endWord();
+          }
+          i += redirect[0].length;
+          if (redirect[2] === undefined) op = redirect[1];
+          else command.redirects.push({ op: redirect[0], target: "" });
+        } else if (c === "(" || c === ")") {
+          endCommand();
+          i += 1;
+        } else if (c === "\n" || c === ";" || c === "&" || c === "|") {
+          endCommand();
+          i += /^(&&|\|\||;;|\|&)/.test(rest) ? 2 : 1;
+        } else if (c === " " || c === "\t") {
+          endWord();
+          i += 1;
+        } else {
+          add(c);
+          i += 1;
+        }
       }
     }
     endCommand();
@@ -895,55 +932,129 @@ function simpleCommands(script) {
 /** The names of the functions a script defines. */
 const definedFunctions = (script) => new Set([...script.matchAll(/^\s*([A-Za-z_][\w-]*)\s*\(\)\s*\{/gm)].map(([, name]) => name));
 
-/** The system tools a job with the keys may run, besides npx, npm, node and bash, which keyedProblem checks. */
-const KEYED_COMMANDS = new Set([
-  "[",
-  "base64",
-  "cd",
-  "chmod",
-  "codesign",
-  "cp",
-  "dirname",
-  "echo",
-  "exit",
-  "find",
-  "git",
-  "local",
-  "mkdir",
-  "printf",
-  "read",
-  "rm",
-  "rustup",
-  "sed",
-  "security",
-  "shift",
-  "sort",
-  "sw_vers",
-  "true",
-  "xattr",
+/** Whether two lists of words are the same. */
+const sameWords = (a, b) => a.length === b.length && a.every((word, n) => word === b[n]);
+
+/** A rule for a tool's arguments: one of these lists exactly. */
+const exactly =
+  (...forms) =>
+  (args) =>
+    forms.some((form) => sameWords(form, args)) ? null : `takes only ${forms.map((form) => (form.length > 0 ? form.join(" ") : "no argument")).join(", or ")}`;
+
+/** A rule for a tool's arguments: any. */
+const anything = () => null;
+
+/** A rule for arguments that name shell variables: lower-case names, which no tool reads, and -r. */
+const scriptVariables = (args) =>
+  args.every((arg) => arg === "-r" || /^[a-z_][a-z0-9_]*(=.*)?$/s.test(arg)) ? null : "sets a variable other than the script's own, lower-case ones";
+
+/**
+ * A path with a node_modules, scripts or src-tauri folder in it, whose files
+ * the job runs, wherever: ./ and .. don't hide one, as each part is read.
+ */
+const PROTECTED_PATH = /(^|\/)(node_modules|scripts|src-tauri)(\/|$)/;
+
+/** The copies a job with the keys makes into the checkout: the hand-off's listed files, and the notices. */
+const KEYED_COPIES = [
+  ["-p", "$out/$file", "$file"],
+  ["$RUNNER_TEMP/notices/THIRD-PARTY-NOTICES", "THIRD-PARTY-NOTICES"],
+];
+
+/** The configs a job with the keys bundles with: the release's, and the dry run's overlay. */
+const KEYED_TAURI_CONFIGS = ["src-tauri/tauri.release.conf.json", "$RUNNER_TEMP/dry-run-config/dry-run.json"];
+
+/** The arguments tauri bundle may take in a job with the keys: flags and values the workflow passes. */
+function bundleArgsProblem(args) {
+  const seen = new Set();
+  for (let n = 0; n < args.length; n += 1) {
+    const [flag, value] = [args[n], args[n + 1]];
+    const valued = (flag === "--target" && value === "$TRIPLE") || (flag === "--bundles" && value === "$BUNDLES") || (flag === "--config" && KEYED_TAURI_CONFIGS.includes(value));
+    const key = flag === "--config" ? `${flag} ${value}` : flag;
+    if (!valued && flag !== "--verbose" && flag !== "--ci") return `passes tauri bundle ${flag}${value === undefined ? "" : ` ${value}`}, which these jobs don't`;
+    if (seen.has(key)) return `passes tauri bundle ${flag} twice`;
+    seen.add(key);
+    if (valued) n += 1;
+  }
+  return null;
+}
+
+/** The system tools a job with the keys may run, each with a rule for its arguments. */
+const KEYED_TOOLS = new Map([
+  ["[", anything],
+  ["base64", exactly(["--decode"])],
+  ["cd", anything],
+  ["chmod", anything],
+  ["codesign", anything],
+  ["cp", (args) => (KEYED_COPIES.some((form) => sameWords(form, args)) || (args.length === 2 && !args[0].startsWith("-") && args[1].startsWith("$RUNNER_TEMP/") && !args[1].split("/").includes("..")) ? null : "copies only into $RUNNER_TEMP, or the hand-off's listed files and the notices into the checkout")],
+  ["dirname", anything],
+  ["echo", anything],
+  ["exit", anything],
+  ["find", exactly(["$out", "!", "-type", "f", "!", "-type", "d"], [".", "-type", "f"])],
+  ["git", (args) => (["ls-files --others --", "diff --exit-code --"].includes(args.slice(0, 3).join(" ")) ? null : "takes only ls-files --others -- <paths> or diff --exit-code -- <paths>")],
+  ["local", scriptVariables],
+  ["mkdir", anything],
+  ["printf", anything],
+  ["read", scriptVariables],
+  ["rm", anything],
+  ["rustup", exactly(["toolchain", "install"], ["show", "active-toolchain"])],
+  ["sed", exactly(["-e", "s|^\\./||"])],
+  ["security", (args) => (["delete-keychain", "find-identity", "list-keychains"].includes(args[0]) ? null : "takes only delete-keychain, find-identity or list-keychains")],
+  ["shift", anything],
+  ["sort", exactly([])],
+  ["sw_vers", exactly([])],
+  ["true", exactly([])],
+  ["xattr", exactly(["-lr", "$app"])],
 ]);
 
 /**
- * Why a simple command may not run in a job with the keys, or null: only the
- * lockfile's Tauri CLI, to bundle or sign, npm ci --ignore-scripts, the
- * repository's scripts, the tools above and the script's own functions may.
+ * Why a simple command may not run in a job with the keys: none, when it may.
+ * Only these may run: the lockfile's Tauri CLI, to bundle with the flags the
+ * workflow passes or to sign; npm ci --ignore-scripts; node on
+ * scripts/release/*.mjs; bash on scripts/release/macos-keychain.sh; the
+ * tools above, with the arguments their rules allow; and the script's own
+ * functions. No assignment may set a variable a tool reads (PATH, GIT_*,
+ * LD_*, NODE_OPTIONS, …), and no redirection may write under node_modules,
+ * scripts or src-tauri, or to $GITHUB_ENV or $GITHUB_PATH, which set later
+ * steps' environment. A here-document isn't read, so it is refused.
  *
- * @param {string[]} words  the command, as simpleCommands gives it
+ * @param {{ words: string[], assignments: { name: string }[], redirects: { op: string, target: string }[] }} command
  * @param {Set<string>} functions  the functions the script defines
+ * @returns {string[]}
  */
-function keyedProblem([name, ...args], functions) {
-  if (name === "npx") {
-    if (args.slice(0, 3).join(" ") !== "--no -- tauri") return "runs npx other than as npx --no -- tauri";
-    // These jobs build nothing: they bundle what compile built, and sign.
-    return args[3] === "bundle" || args.slice(3, 5).join(" ") === "signer sign" ? null : `runs tauri ${args[3] ?? ""}, where these jobs only bundle and sign`;
+function keyedProblems({ words: [name, ...args], assignments, redirects }, functions) {
+  const problems = [];
+  for (const assignment of assignments) {
+    if (!/^[a-z_][a-z0-9_]*$/.test(assignment.name) && !["IFS", "LC_ALL", "P12"].includes(assignment.name)) problems.push(`sets ${assignment.name}, which a tool can read`);
   }
-  if (name === "npm") return args.join(" ") === "ci --ignore-scripts" ? null : "runs npm other than as npm ci --ignore-scripts";
-  if (name === "node") return /^scripts\/release\/[\w-]+\.mjs$/.test(args[0] ?? "") ? null : "runs node on something other than a scripts/release/*.mjs file";
-  if (name === "bash") return args[0] === "scripts/release/macos-keychain.sh" ? null : "runs bash on something other than scripts/release/macos-keychain.sh";
-  if (name === "find" && args.some((arg) => /^-(exec|execdir|ok|okdir)$/.test(arg))) return "runs a command through find";
-  if (functions.has(name)) return null;
-  if (/[/$`]/.test(name)) return "runs a file by its path, or a command named by a variable";
-  return KEYED_COMMANDS.has(name) ? null : `runs ${name}, which isn't among the commands these jobs may run`;
+  for (const { op, target } of redirects) {
+    if (op === "<<" || op === "<<-") problems.push("uses a here-document, which this check doesn't read");
+    else if (WRITES.has(op) && (PROTECTED_PATH.test(target) || /^\$\{?GITHUB_(ENV|PATH)\}?$/.test(target))) problems.push(`writes to ${target}`);
+  }
+  if (name === undefined) return problems;
+  let why = null;
+  if (name === "npx") {
+    if (args.slice(0, 3).join(" ") !== "--no -- tauri") why = "runs npx other than as npx --no -- tauri";
+    else if (args[3] === "bundle") why = bundleArgsProblem(args.slice(4));
+    else if (args.slice(3, 5).join(" ") === "signer sign") {
+      const forms = [["$RUNNER_TEMP/bundles/$name"], ["-f", "$RUNNER_TEMP/dry-run/updater.key", "-p", "", "$RUNNER_TEMP/bundles/$name"]];
+      if (!forms.some((form) => sameWords(form, args.slice(5)))) why = "passes tauri signer sign arguments these jobs don't";
+    } else why = `runs tauri ${args[3] ?? ""}, where these jobs only bundle and sign`;
+  } else if (name === "npm") {
+    if (!sameWords(args, ["ci", "--ignore-scripts"])) why = "runs npm other than as npm ci --ignore-scripts";
+  } else if (name === "node") {
+    if (!/^scripts\/release\/[\w-]+\.mjs$/.test(args[0] ?? "")) why = "runs node on something other than a scripts/release/*.mjs file";
+  } else if (name === "bash") {
+    if (args[0] !== "scripts/release/macos-keychain.sh" || !["dry-run", "import"].includes(args[1]) || args.length !== 2) why = "runs bash other than as bash scripts/release/macos-keychain.sh dry-run or import";
+  } else if (!functions.has(name)) {
+    if (/[/$`]/.test(name)) why = "runs a file by its path, or a command named by a variable";
+    else if (!KEYED_TOOLS.has(name)) why = `runs ${name}, which isn't among the commands these jobs may run`;
+    else {
+      const rule = KEYED_TOOLS.get(name)(args);
+      if (rule !== null) why = `runs ${name}, which ${rule}`;
+    }
+  }
+  if (why !== null) problems.push(why);
+  return problems;
 }
 
 describe("build.yml", () => {
@@ -1011,7 +1122,7 @@ describe("build.yml", () => {
     const problems = [];
     for (const [id, job] of Object.entries(workflow(BUILD).jobs ?? {})) {
       for (const [i, step] of (job.steps ?? []).entries()) {
-        for (const words of simpleCommands(scriptOf(step))) {
+        for (const { words } of simpleCommands(scriptOf(step))) {
           const where = `${BUILD}, job ${id}, ${stepLabel(step, i)}: ${words.join(" ")}`;
           if (words[0] === "npm" && ["ci", "install", "i"].includes(words[1]) && !words.includes("--ignore-scripts")) problems.push(`${where} runs install scripts`);
           if (words[0] === "npx" && words.slice(1, 4).join(" ") !== "--no -- tauri") problems.push(`${where} runs npx other than as npx --no -- tauri`);
@@ -1110,9 +1221,8 @@ describe("build.yml", () => {
       for (const [i, step] of stepsOf(id).entries()) {
         if (step.shell !== undefined) problems.push(`job ${id}, ${stepLabel(step, i)} sets shell: ${step.shell}`);
         const functions = definedFunctions(scriptOf(step));
-        for (const words of simpleCommands(scriptOf(step))) {
-          const why = keyedProblem(words, functions);
-          if (why !== null) problems.push(`job ${id}, ${stepLabel(step, i)} ${why}: ${words.join(" ")}`);
+        for (const command of simpleCommands(scriptOf(step))) {
+          for (const why of keyedProblems(command, functions)) problems.push(`job ${id}, ${stepLabel(step, i)} ${why}: ${command.words.join(" ")}`);
         }
       }
     }
@@ -1121,36 +1231,57 @@ describe("build.yml", () => {
     assert.ok(stepsOf("bundle-macos").some(isTauriBundle), "bundle-macos doesn't run tauri bundle");
   });
 
-  test("simpleCommands finds each command a script runs, inside quotes and substitutions too", () => {
-    assert.deepEqual(
-      simpleCommands(`found=$(cd "$out" && find . -type f | sed -e 's|^\\./||' | LC_ALL=C sort)
+  test("simpleCommands finds each command a script runs, inside quotes, expansions and substitutions too", () => {
+    const script = `found=$(cd "$out" && find . -type f | sed -e 's|^\\./||' | LC_ALL=C sort)
 if [ "$found" != "$(LC_ALL=C sort <<< "$listed")" ]; then exit 1; fi
-while IFS= read -r name; do names+=("$name"); done <<< "$expected"
+while IFS= read -r name; do names+=("$name" "$(a)"); done <<< "$expected"
 mkdir -p "$(dirname "$file")"
 P12="$dir/release.p12" bash scripts/release/macos-keychain.sh import > "$out/x.txt" 2>&1 || status=$?
+x=\${y:-$(b)} n=$(( $(c) + 1 )) && echo "\${z:-\`d\`}"
+sort <(e) > >(f) < <(g)
 capture() {
   local name=$1
-}`),
+}`;
+    assert.deepEqual(
+      simpleCommands(script).map(({ words }) => words),
       [
         ["cd", "$out"],
         ["find", ".", "-type", "f"],
         ["sed", "-e", "s|^\\./||"],
         ["sort"],
+        [],
         ["sort"],
-        ["[", "$found", "!=", "$(…)", "]"],
+        ["[", "$found", "!=", '$(LC_ALL=C sort <<< "$listed")', "]"],
         ["exit", "1"],
         ["read", "-r", "name"],
+        ["a"],
+        [],
+        [],
         ["dirname", "$file"],
-        ["mkdir", "-p", "$(…)"],
+        ["mkdir", "-p", '$(dirname "$file")'],
         ["bash", "scripts/release/macos-keychain.sh", "import"],
+        [],
+        ["b"],
+        ["c"],
+        [],
+        ["d"],
+        ["echo", "${z:-`d`}"],
+        ["e"],
+        ["f"],
+        ["g"],
+        ["sort", "<(e)"],
         ["capture"],
         ["local", "name=$1"],
       ],
     );
+    const commands = simpleCommands(script);
+    assert.deepEqual(commands.find(({ words }) => words[0] === "bash").assignments, [{ name: "P12", value: "$dir/release.p12" }]);
+    assert.deepEqual(commands.find(({ words }) => words[0] === "bash").redirects, [{ op: ">", target: "$out/x.txt" }, { op: ">&1", target: "" }]);
+    assert.deepEqual(commands.find(({ words }) => words[0] === "sort" && words[1] === "<(e)").redirects, [{ op: ">", target: ">(f)" }, { op: "<", target: "<(g)" }]);
   });
 
   test("the rules for sign and bundle-macos refuse what they don't allow, and let through what those jobs run", () => {
-    const refused = (script) => simpleCommands(script).flatMap((words) => keyedProblem(words, definedFunctions(script)) ?? []);
+    const refused = (script) => simpleCommands(script).flatMap((command) => keyedProblems(command, definedFunctions(script)));
     for (const script of [
       "source ./env.sh",
       ". ./env.sh",
@@ -1192,12 +1323,69 @@ capture() {
       "x=$(node scripts/other.mjs)",
       "bash -c 'id'",
       "bash ./x.sh",
+      "bash scripts/release/macos-keychain.sh evil",
+      // Commands inside expansions and process substitutions.
+      "x=${y:-$(./evil)}",
+      "n=$(( $(./evil) ))",
+      'echo "${x:-$(./evil)}"',
+      "x=`./evil`",
+      'names=("$(./evil)")',
+      'while read -r x; do echo "$x"; done < <(./evil)',
+      "sort <(./evil)",
+      "echo x > >(./evil)",
+      // Tools that can run another program, with arguments the workflow doesn't pass.
+      "git -c alias.x='!sh' x",
+      "git -c core.pager=./evil diff --exit-code -- x",
+      "git diff --ext-diff",
+      "git ls-files --others --exclude-standard -- x",
+      "sed -e '1e ./evil'",
+      "sed -i -e 's/a/b/' scripts/release/x.mjs",
+      "sort --compress-program=./evil",
+      "rustup run stable ./evil",
+      "rustup toolchain install nightly",
+      "find . -type f -delete",
+      "security execute-with-privileges ./evil",
+      'xattr -w com.example.x y "$app"',
+      // Writes where the job's code lives, or into later steps' environment.
+      "echo x > scripts/release/build.mjs",
+      "echo x >> node_modules/.bin/tauri",
+      "printf x > ./src-tauri/tauri.macos.conf.json",
+      "printf x > target/../scripts/x.mjs",
+      'echo "PATH=./bin" >> "$GITHUB_PATH"',
+      'echo "NODE_OPTIONS=--require ./evil" >> "${GITHUB_ENV}"',
+      'cp "$out/evil" scripts/release/x.mjs',
+      "cp a src-tauri/tauri.macos.conf.json",
+      'cp -r "$RUNNER_TEMP/x" node_modules/',
+      'cp a "$RUNNER_TEMP/../work/scripts/x"',
+      // tauri with flags or arguments the workflow doesn't pass.
+      "npx --no -- tauri bundle --config ./evil.json",
+      'npx --no -- tauri bundle --verbose --ci --target "$TRIPLE" --no-sign',
+      "npx --no -- tauri bundle --target x86_64-apple-darwin",
+      'npx --no -- tauri bundle --verbose --verbose',
+      'npx --no -- tauri signer sign -k "$KEY" "$RUNNER_TEMP/bundles/$name"',
+      // Variables a tool reads, and a here-document.
+      'PATH=./bin cp a "$RUNNER_TEMP/b"',
+      "GIT_EXTERNAL_DIFF=./evil git diff --exit-code -- x",
+      "NODE_OPTIONS=--require=./evil node scripts/release/check-artifact.mjs x y",
+      "read -r PATH <<< ./bin",
+      "local PATH=./bin",
+      "read -r x <<EOF",
     ]) {
       assert.notDeepEqual(refused(script), [], script);
     }
     for (const script of [
       "npm ci --ignore-scripts",
       'npx --no -- tauri bundle --verbose --ci --target "$TRIPLE"',
+      'npx --no -- tauri bundle --verbose --ci --target "$TRIPLE" --bundles "$BUNDLES" --config src-tauri/tauri.release.conf.json --config "$RUNNER_TEMP/dry-run-config/dry-run.json"',
+      'npx --no -- tauri signer sign -f "$RUNNER_TEMP/dry-run/updater.key" -p "" "$RUNNER_TEMP/bundles/$name" < /dev/null',
+      'cp "$RUNNER_TEMP/notices/THIRD-PARTY-NOTICES" THIRD-PARTY-NOTICES',
+      'cp "$RUNNER_TEMP/dry-run/updater.key.pub" "$RUNNER_TEMP/bundles/updater-pubkey.txt"',
+      'security find-identity -v -p codesigning > "$out/find-identity.txt" 2>&1 || true',
+      "git ls-files --others -- 'src-tauri/tauri*.conf*' 'src-tauri/Tauri*.toml'",
+      "git diff --exit-code -- 'src-tauri/tauri*.conf*'",
+      "rustup toolchain install",
+      "found=$(cd \"$out\" && find . -type f | sed -e 's|^\\./||' | LC_ALL=C sort)",
+      'printf \'%s\' "$APPLE_CERTIFICATE" | base64 --decode > "$dir/release.p12"',
       'npx --no -- tauri signer sign "$RUNNER_TEMP/bundles/$name" < /dev/null',
       'node scripts/release/check-artifact.mjs "$RUNNER_TEMP/notices" THIRD-PARTY-NOTICES',
       'expected=$(node scripts/release/release-assets.mjs unsigned "$TRIPLE" "$VERSION")',
