@@ -264,6 +264,14 @@ describe("dependabot.yml", () => {
     });
   }
 
+  yamlTest("proposes a release only once it is 14 days old, in every ecosystem", () => {
+    // The age the release workflows' pinned actions must have. Security
+    // updates don't wait.
+    for (const ecosystem of Object.keys(ECOSYSTEMS)) {
+      assert.deepEqual(entryFor(ecosystem).cooldown, { "default-days": 14 }, `${ecosystem} must have cooldown: default-days: 14`);
+    }
+  });
+
   yamlTest(`leaves ${CARGO_IGNORED.join(", ")} to manual upgrades`, () => {
     const ignore = entryFor("cargo").ignore ?? [];
     for (const name of CARGO_IGNORED) {

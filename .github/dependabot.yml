@@ -20,6 +20,10 @@
 # through the manual vendored-runtime upgrade, "How to refresh on a Tauri bump"
 # in vendor/tauri-runtime-wry/FLEETIFY_PATCH.md.
 #
+# Each ecosystem proposes a release only once it is 14 days old (cooldown),
+# the age the release workflows' pinned actions must have. Security updates
+# don't wait.
+#
 # Commit messages, and so pull request titles, use conventional types that the
 # PR title check in pr-title.yml accepts: `deps:` for Cargo crates and npm runtime
 # dependencies, `chore:` for npm dev dependencies, `ci:` for GitHub Actions.
@@ -34,6 +38,8 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    cooldown:
+      default-days: 14
     commit-message:
       prefix: deps
     ignore:
@@ -53,6 +59,8 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    cooldown:
+      default-days: 14
     commit-message:
       prefix: deps
       prefix-development: chore
@@ -78,6 +86,8 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    cooldown:
+      default-days: 14
     commit-message:
       prefix: ci
     groups:
