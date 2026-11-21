@@ -310,13 +310,21 @@ jobs:
           name: updater-key-${{ matrix.triple }}
           path: ${{ runner.temp }}/dry-run
       # The macOS signing identity goes into a keychain the job makes, and
-      # Tauri signs with APPLE_SIGNING_IDENTITY alone: codesign finds the
-      # identity in the keychain search list. Tauri's own import, through
-      # APPLE_CERTIFICATE, looks only for certificates named like Apple's
-      # ("Developer ID Application: …", with an organizational unit), so it
-      # can't find a self-signed one (tauri-macos-sign 2.3.4, which tauri-cli
-      # 2.11.2 uses). The keychain doesn't lock on its own while the job
-      # runs, and is deleted at the end of the job.
+      # Tauri signs with APPLE_SIGNING_IDENTITY alone, which codesign looks
+      # up in the keychain search list:
+      # - Tauri's own import, through APPLE_CERTIFICATE, looks only for
+      #   certificates named like Apple's ("Developer ID Application: …",
+      #   with an organizational unit), so it can't find a self-signed one
+      #   (tauri-macos-sign 2.3.4, which tauri-cli 2.11.2 uses).
+      # - codesign signs only with a valid identity, and a self-signed
+      #   certificate is valid only where it is trusted. Untrusted, the first
+      #   dry run's identity showed as CSSMERR_TP_NOT_TRUSTED, with 0 valid
+      #   identities, and codesign failed with "The specified item could not
+      #   be found in the keychain". So the certificate is trusted for code
+      #   signing in the System keychain, and the step checks that
+      #   `security find-identity -v` lists the identity before Tauri runs.
+      # The keychain doesn't lock on its own while the job runs. The trust
+      # setting and the keychain go at the end of the job, whatever happened.
       #
       # A dry run makes an identity of its own, shaped like the release one:
       # self-signed, for code signing only.
@@ -328,22 +336,24 @@ jobs:
           dir="$RUNNER_TEMP/codesign"
           mkdir -p "$dir"
           keychain="$dir/fleetify.keychain-db"
+          cert="$dir/identity.pem"
           p12_password=$(openssl rand -hex 24)
           keychain_password=$(openssl rand -hex 24)
           echo "::add-mask::$p12_password"
           echo "::add-mask::$keychain_password"
           openssl req -x509 -newkey rsa:2048 -sha256 -days 2 -nodes \
-            -keyout "$dir/identity.key" -out "$dir/identity.pem" \
+            -keyout "$dir/identity.key" -out "$cert" \
             -subj "/CN=$IDENTITY/O=The Fleetify Authors" \
             -addext "basicConstraints=critical,CA:FALSE" \
             -addext "keyUsage=critical,digitalSignature" \
             -addext "extendedKeyUsage=critical,codeSigning"
           # macOS's security import reads only the older PKCS#12 ciphers.
-          openssl pkcs12 -export -inkey "$dir/identity.key" -in "$dir/identity.pem" -name "$IDENTITY" \
+          openssl pkcs12 -export -inkey "$dir/identity.key" -in "$cert" -name "$IDENTITY" \
             -out "$dir/identity.p12" -passout "pass:$p12_password" \
             -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg sha1
           rm -f "$dir/identity.key"
           security create-keychain -p "$keychain_password" "$keychain"
+          echo "CODESIGN_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
           security set-keychain-settings "$keychain"
           security unlock-keychain -p "$keychain_password" "$keychain"
           security import "$dir/identity.p12" -k "$keychain" -f pkcs12 -P "$p12_password" -T /usr/bin/codesign
@@ -353,24 +363,36 @@ jobs:
           while IFS= read -r path; do searched+=("$path"); done \
             < <(security list-keychains -d user | sed -e 's/^[[:space:]]*"//' -e 's/"$//')
           security list-keychains -d user -s "$keychain" "${searched[@]}"
-          security find-identity -p codesigning "$keychain"
-          {
-            echo "APPLE_SIGNING_IDENTITY=$IDENTITY"
-            echo "CODESIGN_KEYCHAIN=$keychain"
-          } >> "$GITHUB_ENV"
+          sudo security add-trusted-cert -d -r trustRoot -p codeSign -k /Library/Keychains/System.keychain "$cert"
+          echo "CODESIGN_CERT=$cert" >> "$GITHUB_ENV"
+          valid=$(security find-identity -v -p codesigning "$keychain")
+          echo "$valid"
+          if ! grep -qF "\"$IDENTITY\"" <<< "$valid"; then
+            security find-identity -p codesigning "$keychain"
+            echo "::error::codesign can't sign with \"$IDENTITY\": security find-identity -v doesn't list it as valid"
+            exit 1
+          fi
+          echo "APPLE_SIGNING_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+      # The release identity, from the release environment. Its certificate
+      # alone is read out of the p12 for the trust setting; the key goes
+      # nowhere but into the keychain.
       - name: Release code-signing identity (macOS release)
         if: inputs.environment == 'release' && runner.os == 'macOS'
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
         run: |
           dir="$RUNNER_TEMP/codesign"
           mkdir -p "$dir"
           keychain="$dir/fleetify.keychain-db"
+          cert="$dir/identity.pem"
           keychain_password=$(openssl rand -hex 24)
           echo "::add-mask::$keychain_password"
           printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$dir/identity.p12"
+          openssl pkcs12 -in "$dir/identity.p12" -passin env:APPLE_CERTIFICATE_PASSWORD -nokeys -clcerts | openssl x509 -out "$cert"
           security create-keychain -p "$keychain_password" "$keychain"
+          echo "CODESIGN_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
           security set-keychain-settings "$keychain"
           security unlock-keychain -p "$keychain_password" "$keychain"
           security import "$dir/identity.p12" -k "$keychain" -f pkcs12 -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
@@ -380,8 +402,15 @@ jobs:
           while IFS= read -r path; do searched+=("$path"); done \
             < <(security list-keychains -d user | sed -e 's/^[[:space:]]*"//' -e 's/"$//')
           security list-keychains -d user -s "$keychain" "${searched[@]}"
-          security find-identity -p codesigning "$keychain"
-          echo "CODESIGN_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+          sudo security add-trusted-cert -d -r trustRoot -p codeSign -k /Library/Keychains/System.keychain "$cert"
+          echo "CODESIGN_CERT=$cert" >> "$GITHUB_ENV"
+          valid=$(security find-identity -v -p codesigning "$keychain")
+          echo "$valid"
+          if ! grep -qF "\"$IDENTITY\"" <<< "$valid"; then
+            security find-identity -p codesigning "$keychain"
+            echo "::error::codesign can't sign with \"$IDENTITY\": security find-identity -v doesn't list it as valid"
+            exit 1
+          fi
       # The release keys: the updater key signs the updater artifacts, and
       # the identity imported above signs the macOS app. tauri bundle
       # bundles the binaries the compile job built; it doesn't rebuild them.
@@ -511,9 +540,12 @@ jobs:
       - name: Delete the run's updater key (dry run)
         if: always() && inputs.environment == 'dry-run'
         run: rm -f "$RUNNER_TEMP/dry-run/updater.key" "$RUNNER_TEMP/dry-run/updater.key.pub" "$RUNNER_TEMP/dry-run/dry-run.json"
-      - name: Delete the signing keychain (macOS)
+      - name: Delete the signing keychain and its trust setting (macOS)
         if: always() && runner.os == 'macOS'
         run: |
+          if [ -n "${CODESIGN_CERT:-}" ]; then
+            sudo security remove-trusted-cert -d "$CODESIGN_CERT" || true
+          fi
           if [ -n "${CODESIGN_KEYCHAIN:-}" ]; then
             security delete-keychain "$CODESIGN_KEYCHAIN" || true
           fi

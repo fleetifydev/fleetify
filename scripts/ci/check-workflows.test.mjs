@@ -878,17 +878,38 @@ describe("build.yml", () => {
       .map((step) => `${step.name ?? "a tauri bundle"} gets APPLE_CERTIFICATE`);
     problems.push(...steps.filter((step) => /APPLE_CERTIFICATE[A-Z_]*=/.test(scriptOf(step))).map((step) => `${step.name ?? "a step"} sets APPLE_CERTIFICATE for later steps`));
     assert.deepEqual(problems, [], problems.join("\n"));
+  });
+
+  yamlTest("each environment imports its macOS identity once, trusts it for code signing and checks it is valid", () => {
+    // codesign signs only with a valid identity, and a self-signed
+    // certificate is valid only where it is trusted.
+    const steps = jobOf(BUILD, "bundle").steps ?? [];
     const keychains = steps.filter((step) => /security create-keychain/.test(scriptOf(step)));
+    const macOS = "runner.os == 'macOS'";
+    const forEnvironment = (clause) => keychains.filter((step) => requires(step.if, clause) && requires(step.if, macOS));
     assert.deepEqual(
-      keychains.map((step) => [requires(step.if, "runner.os == 'macOS'"), requires(step.if, RELEASE_ONLY) || requires(step.if, DRY_RUN_ONLY)]),
-      [
-        [true, true],
-        [true, true],
-      ],
-      "a macOS keychain is made once in each environment, on macOS only",
+      [keychains.length, forEnvironment(RELEASE_ONLY).length, forEnvironment(DRY_RUN_ONLY).length],
+      [2, 1, 1],
+      `the bundle job must make one keychain if "${RELEASE_ONLY} && ${macOS}" and one if "${DRY_RUN_ONLY} && ${macOS}"`,
     );
+    const firstBundle = steps.findIndex(isTauriBundle);
+    for (const step of keychains) {
+      const script = scriptOf(step);
+      const where = step.name ?? "a keychain step";
+      assert.ok(steps.indexOf(step) < firstBundle, `${where} runs after tauri bundle`);
+      for (const command of [/security set-key-partition-list /, /security list-keychains -d user -s "\$keychain"/]) {
+        assert.match(script, command, `${where} misses ${command}`);
+      }
+      const trust = script.search(/sudo security add-trusted-cert -d -r trustRoot -p codeSign -k \/Library\/Keychains\/System\.keychain "\$cert"/);
+      const check = script.search(/security find-identity -v -p codesigning "\$keychain"/);
+      assert.ok(trust !== -1, `${where} doesn't trust its certificate for code signing`);
+      assert.ok(check > trust, `${where} doesn't check, after trusting it, that the identity is valid`);
+    }
+    // The certificate alone: the key goes nowhere but into the keychain.
+    assert.match(scriptOf(forEnvironment(RELEASE_ONLY)[0]), /openssl pkcs12 [^\n]*-nokeys/, "the release certificate isn't read out of the p12 without its key");
     const cleanup = steps.find((step) => /security delete-keychain/.test(scriptOf(step)));
-    assert.ok(cleanup && requires(cleanup.if, "always()"), "the keychain isn't deleted whatever happened");
+    assert.ok(cleanup && requires(cleanup.if, "always()") && requires(cleanup.if, macOS), "the keychain isn't deleted whatever happened");
+    assert.match(scriptOf(cleanup), /sudo security remove-trusted-cert -d "\$CODESIGN_CERT"/, "the trust setting isn't removed at the end");
   });
 
   yamlTest("scan-secrets.mjs scans the UI and the binaries after the bundling", () => {
