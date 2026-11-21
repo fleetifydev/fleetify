@@ -220,7 +220,10 @@ jobs:
             exit 1
           fi
           gh release upload "$TAG" release/* --clobber
-      # Exactly the assets expectedAssets() names, each uploaded in full.
+      # Exactly the assets expectedAssets() names, each uploaded in full, with
+      # the bytes that were assembled and attested: the SHA-256 GitHub works
+      # out for each asset as it is uploaded must be the one SHA256SUMS lists,
+      # and SHA256SUMS's own, the file's.
       - name: Check the draft's assets
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
@@ -235,7 +238,20 @@ jobs:
             echo "$assets"
             exit 1
           fi
-          echo "the draft $TAG holds exactly the release's assets"
+          # Both lists read "<SHA-256>  <name>", as SHA256SUMS does; an asset
+          # without a SHA-256 reads "none".
+          uploaded=$(gh release view "$TAG" --json assets --jq '.assets[] | "\(.digest // "none" | ltrimstr("sha256:"))  \(.name)"' | LC_ALL=C sort)
+          own=$(cd release && sha256sum SHA256SUMS)
+          assembled=$(printf '%s\n' "$(< release/SHA256SUMS)" "$own" | LC_ALL=C sort)
+          if [ "$uploaded" != "$assembled" ]; then
+            echo "::error::the draft $TAG's assets aren't the bytes that were assembled"
+            echo "assembled:"
+            echo "$assembled"
+            echo "uploaded:"
+            echo "$uploaded"
+            exit 1
+          fi
+          echo "the draft $TAG holds exactly the release's assets, as they were assembled"
       # For the smoke. The release's files are on GitHub, so the artifact is
       # kept only as long as the builds'.
       - name: Upload the release

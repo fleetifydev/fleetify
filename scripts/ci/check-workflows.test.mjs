@@ -46,11 +46,11 @@
  * scripts they need. release-please runs twice, the release alone, then the
  * release pull request alone, which waits while a draft is pending. The
  * release builds and smoke-tests the commit release-please's draft points
- * at. assemble attests the assembled files in a job of release.yml itself
- * and uploads them only to a draft. publish, once assemble and smoke have
- * passed, checks that the draft's commit is the one built and that its tag
- * doesn't exist yet before it publishes.
- * Candidate and release builds compare the macOS designated
+ * at. assemble attests the assembled files in a job of release.yml itself,
+ * uploads them only to a draft, and checks that the draft holds exactly
+ * those bytes. publish, once assemble and smoke have passed, checks that the
+ * draft's commit is the one built and that its tag doesn't exist yet before
+ * it publishes. Candidate and release builds compare the macOS designated
  * requirement with the pinned one.
  *
  * Node has no YAML parser and the repo takes no dependency for a test, so the
@@ -63,6 +63,7 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -2739,6 +2740,7 @@ function ghRule(args) {
 /** The commands those jobs may run, besides node on the release scripts, each with a rule for its arguments. */
 const RELEASE_BOT_TOOLS = new Map([
   ["[", anything],
+  ["cd", exactly(["release"])],
   ["curl", exactly(["-fsSL", "$url"])],
   ["echo", anything],
   ["exit", anything],
@@ -2746,6 +2748,7 @@ const RELEASE_BOT_TOOLS = new Map([
   ["git", exactly(["ls-remote", "--tags", "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY", "refs/tags/$TAG"])],
   ["jq", exactly(["-r", ".version"])],
   ["printf", anything],
+  ["sha256sum", exactly(["SHA256SUMS"])],
   ["sleep", exactly(["10"])],
   ["sort", exactly([])],
 ]);
@@ -2776,6 +2779,9 @@ function releaseBotProblems({ words: [name, ...args], assignments, redirects }) 
 }
 
 const JQ_SKIP = spawnSync("jq", ["--version"], { stdio: "ignore" }).status === 0 ? false : "jq is needed: release.yml's publish job reads latest.json with it, and the stand-in gh answers --jq with it";
+
+const SHA256SUM_SKIP =
+  spawnSync("sha256sum", ["--version"], { stdio: "ignore" }).status === 0 ? false : "sha256sum is needed: release.yml's assemble job hashes SHA256SUMS with it";
 
 /** A test that parses YAML and runs a step's script with jq at hand, skipped (with the reason) where any of them is missing. */
 const jqScriptTest = (name, fn) => test(name, { skip: YAML_SKIP || BASH_SKIP || JQ_SKIP }, fn);
@@ -2850,20 +2856,21 @@ const FAKE_SLEEP = "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$STUB_LOG.sleep\"\n";
 /**
  * Run a step of release.yml as the runner runs it (bash -eo pipefail), with
  * `env`, in a temporary folder that holds scripts/release/release-assets.mjs
- * and a release/ folder with `files`. node and jq are the real ones; gh, git,
- * curl and sleep are FAKE_GH, FAKE_GIT, FAKE_CURL and FAKE_SLEEP. `release`
- * and `latest` are what gh release view shows of the release `tag` names and
- * of the latest release, and `releases`, the list gh api gives; `served`
- * holds what curl's calls print in turn, a null for a 404. Returns
+ * and a release/ folder with `files`, each holding its name and a newline,
+ * or what `contents` gives for it. node, jq and sha256sum are the real ones;
+ * gh, git, curl and sleep are FAKE_GH, FAKE_GIT, FAKE_CURL and FAKE_SLEEP.
+ * `release` and `latest` are what gh release view shows of the release `tag`
+ * names and of the latest release, and `releases`, the list gh api gives;
+ * `served` holds what curl's calls print in turn, a null for a 404. Returns
  * { status, output, gh, git, curl, sleep, outputs }: the lines each stand-in
  * logged, and what the step wrote to GITHUB_OUTPUT.
  */
-function runReleaseStep(step, { env = {}, files = [], release, latest, releases, tag = "v1.2.3", served = [] } = {}) {
+function runReleaseStep(step, { env = {}, files = [], contents = {}, release, latest, releases, tag = "v1.2.3", served = [] } = {}) {
   return inTempDir((dir) => {
     const bin = join(dir, "bin");
     for (const sub of ["bin", "release", "served", "scripts/release"]) mkdirSync(join(dir, sub), { recursive: true });
     copyFileSync(join(ROOT, "scripts/release/release-assets.mjs"), join(dir, "scripts/release/release-assets.mjs"));
-    for (const name of files) writeFileSync(join(dir, "release", name), `${name}\n`);
+    for (const name of files) writeFileSync(join(dir, "release", name), contents[name] ?? `${name}\n`);
     for (const [name, value] of [["release.json", release], ["latest-release.json", latest], ["releases.json", releases]]) {
       if (value !== undefined) writeFileSync(join(dir, name), JSON.stringify(value));
     }
@@ -3105,24 +3112,47 @@ describe("release.yml", () => {
     assert.deepEqual(published.gh, ["release view v1.2.3 --json isDraft --jq .isDraft"]);
   });
 
-  jqScriptTest("assemble's check passes a draft that holds exactly expectedAssets(), each uploaded in full, and fails one with an asset missing, extra or cut short", () => {
+  test("assemble's check passes a draft that holds exactly expectedAssets(), each uploaded in full with the bytes assembled, and fails one with an asset missing, extra, cut short or of other bytes", { skip: YAML_SKIP || BASH_SKIP || JQ_SKIP || SHA256SUM_SKIP }, () => {
     const step = releaseStep("assemble", "release-assets.mjs expected");
     const expected = expectedAssets("1.2.3");
-    const asset = (name, state = "uploaded") => ({ name, state, size: 1 });
-    const check = (assets) => runReleaseStep(step, { env: RELEASE_ENV, release: { tagName: "v1.2.3", isDraft: true, assets } });
+    const sha256 = (text) => createHash("sha256").update(text).digest("hex");
+    // Each assembled file holds its name, and SHA256SUMS lists every other
+    // one's SHA-256, as assemble.mjs writes it.
+    const sums = expected
+      .filter((name) => name !== "SHA256SUMS")
+      .map((name) => `${sha256(`${name}\n`)}  ${name}\n`)
+      .join("");
+    /** A draft's asset, with the SHA-256 of the bytes it holds, as gh shows it. */
+    const asset = (name, { state = "uploaded", bytes = name === "SHA256SUMS" ? sums : `${name}\n`, digest = `sha256:${sha256(bytes)}` } = {}) => ({ name, state, digest, size: 1 });
+    const check = (assets, listed = sums) =>
+      runReleaseStep(step, { env: RELEASE_ENV, files: expected, contents: { SHA256SUMS: listed }, release: { tagName: "v1.2.3", isDraft: true, assets } });
     // In whatever order GitHub lists them.
     const good = check([...expected].reverse().map((name) => asset(name)));
     assert.equal(good.status, 0, good.output);
     for (const [why, assets] of [
       ["one missing", expected.slice(1).map((name) => asset(name))],
       ["one more", [...expected, "Fleetify_1.2.2_x64-setup.exe"].map((name) => asset(name))],
-      ["one still uploading", expected.map((name, i) => asset(name, i === 0 ? "open" : "uploaded"))],
+      ["one still uploading", expected.map((name, i) => asset(name, { state: i === 0 ? "open" : "uploaded" }))],
       ["another version's", expectedAssets("1.2.2").map((name) => asset(name))],
       ["none", []],
     ]) {
       const result = check(assets);
       assert.equal(result.status, 1, `${why}:\n${result.output}`);
       assert.match(result.output, /::error::the draft v1\.2\.3 doesn't hold exactly the release's assets/, why);
+    }
+    const other = (target, change) => expected.map((name) => asset(name, name === target ? change : {}));
+    const misListed = sums.replace(sha256("latest.json\n"), sha256("another latest.json\n"));
+    for (const [why, assets, listed] of [
+      ["an asset of other bytes", other("latest.json", { bytes: "another latest.json\n" })],
+      ["SHA256SUMS of other bytes", other("SHA256SUMS", { bytes: "another SHA256SUMS\n" })],
+      ["an asset without a SHA-256", other("install.sh", { digest: null })],
+      ["a SHA-512 in place of the SHA-256", other("install.ps1", { digest: `sha512:${sha256("install.ps1\n")}` })],
+      // The SHA256SUMS uploaded is the one assembled, but what it lists isn't what was uploaded.
+      ["a SHA256SUMS that lists other bytes", other("SHA256SUMS", { bytes: misListed }), misListed],
+    ]) {
+      const result = check(assets, listed);
+      assert.equal(result.status, 1, `${why}:\n${result.output}`);
+      assert.match(result.output, /::error::the draft v1\.2\.3's assets aren't the bytes that were assembled/, why);
     }
   });
 
@@ -3407,10 +3437,14 @@ describe("release.yml", () => {
       "cat <<EOF",
       "sleep 3600",
       "sort -o x",
-      // gh api calls but the one.
+      // gh api calls but the one, and the hashing in another form.
       "gh api repos/fleetifydev/fleetify/releases --jq length",
       'gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/1"',
       'gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq \'map(select(.draft)) | length\' -X PATCH',
+      "cd /",
+      "cd ..",
+      "sha256sum -c sums",
+      "sha256sum release/SHA256SUMS",
     ]) {
       assert.notDeepEqual(refused(script), [], script);
     }
@@ -3430,6 +3464,9 @@ describe("release.yml", () => {
       'drafts=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq \'map(select(.draft)) | length\')',
       'echo "pending=false" >> "$GITHUB_OUTPUT"',
       'target=$(gh release view "$TAG" --json targetCommitish --jq .targetCommitish)',
+      "uploaded=$(gh release view \"$TAG\" --json assets --jq '.assets[] | \"\\(.digest // \"none\" | ltrimstr(\"sha256:\"))  \\(.name)\"' | LC_ALL=C sort)",
+      "own=$(cd release && sha256sum SHA256SUMS)",
+      "assembled=$(printf '%s\\n' \"$(< release/SHA256SUMS)\" \"$own\" | LC_ALL=C sort)",
     ]) {
       assert.deepEqual(refused(script), [], script);
     }
