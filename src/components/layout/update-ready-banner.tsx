@@ -7,11 +7,15 @@ import { usesInAppTitleBar } from "@/lib/utils";
  * Offers the update the shell has downloaded and verified: Restart to
  * update installs it and restarts into it, and Later hides the banner until
  * another version is ready. Settings → General → Updates offers the same
- * restart. When an install fails, the shell keeps the update ready, and the
- * banner says why under the same buttons.
+ * restart. When an install fails, the shell usually keeps the update ready,
+ * and the banner says why next to the same buttons. If the install task
+ * itself dies, the status is failed, the update is gone and the banner goes;
+ * the next check downloads it again.
  *
  * Mounted at the top of AppShell next to <KeychainWarningBanner>, as the
- * same inset card; on macOS it starts right of the traffic lights.
+ * same inset card; on macOS it starts right of the traffic lights. As there,
+ * the only red is the icon: the reason is drawn in the text colour, which
+ * keeps it readable in light mode.
  */
 export function UpdateReadyBanner(): JSX.Element | null {
   const status = useUpdateStore(s => s.status);
@@ -43,7 +47,7 @@ export function UpdateReadyBanner(): JSX.Element | null {
       <span style={{ flex: 1, minWidth: 0, fontSize: 12, lineHeight: 1.5, color: "var(--c-high)" }}>
         {`Fleetify ${status.version} is ready to install.`}
         {restartError && (
-          <span role="alert" style={{ marginLeft: 6, color: "var(--c-err)" }}>{restartError}</span>
+          <span role="alert" style={{ marginLeft: 6, color: "var(--c-high)" }}>{restartError}</span>
         )}
       </span>
       <button type="button" onClick={() => void restart()} style={primaryStyle}>

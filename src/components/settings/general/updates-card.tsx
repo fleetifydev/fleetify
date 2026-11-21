@@ -33,9 +33,11 @@ function appVersion(): string {
   try { return __APP_VERSION__ ?? "—"; } catch { return "—"; }
 }
 
-/** The statuses in which Check now is off: a check is running or can't run. */
+/** The statuses in which Check now is shown but off: a check or an install
+ *  is running, or the shell starts no check (a debug build, or an update is
+ *  ready, as after a failed install). */
 const CHECK_UNAVAILABLE: ReadonlySet<UpdateStatus["state"]> =
-  new Set(["checking", "downloading", "installing", "disabled"]);
+  new Set(["checking", "downloading", "ready", "installing", "disabled"]);
 
 /** The "Check for updates" row's description for `status`, where `app` is
  *  the version running. */
@@ -89,8 +91,9 @@ export function UpdatesCard() {
            error={errorFor("updatesAuto")}>
         <Toggle on={auto} label={AUTOMATIC_UPDATES} onChange={() => void patch({ updatesAuto: !auto })} />
       </Row>
-      {/* A failed install leaves the update ready: Restart to update stays,
-          with the reason under the row. */}
+      {/* A failed install usually leaves the update ready: Restart to update
+          stays, with the reason under the row. If the install task itself
+          dies, the status is failed and the update is gone. */}
       <Row title="Check for updates"
            desc={statusLine(status, appVersion())}
            error={ready ? restartError : null}
@@ -116,7 +119,7 @@ export function UpdatesCard() {
 }
 
 /** The row's buttons. Once an update is ready, Restart to update is the
- *  primary one and Check now steps back. */
+ *  primary one, and Check now steps back, disabled. */
 function buttonStyle(kind: "primary" | "secondary", enabled: boolean): CSSProperties {
   return {
     padding: "6px 14px", borderRadius: 7,

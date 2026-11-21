@@ -4,6 +4,8 @@
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, act } from "@testing-library/react";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import type { UpdateStatus } from "@/lib/api";
 import { useUpdateStore } from "@/stores/update-store";
 import { UpdateReadyBanner } from "../update-ready-banner";
@@ -13,6 +15,9 @@ type Bridge = NonNullable<Window["fleetify"]>;
 const ready = (version: string): UpdateStatus => ({ state: "ready", version });
 const initial = useUpdateStore.getState();
 const setStatus = (status: UpdateStatus | null) => act(() => useUpdateStore.setState({ status }));
+
+/** The elements under `root` drawn in the error red. */
+const redIn = (root: Element) => Array.from(root.querySelectorAll('[style*="--c-err"]'));
 
 beforeEach(() => {
   useUpdateStore.setState(initial, true);
@@ -85,8 +90,8 @@ describe("UpdateReadyBanner", () => {
   });
 
   it("says why when the install fails, and keeps Restart to update", async () => {
-    // The shell answers a failed install with an error and puts the status
-    // back to ready (R-P3-9).
+    // An install that fails while the shell keeps the update: it answers
+    // with an error and puts the status back to ready (R-P3-9).
     const updaterRestart = vi.fn(async () => { throw "Couldn't install the update."; });
     (window as { fleetify?: Partial<Bridge> }).fleetify = { updaterRestart };
     useUpdateStore.setState({ status: ready("0.2.1") });
@@ -99,5 +104,44 @@ describe("UpdateReadyBanner", () => {
     expect(screen.getByText("Fleetify 0.2.1 is ready to install.")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Restart to update" }));
     expect(updaterRestart).toHaveBeenCalledTimes(2);
+  });
+
+  it("draws the reason in the text colour: the only red is the icon", async () => {
+    // --c-err on --sidebar is 3.80:1 in light mode, below AA for text. As in
+    // the Keychain banner, the icon carries the red.
+    const updaterRestart = vi.fn(async () => { throw "Couldn't install the update."; });
+    (window as { fleetify?: Partial<Bridge> }).fleetify = { updaterRestart };
+    useUpdateStore.setState({ status: ready("0.2.1") });
+    render(<UpdateReadyBanner />);
+    const banner = screen.getByRole("status");
+    expect(redIn(banner)).toEqual([]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Restart to update" }));
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveAttribute("style", expect.stringContaining("color: var(--c-high)"));
+    const red = redIn(banner);
+    expect(red).toHaveLength(1);
+    expect(red[0]!.tagName.toLowerCase()).toBe("svg");
+  });
+});
+
+describe("AppShell wiring", () => {
+  // Read as text: rendering AppShell would pull in the whole app. Comments go
+  // first, so a line left behind only in a comment doesn't count.
+  const appShell = readFileSync(
+    resolve(process.cwd(), "src/components/layout/app-shell.tsx"),
+    "utf8",
+  )
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^\s*\/\/.*$/gm, "");
+
+  it("mounts the banner", () => {
+    expect(appShell).toMatch(/<UpdateReadyBanner\s*\/>/);
+  });
+
+  it("follows the updater status once, from an effect that unsubscribes", () => {
+    expect(appShell).toMatch(
+      /useEffect\(\s*\(\)\s*=>\s*useUpdateStore\.getState\(\)\.init\(\)\s*,\s*\[\]\s*\)/,
+    );
   });
 });

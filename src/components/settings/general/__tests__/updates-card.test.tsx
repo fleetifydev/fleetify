@@ -137,9 +137,12 @@ describe("UpdatesCard — Check for updates", () => {
   it.each<UpdateStatus>([
     { state: "checking" },
     { state: "downloading", version: "0.2.1", downloaded: 5, total: 10 },
+    // The shell starts no check while an update is ready (after a failed
+    // install too), so Check now would do nothing there.
+    READY,
     { state: "installing", version: "0.2.1" },
     { state: "disabled" },
-  ])("Check now is disabled while the status is %j", async (status) => {
+  ])("Check now is shown but disabled while the status is %j", async (status) => {
     installApi();
     useUpdateStore.setState({ status });
     await renderCard();
@@ -151,7 +154,6 @@ describe("UpdatesCard — Check for updates", () => {
     { state: "idle" },
     { state: "upToDate" },
     { state: "failed", message: "Couldn't check for updates." },
-    READY,
   ])("Check now can be clicked while the status is %j", async (status) => {
     installApi();
     useUpdateStore.setState({ status });
@@ -210,8 +212,8 @@ describe("UpdatesCard — Restart to update", () => {
   });
 
   it("says why under the row when the install fails, and stays offered", async () => {
-    // The shell answers a failed install with an error and puts the status
-    // back to ready (R-P3-9).
+    // An install that fails while the shell keeps the update: it answers
+    // with an error and puts the status back to ready (R-P3-9).
     installApi();
     const bridge = installBridge({
       updaterRestart: vi.fn(async () => { throw "Couldn't install the update."; }),
@@ -224,6 +226,8 @@ describe("UpdatesCard — Restart to update", () => {
     expect(alert).toHaveTextContent("Couldn't install the update.");
     expect(alert.parentElement).toHaveTextContent("Check for updates");
     expect(screen.getAllByRole("alert")).toHaveLength(1);
+    // Restart to update is the way on; the shell starts no check meanwhile.
+    expect(checkNow()).toBeDisabled();
 
     fireEvent.click(screen.getByRole("button", { name: "Restart to update" }));
     expect(bridge.updaterRestart).toHaveBeenCalledTimes(2);

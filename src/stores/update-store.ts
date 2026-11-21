@@ -50,7 +50,7 @@ function isStatus(value: unknown): value is UpdateStatus {
  * How many statuses have arrived as events. The answer to a read or a check
  * that was asked for before an event went out can hold an older status than
  * that event, so an answer counts only when no event has arrived since it
- * was asked for.
+ * was asked for. An event that isn't a status doesn't count.
  */
 let heard = 0;
 
@@ -77,7 +77,7 @@ export const useUpdateStore = create<UpdateStore>((set, get) => {
       let unsubscribe = () => {};
       if (typeof fleetify?.onUpdaterStatus === "function") {
         unsubscribe = fleetify.onUpdaterStatus((status) => {
-          if (!active) return;
+          if (!active || !isStatus(status)) return;
           heard += 1;
           apply(status);
         });
@@ -112,8 +112,10 @@ export const useUpdateStore = create<UpdateStore>((set, get) => {
       if (typeof fleetify?.updaterRestart !== "function") return Promise.resolve();
       if (restarting) return restarting;
       set({ restartError: null });
-      // A failed install leaves the update ready (the shell puts the status
-      // back), so Restart to update stays offered, with the reason.
+      // A failed install usually leaves the update ready (the shell puts the
+      // status back), so Restart to update stays offered, with the reason.
+      // If the install task itself dies, the status is failed and the update
+      // is gone; the next check downloads it again.
       restarting = new Promise<void>((resolve) => resolve(fleetify.updaterRestart()))
         .then(
           () => {},

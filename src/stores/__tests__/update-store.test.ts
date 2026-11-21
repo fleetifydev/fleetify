@@ -77,6 +77,22 @@ describe("useUpdateStore.init", () => {
     stop();
   });
 
+  it.each([null, {}, { state: 5 }])(
+    "a malformed event (%j) doesn't throw away the read's answer",
+    async (payload) => {
+      let answer!: (status: UpdateStatus) => void;
+      const { emit } = installBridge({
+        updaterStatus: vi.fn(() => new Promise<UpdateStatus>((done) => { answer = done; })),
+      });
+      const stop = state().init();
+      emit(payload as unknown as UpdateStatus);
+      answer({ state: "upToDate" });
+      await flush();
+      expect(state().status).toEqual({ state: "upToDate" });
+      stop();
+    },
+  );
+
   it("returns an unsubscribe that stops following the shell", async () => {
     const { emit, unsubscribe } = installBridge();
     const stop = state().init();
@@ -137,6 +153,21 @@ describe("useUpdateStore.check", () => {
     expect(state().status).toEqual(READY);
     stop();
   });
+
+  it("a malformed event doesn't throw away the answer", async () => {
+    let answer!: (status: UpdateStatus) => void;
+    const { emit } = installBridge({
+      updaterCheck: vi.fn(() => new Promise<UpdateStatus>((done) => { answer = done; })),
+    });
+    const stop = state().init();
+    await vi.waitFor(() => expect(state().status).toEqual({ state: "idle" }));
+    const checking = state().check();
+    emit({} as unknown as UpdateStatus);
+    answer(READY);
+    await checking;
+    expect(state().status).toEqual(READY);
+    stop();
+  });
 });
 
 describe("useUpdateStore.restart", () => {
@@ -149,8 +180,9 @@ describe("useUpdateStore.restart", () => {
   });
 
   it("keeps the update ready and says why when the install fails", async () => {
-    // The shell puts the status back to ready and answers with an error,
-    // so Restart to update can try again (R-P3-9).
+    // An install that fails while the shell keeps the update: it puts the
+    // status back to ready and answers with an error, so Restart to update
+    // can try again (R-P3-9).
     const { bridge, emit } = installBridge();
     vi.mocked(bridge.updaterRestart).mockImplementationOnce(async () => {
       emit(INSTALLING);

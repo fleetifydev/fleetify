@@ -57,7 +57,9 @@ declare global {
       updaterCheck:    () => Promise<UpdateStatus>;
       /** Installs the update that has downloaded and restarts into it
        *  (`updater_restart`). Rejects with the shell's message when no update
-       *  is ready or the install fails; the update then stays ready. */
+       *  is ready or the install fails. A failed install usually leaves the
+       *  update ready; if the install task itself dies, the status is failed
+       *  and the update is gone. */
       updaterRestart:  () => Promise<void>;
       /** Every status change (`fleet:updater-status`). Returns the unsubscribe. */
       onUpdaterStatus: (cb: (status: UpdateStatus) => void) => () => void;
