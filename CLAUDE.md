@@ -94,6 +94,7 @@ npx tsc -b tsconfig.build.json --noEmit                 # type-check            
 npm test                                                # vitest (renderer)             (advisory)
 python3 -c "import yaml"                                # PyYAML for the script tests   (HARD gate)
 node --test "scripts/ci/*.test.mjs" "scripts/release/*.test.mjs"   # script tests (HARD gate)
+node scripts/release/check-versions.mjs                 # the version sources agree     (HARD gate)
 actionlint                                              # workflow lint (+ shellcheck)  (HARD gate)
 ```
 

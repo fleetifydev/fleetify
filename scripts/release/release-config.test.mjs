@@ -18,13 +18,101 @@
  * The Tauri CLI also reads a config in JSON5 (tauri.conf.json5) or TOML
  * (Tauri.toml), and their platform variants. The release config is JSON
  * alone, which these checks read, so neither kind may appear in src-tauri.
+ *
+ * release-please (release-please-config.json) makes one release of the whole
+ * repository, tagged vX.Y.Z. Its release PR bumps the version in each file
+ * check-versions.mjs reads: package.json and package-lock.json (the node
+ * release type), and the extra files: the Cargo workspace's version,
+ * tauri.conf.json's, and Cargo.lock's entry for each workspace crate. The
+ * GitHub release starts as a draft, which has no tag until it is published,
+ * after the release's checks pass; with force-tag-creation, the tag would
+ * exist from the start, and a tag can't be moved or deleted.
+ *
+ * release-please reads a TOML file into values that carry their place in the
+ * file ({ value, start, end }), and the jsonpath of an extra TOML file runs
+ * over those, so a filter compares a value's .value: @.name.value === 'x'.
+ * Compared with @.name, the filter matches nothing, and release-please leaves
+ * the file as it was, with only a warning.
+ *
+ * release-as and bootstrap-sha serve the first release alone: release-as
+ * makes it 0.2.0, and bootstrap-sha starts its changelog with the commits
+ * after it, from pull request #2 on. The release PR's prep commit removes
+ * both, so neither reaches main next to a released version.
+ *
+ * Squash merging makes each pull request's title a commit on main, which
+ * release-please files under its type's changelog section. The sections, and
+ * which of them the changelog hides, are those of the prefix tables in
+ * CONTRIBUTING.md and CLAUDE.md.
  */
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 
+import { workspaceMembers } from "./check-versions.mjs";
+
 /** A repo file's text, by its path from the repo root. */
 const read = (path) => readFileSync(new URL(`../../${path}`, import.meta.url), "utf8");
+
+/** The version of the first release, which release-as asks for. */
+const FIRST_RELEASE = "0.2.0";
+
+const releasePleaseConfig = () => JSON.parse(read("release-please-config.json"));
+const releasePleaseManifest = () => JSON.parse(read(".release-please-manifest.json"));
+
+/** The release-please config of the one package, the repository's root. */
+function rootPackage(config) {
+  assert.deepEqual(Object.keys(config.packages ?? {}), ["."], "release-please-config.json releases one package, the repository");
+  return config.packages["."];
+}
+
+/** -1, 0 or 1 as MAJOR.MINOR.PATCH version `a` is below, at or above `b`. */
+function compareVersions(a, b) {
+  const [x, y] = [a, b].map((version) => version.split(".").map(Number));
+  const i = x.findIndex((part, at) => part !== y[at]);
+  return i === -1 ? 0 : Math.sign(x[i] - y[i]);
+}
+
+/**
+ * The rows of the table in the section under a Markdown heading, as arrays of
+ * cell texts: the header row first, without the separator row.
+ */
+function tableUnder(rel, heading) {
+  const lines = read(rel).replace(/\r\n/g, "\n").split("\n");
+  const start = lines.indexOf(heading);
+  assert.ok(start !== -1, `${rel} has no "${heading}" heading`);
+  const rows = [];
+  for (const line of lines.slice(start + 1)) {
+    if (/^#{1,6} /.test(line)) break;
+    if (line.startsWith("|")) rows.push(line.trim().replace(/^\||\|$/g, "").split("|").map((cell) => cell.trim()));
+    else if (rows.length > 0) break;
+  }
+  assert.ok(rows.length > 2, `${rel} has no table under "${heading}"`);
+  return rows.filter((cells) => !cells.every((cell) => /^:?-+:?$/.test(cell)));
+}
+
+/**
+ * The changelog a prefix table describes: "type: section" for each type it
+ * shows, in the table's order, and the types it hides. A row may name several
+ * types, each in backquotes (`docs` or `docs:`, with an optional scope). The
+ * row for a breaking change (`feat!:`) marks a type another row lists, so it
+ * is left out.
+ */
+function changelogInTable(rel, heading, isHidden) {
+  const [header, ...rows] = tableUnder(rel, heading);
+  const column = header.findIndex((cell) => /^Changelog/.test(cell));
+  assert.ok(column > 0, `${rel}'s table under "${heading}" has no Changelog column`);
+  const shown = [];
+  const hidden = [];
+  for (const cells of rows) {
+    const marks = [...cells[0].matchAll(/`([^`]+)`/g)].map(([, mark]) => mark);
+    if (marks.some((mark) => /^[a-z]+(\([^)]*\))?!/.test(mark))) continue;
+    const types = [...new Set(marks.map((mark) => mark.match(/^([a-z]+)(\([^)]*\))?:?$/)?.[1]))];
+    assert.ok(types.length > 0 && types.every(Boolean), `${rel}: can't read the types in "${cells[0]}"`);
+    if (isHidden(cells[column])) hidden.push(...types);
+    else shown.push(...types.map((type) => `${type}: ${cells[column]}`));
+  }
+  return { shown, hidden: hidden.sort() };
+}
 
 describe("release config", () => {
   test("tauri.conf.json is formatted the way release-please writes it", () => {
@@ -62,5 +150,84 @@ describe("release config", () => {
       .filter((name) => /^tauri.*\.conf\.json5$/i.test(name) || /^tauri.*\.toml$/i.test(name))
       .sort();
     assert.deepEqual(others, [], `src-tauri holds ${others.join(", ")}`);
+  });
+});
+
+describe("release-please", () => {
+  test("one release of the whole repository, tagged vX.Y.Z, its version bumped as the node type does", () => {
+    const config = releasePleaseConfig();
+    const root = rootPackage(config);
+    // A package's own setting outranks the config's.
+    const setting = (key) => (Object.hasOwn(root, key) ? root[key] : config[key]);
+    assert.equal(setting("release-type"), "node");
+    assert.equal(setting("include-component-in-tag"), false);
+    assert.equal(setting("include-v-in-tag"), true);
+    assert.equal(setting("bump-minor-pre-major"), true);
+    assert.equal(setting("bump-patch-for-minor-pre-major"), false);
+    assert.equal(setting("package-name"), "fleetify");
+    assert.equal(setting("changelog-path"), "CHANGELOG.md");
+    assert.deepEqual(Object.keys(releasePleaseManifest()), ["."], ".release-please-manifest.json holds the one package");
+  });
+
+  test("a release is a draft, without its tag until it is published", () => {
+    const config = releasePleaseConfig();
+    const root = rootPackage(config);
+    assert.equal(config.draft, true, "draft");
+    assert.ok(!Object.hasOwn(root, "draft") || root.draft === true, "the package's own draft setting");
+    for (const [where, settings] of [["the config", config], ["the package", root]]) {
+      assert.ok(
+        settings["force-tag-creation"] === undefined || settings["force-tag-creation"] === false,
+        `${where} sets force-tag-creation: a draft's tag would exist before its checks pass`,
+      );
+    }
+  });
+
+  test("until the first release, release-as makes it 0.2.0 and bootstrap-sha starts its changelog; after it, neither is left", () => {
+    const config = releasePleaseConfig();
+    const root = rootPackage(config);
+    const current = releasePleaseManifest()["."];
+    assert.match(String(current), /^\d+\.\d+\.\d+$/, ".release-please-manifest.json's version");
+    assert.equal(config["release-as"], undefined, "release-as is the package's setting, not the whole config's");
+    if (compareVersions(current, FIRST_RELEASE) < 0) {
+      assert.equal(root["release-as"], FIRST_RELEASE, "release-as");
+      assert.match(String(config["bootstrap-sha"]), /^[0-9a-f]{40}$/, "bootstrap-sha is a full commit id");
+    } else {
+      assert.equal(
+        root["release-as"],
+        undefined,
+        `the manifest is at ${current}, so release-as must go: left in, it asks each later release PR for ${root["release-as"]} again`,
+      );
+      assert.equal(config["bootstrap-sha"], undefined, `the manifest is at ${current}, so bootstrap-sha must go`);
+    }
+  });
+
+  test("the release PR bumps the Cargo workspace's version, tauri.conf.json's and Cargo.lock's entry for each workspace crate", () => {
+    const root = rootPackage(releasePleaseConfig());
+    const extra = root["extra-files"] ?? [];
+    const crates = workspaceMembers(read("Cargo.toml"), (member) => read(`${member}/Cargo.toml`));
+    const inLock = extra
+      .filter((file) => file.path === "Cargo.lock")
+      .map((file) => file.jsonpath?.match(/^\$\.package\[\?\(@\.name\.value==='([^']+)'\)\]\.version$/)?.[1] ?? file.jsonpath);
+    assert.deepEqual([...inLock].sort(), [...crates].sort(), "Cargo.lock's extra files must name each workspace crate once");
+    assert.deepEqual(extra, [
+      { type: "toml", path: "Cargo.toml", jsonpath: "$.workspace.package.version" },
+      { type: "json", path: "src-tauri/tauri.conf.json", jsonpath: "$.version" },
+      ...crates.map((crate) => ({ type: "toml", path: "Cargo.lock", jsonpath: `$.package[?(@.name.value==='${crate}')].version` })),
+    ]);
+  });
+
+  test("the changelog shows and hides the types the prefix tables of CONTRIBUTING.md and CLAUDE.md say it does", () => {
+    const sections = releasePleaseConfig()["changelog-sections"] ?? [];
+    const config = {
+      shown: sections.filter((section) => !section.hidden).map(({ type, section }) => `${type}: ${section}`),
+      hidden: sections.filter((section) => section.hidden).map(({ type }) => type).sort(),
+    };
+    assert.ok(config.shown.length > 0, "release-please-config.json's changelog shows no section");
+    assert.deepEqual(changelogInTable("CONTRIBUTING.md", "### Titles", (cell) => cell === "not listed"), config, "CONTRIBUTING.md");
+    assert.deepEqual(
+      changelogInTable("CLAUDE.md", "### Prefix → version-bump + changelog effect", (cell) => /^hidden\b/.test(cell)),
+      config,
+      "CLAUDE.md",
+    );
   });
 });

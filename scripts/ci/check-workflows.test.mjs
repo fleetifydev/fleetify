@@ -16,8 +16,11 @@
  * The main ruleset requires checks by name, and a job reports its check under
  * its own name, so each required check must be exactly one job, in a workflow
  * that runs on every pull request. The PR title check also reruns when a
- * title is edited, and the Linux clippy job installs the packages that
- * CONTRIBUTING.md lists.
+ * title is edited, and allows exactly the types release-please files under a
+ * changelog section (release-please-config.json), shown or hidden. The Linux
+ * clippy job installs the packages that CONTRIBUTING.md lists. CI checks that
+ * the files holding the version agree (check-versions.mjs) right after the
+ * script tests, and the documented gate lists say so.
  *
  * The workflows that make a release (build.yml, smoke.yml, release-dry-run.yml
  * and release.yml) pin each action to a commit and grant only `contents:
@@ -511,6 +514,28 @@ describe("required checks", () => {
       inCi,
       [],
       `ci.yml's job ${inCi.join(", ")} is named "${PR_TITLE_CHECK}" too, and an edited title doesn't rerun it`,
+    );
+  });
+});
+
+describe("PR titles", () => {
+  // A squash-merged title becomes a commit on main, which release-please
+  // files under its type's changelog section. Each type a title may use has a
+  // section, shown or hidden, and each section is one a title can reach.
+  yamlTest("the PR title check allows exactly the types of release-please's changelog sections", () => {
+    const rel = `${WORKFLOWS}/pr-title.yml`;
+    const checks = Object.values(load(rel).jobs ?? {})
+      .flatMap((job) => job.steps ?? [])
+      .filter((step) => /^amannn\/action-semantic-pull-request@/.test(String(step.uses ?? "")));
+    assert.equal(checks.length, 1, `${rel} must run amannn/action-semantic-pull-request once`);
+    const allowed = String(checks[0].with?.types ?? "")
+      .split(/\s+/)
+      .filter(Boolean);
+    const sections = JSON.parse(read("release-please-config.json"))["changelog-sections"] ?? [];
+    assert.deepEqual(
+      [...allowed].sort(),
+      sections.map(({ type }) => type).sort(),
+      `${rel}'s types and release-please-config.json's changelog-sections must name the same types`,
     );
   });
 });
@@ -2352,6 +2377,38 @@ describe("actionlint", () => {
         .map((line) => line.replace(/#.*$/, "").trim())
         .filter(Boolean);
       assert.equal(commands.at(-1), "actionlint", `${file}'s gate list must end with actionlint`);
+    }
+  });
+});
+
+const SCRIPT_TESTS = 'node --test "scripts/ci/*.test.mjs" "scripts/release/*.test.mjs"';
+const VERSION_CHECK = "node scripts/release/check-versions.mjs";
+
+describe("version check", () => {
+  yamlTest("CI checks that the versions agree, as a hard step right after the script tests", () => {
+    const steps = jobOf(`${WORKFLOWS}/ci.yml`, "web").steps ?? [];
+    const at = steps.findIndex((step) => scriptOf(step).trim() === VERSION_CHECK);
+    assert.ok(at !== -1, `ci.yml's web job must run ${VERSION_CHECK}`);
+    const step = steps[at];
+    assert.equal(step["continue-on-error"], undefined, "the version check must be a hard gate");
+    assert.equal(step.if, undefined, "the version check must run in every web job");
+    const tests = steps.findIndex((candidate) => scriptOf(candidate).trim() === SCRIPT_TESTS);
+    assert.ok(tests !== -1, "ci.yml's web job must run the script tests");
+    assert.equal(at, tests + 1, "the version check must come right after the script tests, which test it");
+  });
+
+  test("the documented gates list the version check right after the script tests, as ci.yml runs it", () => {
+    for (const [file, heading] of [
+      ["CONTRIBUTING.md", "## The gates"],
+      ["CLAUDE.md", "### Unit + integration (gates that run in CI)"],
+    ]) {
+      const commands = codeBlockUnder(file, heading)
+        .split("\n")
+        .map((line) => line.replace(/\s+#.*$/, "").trim())
+        .filter(Boolean);
+      const at = commands.indexOf(VERSION_CHECK);
+      assert.ok(at !== -1, `${file}'s gate list must include ${VERSION_CHECK}`);
+      assert.equal(commands[at - 1], SCRIPT_TESTS, `${file}'s gate list must have the version check right after the script tests`);
     }
   });
 });

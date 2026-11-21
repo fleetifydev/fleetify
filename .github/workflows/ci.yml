@@ -206,6 +206,14 @@ jobs:
       # are deterministic and fast.
       - name: Script tests
         run: node --test "scripts/ci/*.test.mjs" "scripts/release/*.test.mjs"
+      # Every file that holds the version holds the same one: package.json,
+      # package-lock.json, the Cargo workspace and Cargo.lock's entry for each
+      # crate, tauri.conf.json and release-please's manifest. release-please
+      # bumps them together in its release pull request, so a version changed
+      # by hand in one of them fails here. A hard gate, after the script tests,
+      # which test the check itself.
+      - name: Versions agree
+        run: node scripts/release/check-versions.mjs
       # actionlint checks every workflow: its syntax and expressions, the
       # inputs of the actions and reusable workflows it calls, and its shell
       # scripts, with the shellcheck the image includes. A workflow that runs

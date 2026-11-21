@@ -94,6 +94,7 @@ npx tsc -b tsconfig.build.json --noEmit                 # TypeScript type check
 npm test                                                # renderer tests, Vitest (advisory)
 python3 -c "import yaml"                                # PyYAML, which the script tests need
 node --test "scripts/ci/*.test.mjs" "scripts/release/*.test.mjs"   # tests of the repository's own scripts
+node scripts/release/check-versions.mjs                 # every file that holds the version holds the same one
 actionlint                                              # the GitHub Actions workflows
 ```
 
