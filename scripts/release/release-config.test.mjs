@@ -39,6 +39,10 @@
  * after it, from pull request #2 on. The release PR's prep commit removes
  * both, so neither reaches main next to a released version.
  *
+ * CHANGELOG.md is empty until the first release PR writes it: release-please
+ * keeps whatever text it finds there below the first entry, so only an empty
+ * file gives a changelog that holds the entry alone.
+ *
  * Squash merging makes each pull request's title a commit on main, which
  * release-please files under its type's changelog section. The sections, and
  * which of them the changelog hides, are those of the prefix tables in
@@ -198,6 +202,33 @@ describe("release-please", () => {
         `the manifest is at ${current}, so release-as must go: left in, it asks each later release PR for ${root["release-as"]} again`,
       );
       assert.equal(config["bootstrap-sha"], undefined, `the manifest is at ${current}, so bootstrap-sha must go`);
+    }
+  });
+
+  // release-please (17.6.0) puts a release's entry above the newest entry's
+  // heading, a line of "## " or "### " followed by "v", a digit or "[". When
+  // the file has no such heading, it writes "# Changelog" and the entry, then
+  // whatever the file held, with each "# " heading in it turned into "## ".
+  // Any text in the file before the first release would stay below that
+  // entry for good: "# Changelog" alone becomes a second, "## Changelog"
+  // heading. From an empty file, the first release PR writes "# Changelog"
+  // and the entry, and nothing else. CI can't run release-please, which the
+  // repository doesn't depend on, so the test pins that starting point. After
+  // the first release, the file starts with the heading and the entry for the
+  // version the manifest names, as each release PR writes them.
+  test("CHANGELOG.md is empty until the first release, then starts with the entry for the manifest's version", () => {
+    const text = read("CHANGELOG.md").replace(/\r\n/g, "\n");
+    const current = String(releasePleaseManifest()["."]);
+    assert.match(current, /^\d+\.\d+\.\d+$/, ".release-please-manifest.json's version");
+    if (compareVersions(current, FIRST_RELEASE) < 0) {
+      assert.equal(text, "", "CHANGELOG.md must be empty until the first release PR writes it");
+    } else {
+      const version = current.replace(/\./g, "\\.");
+      assert.match(
+        text,
+        new RegExp(`^# Changelog\\n\\n#{2,3} \\[?${version}\\]?[ (]`),
+        `CHANGELOG.md must start with "# Changelog", then the entry for ${current}`,
+      );
     }
   });
 
