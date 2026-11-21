@@ -21,9 +21,12 @@
  *
  * The workflows that make a release (build.yml, smoke.yml, release-dry-run.yml
  * and release.yml) pin each action to a commit and grant only `contents:
- * read` at the top. build.yml builds release-assets.mjs's TARGETS, and a
- * release build gets nothing of a dry run's: no cache, none of the keys a dry
- * run makes, no updater overlay. The dry run assembles with each build's own
+ * read` at the top. build.yml builds release-assets.mjs's TARGETS. Its jobs
+ * that hold the signing keys run only GitHub's own actions, the lockfile's
+ * Tauri CLI, system tools and the repository's scripts, get the release
+ * secrets only in release-only steps, and check every artifact they take
+ * before using it. A release build gets nothing of a dry run's: no cache,
+ * none of the keys a dry run makes, no updater overlay. The dry run assembles with each build's own
  * key, and its smoke runs the bundles without the source tree. Where a step's
  * script decides something, such as the environment or the arguments the
  * smoke gets, the check runs that script with bash, as the runner does.
@@ -38,14 +41,15 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 
+import { compiledFiles } from "../release/compiled-tar.mjs";
 import { dryRunConfig } from "../release/dry-run-config.mjs";
-import { TARGETS, UPDATER_KEY_ID } from "../release/release-assets.mjs";
+import { TARGETS, UPDATER_KEY_ID, unsignedAssets, updaterAssets } from "../release/release-assets.mjs";
 
 const ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const WORKFLOWS = ".github/workflows";
@@ -149,13 +153,15 @@ const scriptOf = (step) => (typeof step.run === "string" ? step.run : "");
 const stepLabel = (step, i) => `step ${i + 1} (${step.name ?? step.uses ?? scriptOf(step).split("\n")[0]})`;
 
 /**
- * Whether a line of shell runs cargo itself: it calls cargo or the Tauri CLI,
- * or a script of the repo's that calls them: the sidecar build
- * (build-sidecars.mjs, `npm run build:sidecars`), whose `--check` only reads
- * the config, and dev-tauri-wt.mjs, which starts `tauri dev`.
+ * Whether a line of shell runs cargo itself: it calls cargo or the Tauri CLI
+ * (but for its signer, which signs files and builds nothing), or a script of
+ * the repo's that calls them: the sidecar build (build-sidecars.mjs, `npm run
+ * build:sidecars`), whose `--check` only reads the config, and
+ * dev-tauri-wt.mjs, which starts `tauri dev`.
  */
 const lineRunsCargo = (line) =>
-  /(^|[\s;&|(])(cargo|tauri)(\s|$)/.test(line) ||
+  /(^|[\s;&|(])cargo(\s|$)/.test(line) ||
+  (/(^|[\s;&|(])tauri(\s|$)/.test(line) && !/(^|\s)tauri signer\s/.test(line)) ||
   (/(build-sidecars|dev-tauri-wt)\.mjs|build:sidecars/.test(line) && !line.includes("--check"));
 
 let packageScripts;
@@ -544,8 +550,14 @@ const DRY_RUN_PATHS = [
   "vendor/**",
 ];
 
-/** A reference to a secret: `secrets.` inside a `${{ }}` expression. */
-const SECRET_REF = /\$\{\{[^}]*\bsecrets\./;
+/**
+ * The `${{ }}` expressions in `text` that read a secret, in whatever form:
+ * secrets.X, secrets['X'], toJSON(secrets), format('{0}', secrets.X). Each
+ * expression is read to its closing }}.
+ */
+function secretExpressions(text) {
+  return [...String(text).matchAll(/\$\{\{([\s\S]*?)\}\}/g)].filter(([, inside]) => /\bsecrets\b/.test(inside)).map(([whole]) => whole);
+}
 
 /** build.yml's conditions for a step that runs only in a dry run, or only in a release build. */
 const DRY_RUN_ONLY = "inputs.environment == 'dry-run'";
@@ -565,7 +577,7 @@ const DRY_RUN_MARKERS = [
   { marker: "dry-run-config.mjs", what: "writes the updater overlay (dangerousInsecureTransportProtocol)" },
   { marker: "dry-run.json", what: "builds with the updater overlay" },
   { marker: "updater-pubkey.txt", what: "adds the run's updater public key to the artifact" },
-  { marker: "openssl req", what: "makes the run's own code-signing identity" },
+  { marker: "macos-keychain.sh dry-run", what: "makes the run's own code-signing identity" },
 ];
 
 const BASH_SKIP =
@@ -689,26 +701,93 @@ describe("release workflows", () => {
   });
 });
 
+/** The jobs of build.yml that run in the caller's environment, with the signing keys. */
+const KEYED_JOBS = ["sign", "bundle-macos"];
+
+/** The actions a job with the keys may run: GitHub's own (another test checks each is pinned to a commit). */
+const KEYED_ACTIONS = ["actions/checkout", "actions/download-artifact", "actions/setup-node", "actions/upload-artifact"];
+
+/** The secrets a release build signs with. */
+const RELEASE_SECRETS = ["APPLE_CERTIFICATE", "APPLE_CERTIFICATE_PASSWORD", "TAURI_SIGNING_PRIVATE_KEY", "TAURI_SIGNING_PRIVATE_KEY_PASSWORD"];
+
+/** Whether a release target is a macOS one: its bundles are signed inside, in bundle-macos. */
+const isMacOS = ({ bundles }) => bundles.includes("app");
+
+const TAR_SKIP = spawnSync("tar", ["--version"], { stdio: "ignore" }).status === 0 ? false : "tar is needed to pack a hand-off";
+
+const MACOS_ONLY = "runner.os == 'macOS'";
+const NOT_MACOS = "runner.os != 'macOS'";
+
+/** A build.yml job's steps. */
+const stepsOf = (id) => jobOf(BUILD, id).steps ?? [];
+
+/** The commands of a step's script: its lines, trimmed, without blank lines and comments. */
+const commandLines = (step) =>
+  scriptOf(step)
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "" && !line.startsWith("#"));
+
+/** A word in command position: at the start, or after a space, ;, &, |, ( or $(. */
+const command = (word) => new RegExp(`(^|[\\s;&|(])${word}(?=\\s|$)`);
+
+/**
+ * What a job with the keys may not run, each found in a line of a step's
+ * script: anything but the lockfile's Tauri CLI, `npm ci --ignore-scripts`,
+ * the repository's scripts and system tools.
+ */
+const KEYED_RULES = [
+  { what: "runs npx other than as npx --no tauri", pattern: /(^|[\s;&|(])npx(?=\s|$)(?!\s+--no\s+tauri\s)/ },
+  { what: "runs npm other than as npm ci --ignore-scripts", pattern: /(^|[\s;&|(])npm(?=\s|$)(?!\s+ci\s+--ignore-scripts(\s|$))/ },
+  { what: "runs node on something other than a scripts/release/*.mjs file", pattern: /(^|[\s;&|(])node(?=\s|$)(?!\s+scripts\/release\/[\w-]+\.mjs(\s|$))/ },
+  { what: "runs bash on something other than scripts/release/macos-keychain.sh", pattern: /(^|[\s;&|(])bash(?=\s|$)(?!\s+scripts\/release\/macos-keychain\.sh\s)/ },
+  { what: "runs cargo", pattern: command("cargo") },
+  { what: "runs tauri build", pattern: /(^|\s)tauri build(\s|$)/ },
+  { what: "builds the sidecars", pattern: /build-sidecars|build:sidecars/ },
+  { what: "runs tar", pattern: command("tar") },
+  { what: "downloads with curl or wget", pattern: /(^|[\s;&|(])(curl|wget)(?=\s|$)/ },
+  { what: "runs another interpreter", pattern: /(^|[\s;&|(])(sh|python3?|perl|ruby|pwsh|eval)(?=\s|$)/ },
+];
+
 describe("build.yml", () => {
-  yamlTest("it compiles in no environment, then bundles in the one the caller names", () => {
+  yamlTest("compile runs in no environment; sign and bundle-macos, after it, in the one the caller names", () => {
     const call = triggersOf(workflow(BUILD)).workflow_call;
     assert.deepEqual(Object.keys(call?.inputs ?? {}).sort(), ["environment", "ref", "version"]);
     for (const [name, input] of Object.entries(call.inputs)) {
       assert.deepEqual([input.type, input.required], ["string", true], `input ${name} must be a required string`);
     }
+    assert.deepEqual(Object.keys(workflow(BUILD).jobs ?? {}).sort(), ["bundle-macos", "compile", "notices", "sign"]);
     const compile = jobOf(BUILD, "compile");
     assert.equal(compile.environment, undefined, "the compile job must run in no environment");
     assert.deepEqual([[compile.needs].flat(), compile["timeout-minutes"]], [["notices"], 120], "the compile job");
-    const bundle = jobOf(BUILD, "bundle");
-    assert.equal(bundle.environment, "${{ inputs.environment }}");
-    assert.deepEqual([[bundle.needs].flat(), bundle["timeout-minutes"]], [["compile"], 60], "the bundle job");
+    for (const [id, runner, timeout] of [
+      ["sign", "ubuntu-24.04", 30],
+      ["bundle-macos", "${{ matrix.runner }}", 60],
+    ]) {
+      const job = jobOf(BUILD, id);
+      assert.deepEqual(
+        [job.environment, [job.needs].flat(), job["runs-on"], job["timeout-minutes"]],
+        ["${{ inputs.environment }}", ["compile"], runner, timeout],
+        `the ${id} job`,
+      );
+    }
   });
 
-  yamlTest("both build jobs run release-assets.mjs's TARGETS", () => {
-    const targets = TARGETS.map(({ triple, runner, bundles }) => ({ triple, runner, bundles: [...bundles] }));
-    for (const id of ["compile", "bundle"]) {
-      assert.deepEqual(jobOf(BUILD, id).strategy?.matrix, { include: targets }, `job ${id}'s matrix`);
+  yamlTest("each job's matrix is its share of release-assets.mjs's TARGETS, and the job's name gives the target's label", () => {
+    const full = ({ triple, runner, bundles, label }) => ({ triple, runner, bundles: [...bundles], label });
+    const shares = {
+      compile: TARGETS.map(full),
+      sign: TARGETS.filter((target) => !isMacOS(target)).map(({ triple, label }) => ({ triple, label })),
+      "bundle-macos": TARGETS.filter(isMacOS).map(full),
+    };
+    for (const [id, include] of Object.entries(shares)) {
+      assert.ok(include.length > 0, `release-assets.mjs's TARGETS give job ${id} no target`);
+      assert.deepEqual(jobOf(BUILD, id).strategy?.matrix, { include }, `job ${id}'s matrix`);
     }
+    assert.deepEqual(
+      Object.keys(shares).map((id) => jobOf(BUILD, id).name),
+      ["Compile (${{ matrix.label }})", "Sign (${{ matrix.label }})", "Bundle (${{ matrix.label }})"],
+    );
   });
 
   yamlTest("no build uses a cache, so a dry run rehearses the release build", () => {
@@ -728,62 +807,229 @@ describe("build.yml", () => {
     assert.deepEqual(problems, [], problems.join("\n"));
   });
 
-  yamlTest("every npm ci skips the packages' install scripts", () => {
+  yamlTest("every npm ci skips the packages' install scripts, and every npx runs the lockfile's Tauri CLI", () => {
     // An install script is dependency code; none of the build needs one.
+    // npx --no runs only what node_modules holds, and never downloads.
     const problems = [];
     for (const [id, job] of Object.entries(workflow(BUILD).jobs ?? {})) {
       for (const [i, step] of (job.steps ?? []).entries()) {
-        for (const line of scriptOf(step).split("\n")) {
-          if (/(^|[\s;&|(])npm\s+(ci|install|i)(\s|$)/.test(line) && !/\s--ignore-scripts(\s|$)/.test(line)) {
-            problems.push(`${BUILD}, job ${id}, ${stepLabel(step, i)}: ${line.trim()}`);
+        for (const line of commandLines(step)) {
+          const where = `${BUILD}, job ${id}, ${stepLabel(step, i)}: ${line}`;
+          if (/(^|[\s;&|(])npm\s+(ci|install|i)(\s|$)/.test(line) && !/\s--ignore-scripts(\s|$)/.test(line)) problems.push(`${where} runs install scripts`);
+          if (/(^|[\s;&|(])npx(?=\s|$)(?!\s+--no\s+tauri\s)/.test(line)) problems.push(`${where} runs npx other than as npx --no tauri`);
+        }
+      }
+    }
+    assert.deepEqual(problems, [], problems.join("\n"));
+  });
+
+  yamlTest("every checkout leaves the job's token out of the checkout", () => {
+    const problems = Object.entries(workflow(BUILD).jobs ?? {}).flatMap(([id, job]) =>
+      (job.steps ?? [])
+        .filter((step) => usesAction(step, "actions/checkout") && step.with?.["persist-credentials"] !== false)
+        .map((step) => `job ${id}, ${step.uses}: persist-credentials isn't false`),
+    );
+    assert.deepEqual(problems, [], problems.join("\n"));
+  });
+
+  test("the secret check finds a secret in any form an expression can read it", () => {
+    for (const text of [
+      "${{ secrets.X }}",
+      "${{ secrets['X'] }}",
+      "${{ toJSON(secrets) }}",
+      "${{ format('{0}', secrets.X) }}",
+      "${{\n  secrets.X\n}}",
+      "${{ inputs.ref }} and ${{ secrets.Y }}",
+    ]) {
+      assert.equal(secretExpressions(text).length, 1, JSON.stringify(text));
+    }
+    for (const text of ["node scripts/release/scan-secrets.mjs", "${{ inputs.environment }}", "secrets.X, outside an expression"]) {
+      assert.deepEqual(secretExpressions(text), [], JSON.stringify(text));
+    }
+  });
+
+  yamlTest("the release secrets reach only release-only steps of sign and bundle-macos, and the macOS ones bundle-macos alone", () => {
+    const flow = workflow(BUILD);
+    const problems = [];
+    if (secretExpressions(JSON.stringify(flow.env ?? {})).length > 0) problems.push("the workflow's env reads a secret");
+    const found = {};
+    for (const [id, job] of Object.entries(flow.jobs ?? {})) {
+      const { steps = [], ...settings } = job;
+      if (secretExpressions(JSON.stringify(settings)).length > 0) problems.push(`job ${id} reads a secret outside its steps`);
+      for (const [i, step] of steps.entries()) {
+        const { env = {}, ...rest } = step;
+        const where = `job ${id}, ${stepLabel(step, i)}`;
+        if (secretExpressions(JSON.stringify(rest)).length > 0) problems.push(`${where} reads a secret outside its env`);
+        for (const value of Object.values(env)) {
+          for (const expression of secretExpressions(String(value))) {
+            const secret = expression.match(/^\$\{\{\s*secrets\.([A-Z0-9_]+)\s*\}\}$/)?.[1];
+            if (secret === undefined) {
+              problems.push(`${where} reads secrets in a form other than secrets.NAME: ${expression}`);
+              continue;
+            }
+            found[secret] = [...new Set([...(found[secret] ?? []), id])].sort();
+            if (!requires(step.if, RELEASE_ONLY)) problems.push(`${where} gets ${secret}, but its condition isn't "${RELEASE_ONLY}" (and more): ${step.if ?? "none"}`);
           }
         }
       }
     }
-    assert.deepEqual(problems, [], `these run npm's install scripts; add --ignore-scripts:\n${problems.join("\n")}`);
-  });
-
-  yamlTest("the compile job, which runs the dependencies' code, has no environment and no secret", () => {
-    const compile = jobOf(BUILD, "compile");
-    assert.equal(compile.environment, undefined, "the compile job runs in an environment");
-    assert.doesNotMatch(JSON.stringify(compile), SECRET_REF, "the compile job references a secret");
-  });
-
-  yamlTest("the bundle job compiles nothing: no cargo, tauri build, npm script or sidecar build", () => {
-    // While the keys are there, only the Tauri CLI's bundler runs.
-    const banned = [
-      { what: "runs cargo", pattern: /(^|[\s;&|(])cargo(\s|$)/ },
-      { what: "runs tauri build", pattern: /(^|\s)tauri build(\s|$)/ },
-      { what: "runs an npm script", pattern: /(^|[\s;&|(])npm\s+(run|run-script|test|start)(\s|$)/ },
-      { what: "builds the sidecars", pattern: /build-sidecars|build:sidecars/ },
-    ];
-    const steps = jobOf(BUILD, "bundle").steps ?? [];
-    const problems = steps.flatMap((step, i) =>
-      banned
-        .filter(({ pattern }) => scriptOf(step).split("\n").some((line) => pattern.test(line)))
-        .map(({ what }) => `${stepLabel(step, i)} ${what}`),
-    );
     assert.deepEqual(problems, [], problems.join("\n"));
-    assert.ok(steps.some(isTauriBundle), "the bundle job doesn't run tauri bundle");
+    assert.deepEqual(found, {
+      APPLE_CERTIFICATE: ["bundle-macos"],
+      APPLE_CERTIFICATE_PASSWORD: ["bundle-macos"],
+      TAURI_SIGNING_PRIVATE_KEY: ["bundle-macos", "sign"],
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ["bundle-macos", "sign"],
+    });
+    assert.deepEqual(Object.keys(found).sort(), RELEASE_SECRETS);
   });
 
-  yamlTest("every secret is in the env of a step that runs only in a release build", () => {
-    const flow = workflow(BUILD);
+  yamlTest("only bundle-macos's release identity step reads the macOS identity's name, and no other job mentions APPLE_", () => {
+    const readers = Object.entries(workflow(BUILD).jobs ?? {}).flatMap(([id, job]) =>
+      (job.steps ?? []).filter((step) => JSON.stringify(step).includes("vars.APPLE_SIGNING_IDENTITY")).map((step) => ({ id, step })),
+    );
+    assert.equal(readers.length, 1, "one step reads vars.APPLE_SIGNING_IDENTITY");
+    const [{ id, step }] = readers;
+    assert.equal(id, "bundle-macos");
+    assert.ok(requires(step.if, RELEASE_ONLY), `the step that reads it runs outside a release build: ${step.if}`);
+    assert.equal(step.env?.IDENTITY, "${{ vars.APPLE_SIGNING_IDENTITY }}");
+    for (const other of ["notices", "compile", "sign"]) {
+      assert.doesNotMatch(JSON.stringify(jobOf(BUILD, other)), /APPLE_/, `job ${other} mentions APPLE_`);
+    }
+  });
+
+  yamlTest("sign and bundle-macos run only GitHub's checkout, setup-node and artifact actions", () => {
+    for (const id of KEYED_JOBS) {
+      const used = [...new Set(stepsOf(id).filter((step) => step.uses !== undefined).map((step) => String(step.uses).split("@")[0]))].sort();
+      assert.deepEqual(used, KEYED_ACTIONS, `job ${id}'s actions`);
+    }
+  });
+
+  yamlTest("sign and bundle-macos run only the lockfile's Tauri CLI, npm ci --ignore-scripts, the repository's scripts and system tools", () => {
     const problems = [];
-    if (SECRET_REF.test(JSON.stringify(flow.env ?? {}))) problems.push("the workflow's env references a secret");
-    for (const [id, job] of Object.entries(flow.jobs ?? {})) {
-      const { steps = [], ...settings } = job;
-      if (SECRET_REF.test(JSON.stringify(settings))) problems.push(`job ${id} references a secret outside its steps`);
-      for (const [i, step] of steps.entries()) {
-        const { env = {}, ...rest } = step;
-        const where = `job ${id}, ${stepLabel(step, i)}`;
-        if (SECRET_REF.test(JSON.stringify(rest))) problems.push(`${where} references a secret outside its env`);
-        if (SECRET_REF.test(JSON.stringify(env)) && !requires(step.if, RELEASE_ONLY)) {
-          problems.push(`${where} gets a secret, but its condition isn't "${RELEASE_ONLY}" (and more): ${step.if ?? "none"}`);
+    for (const id of KEYED_JOBS) {
+      for (const [i, step] of stepsOf(id).entries()) {
+        for (const line of commandLines(step)) {
+          for (const { what } of KEYED_RULES.filter(({ pattern }) => pattern.test(line))) {
+            problems.push(`job ${id}, ${stepLabel(step, i)} ${what}: ${line}`);
+          }
         }
       }
     }
     assert.deepEqual(problems, [], problems.join("\n"));
+    assert.ok(stepsOf("bundle-macos").some(isTauriBundle), "bundle-macos doesn't run tauri bundle");
+  });
+
+  test("the rules for sign and bundle-macos catch what they forbid, and let through what those jobs run", () => {
+    const caught = (line) => KEYED_RULES.filter(({ pattern }) => pattern.test(line)).map(({ what }) => what);
+    for (const line of [
+      "npx tauri bundle",
+      "npx --yes tauri signer sign x",
+      "npm exec tauri",
+      "npm rebuild",
+      "npm cit",
+      "npm install",
+      "npm ci",
+      "node -e 'console.log(1)'",
+      "node --eval x",
+      "node scripts/build-sidecars.mjs",
+      "x=$(node scripts/other.mjs)",
+      "bash -c 'id'",
+      "cargo metadata",
+      "tar -xf compiled.tar",
+      "curl -fsSL https://example.com",
+      "sh -c 'id'",
+      "perl -e 1",
+    ]) {
+      assert.notDeepEqual(caught(line), [], line);
+    }
+    for (const line of [
+      "npm ci --ignore-scripts",
+      'npx --no tauri bundle --verbose --ci --target "$TRIPLE"',
+      'node scripts/release/check-artifact.mjs "$RUNNER_TEMP/notices" THIRD-PARTY-NOTICES',
+      'expected=$(node scripts/release/release-assets.mjs unsigned "$TRIPLE" "$VERSION")',
+      "bash scripts/release/macos-keychain.sh dry-run || status=$?",
+      'cp -p "$out/$file" "$file"',
+    ]) {
+      assert.deepEqual(caught(line), [], line);
+    }
+  });
+
+  yamlTest("every artifact a job downloads goes into a folder of its own, which check-artifact.mjs checks first", () => {
+    // Exactly the expected files, each a regular file, before anything uses one.
+    const expectedFiles = {
+      "third-party-notices": "THIRD-PARTY-NOTICES",
+      "updater-key-${{ matrix.triple }}": "updater.key updater.key.pub",
+      "compiled-${{ matrix.triple }}": "compiled.tar",
+      "unsigned-${{ matrix.triple }}": '"${names[@]}"',
+    };
+    const problems = [];
+    let downloads = 0;
+    for (const [id, job] of Object.entries(workflow(BUILD).jobs ?? {})) {
+      const steps = job.steps ?? [];
+      for (const [i, step] of steps.entries()) {
+        if (!usesAction(step, "actions/download-artifact")) continue;
+        downloads += 1;
+        const where = `job ${id}, ${stepLabel(step, i)}`;
+        const { name, path } = step.with ?? {};
+        if (!/^\$\{\{ runner\.temp \}\}\/[\w-]+$/.test(String(path))) {
+          problems.push(`${where} downloads ${name} into ${path}, not a folder of its own under runner.temp`);
+          continue;
+        }
+        const folder = `"${path.replace("${{ runner.temp }}", "$RUNNER_TEMP")}"`;
+        // Any mention of the folder or a file in it.
+        const mention = new RegExp(`\\$RUNNER_TEMP/${path.split("/").at(-1)}["/]`);
+        const next = steps[i + 1];
+        const first = commandLines(next ?? {}).find((line) => mention.test(line));
+        if (first !== `node scripts/release/check-artifact.mjs ${folder} ${expectedFiles[name]}`) {
+          problems.push(`${where}: the next step doesn't first run check-artifact.mjs on ${folder} for ${expectedFiles[name] ?? "(an artifact this test doesn't know)"}: ${first ?? "(none)"}`);
+        }
+        if (next?.if !== step.if) problems.push(`${where}: the check runs under "${next?.if}", the download under "${step.if}"`);
+      }
+    }
+    assert.ok(downloads > 0, "build.yml downloads no artifact");
+    assert.deepEqual(problems, [], problems.join("\n"));
+  });
+
+  yamlTest("the unsigned bundles a sign leg checks are the ones release-assets.mjs names for its target", () => {
+    const step = stepsOf("sign").find((candidate) => scriptOf(candidate).includes('"${names[@]}"'));
+    assert.match(scriptOf(step), /^expected=\$\(node scripts\/release\/release-assets\.mjs unsigned "\$TRIPLE" "\$VERSION"\)$/m);
+  });
+
+  scriptTest("a sign leg's check passes the target's unsigned bundles, and fails with anything more", () => {
+    const step = stepsOf("sign").find((candidate) => scriptOf(candidate).includes('"${names[@]}"'));
+    const triple = "x86_64-unknown-linux-gnu";
+    inTempDir((dir) => {
+      const bundles = join(dir, "bundles");
+      mkdirSync(bundles);
+      for (const name of unsignedAssets(triple, "1.2.3")) writeFileSync(join(bundles, name), `${name}\n`);
+      const env = { RUNNER_TEMP: dir, TRIPLE: triple, VERSION: "1.2.3" };
+      const good = runScript(step.run, { cwd: ROOT, env });
+      assert.equal(good.status, 0, `${good.stdout}${good.stderr}`);
+      writeFileSync(join(bundles, "extra.sh"), "#!/bin/sh\n");
+      const extra = runScript(step.run, { cwd: ROOT, env });
+      assert.equal(extra.status, 1, `${extra.stdout}${extra.stderr}`);
+      assert.match(extra.stderr, /unexpected file extra\.sh/);
+    });
+  });
+
+  yamlTest("the dry run's updater key goes from compile to sign and bundle-macos, alone and kept a day", () => {
+    // Only this run's dry-run builds trust the key.
+    const keyArtifact = (id, action) =>
+      stepsOf(id).filter((step) => usesAction(step, action) && String(step.with?.name).startsWith("updater-key-"));
+    const uploads = keyArtifact("compile", "actions/upload-artifact");
+    assert.equal(uploads.length, 1, "the compile job must upload the dry run's updater key once");
+    assert.deepEqual(
+      [uploads[0].with.name, uploads[0].with.path, uploads[0].with["retention-days"]],
+      ["updater-key-${{ matrix.triple }}", "${{ runner.temp }}/dry-run", 1],
+    );
+    // The folder it uploads holds the key's two halves and nothing else: the overlay goes elsewhere.
+    const inFolder = new Set(stepsOf("compile").flatMap((step) => [...textOf(step).matchAll(/RUNNER_TEMP\/dry-run\/([^"\s\\]+)/g)].map(([, file]) => file)));
+    assert.deepEqual([...inFolder].sort(), ["updater.key", "updater.key.pub"]);
+    for (const id of KEYED_JOBS) {
+      const downloads = keyArtifact(id, "actions/download-artifact");
+      assert.equal(downloads.length, 1, `job ${id} must download the dry run's updater key once`);
+      assert.deepEqual([downloads[0].with.name, downloads[0].with.path], ["updater-key-${{ matrix.triple }}", "${{ runner.temp }}/dry-run"]);
+    }
   });
 
   yamlTest("only a dry run makes keys of its own, writes the updater overlay or adds updater-pubkey.txt", () => {
@@ -804,203 +1050,279 @@ describe("build.yml", () => {
     assert.deepEqual(problems, [], problems.join("\n"));
   });
 
-  yamlTest("the dry run's updater key goes from the compile job to the bundle job, kept a day", () => {
-    // Only this run's dry-run builds trust the key.
-    const keyArtifact = (id, action) =>
-      (jobOf(BUILD, id).steps ?? []).filter((step) => usesAction(step, action) && String(step.with?.name).startsWith("updater-key-"));
-    const uploads = keyArtifact("compile", "actions/upload-artifact");
-    assert.equal(uploads.length, 1, "the compile job must upload the dry run's updater key once");
-    assert.deepEqual(
-      [uploads[0].with.name, uploads[0].with.path, uploads[0].with["retention-days"]],
-      ["updater-key-${{ matrix.triple }}", "${{ runner.temp }}/dry-run", 1],
-    );
-    const downloads = keyArtifact("bundle", "actions/download-artifact");
-    assert.equal(downloads.length, 1, "the bundle job must download the dry run's updater key once");
-    assert.deepEqual([downloads[0].with.name, downloads[0].with.path], ["updater-key-${{ matrix.triple }}", "${{ runner.temp }}/dry-run"]);
-  });
-
   yamlTest("a release build compiles and bundles with the release config alone, and a dry run adds the overlay", () => {
     const pair = (id, isCommand) => {
-      const steps = (jobOf(BUILD, id).steps ?? []).filter(isCommand);
+      const steps = stepsOf(id).filter(isCommand);
       const release = steps.filter((step) => requires(step.if, RELEASE_ONLY));
       const dryRun = steps.filter((step) => requires(step.if, DRY_RUN_ONLY));
       assert.deepEqual([steps.length, release.length, dryRun.length], [2, 1, 1], `job ${id} must run it once if "${RELEASE_ONLY}" and once if "${DRY_RUN_ONLY}"`);
       return { release: release[0], dryRun: dryRun[0] };
     };
-    const overlay = /--config "\$RUNNER_TEMP\/dry-run\/dry-run\.json"/;
+    const overlay = /--config "\$RUNNER_TEMP\/dry-run-config\/dry-run\.json"/;
     const compile = pair("compile", isTauriBuild);
-    for (const step of [compile.release, compile.dryRun]) assert.match(scriptOf(step), /\s--no-bundle(\s|$)/, "the compile job must not bundle");
-    assert.doesNotMatch(textOf(compile.release), /dry-run/, "the release compile mentions the dry run");
+    for (const step of [compile.release, compile.dryRun]) assert.match(scriptOf(step), /\s--no-bundle(\s|$)/, "the app must be compiled without bundling");
     // The overlay's key and endpoint are compiled into the app.
     assert.match(scriptOf(compile.dryRun), overlay, "the dry run doesn't compile the overlay in");
-    const bundle = pair("bundle", isTauriBundle);
-    assert.doesNotMatch(textOf(bundle.release), /dry-run/, "the release bundle mentions the dry run");
-    assert.deepEqual(
-      Object.fromEntries(["TAURI_SIGNING_PRIVATE_KEY", "TAURI_SIGNING_PRIVATE_KEY_PASSWORD", "APPLE_SIGNING_IDENTITY"].map((name) => [name, bundle.release.env?.[name]])),
-      {
-        TAURI_SIGNING_PRIVATE_KEY: "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}",
-        TAURI_SIGNING_PRIVATE_KEY_PASSWORD: "${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}",
-        APPLE_SIGNING_IDENTITY: "${{ vars.APPLE_SIGNING_IDENTITY }}",
-      },
-    );
-    assert.match(scriptOf(bundle.dryRun), overlay, "the dry run doesn't bundle with the overlay");
-    assert.equal(bundle.dryRun.env?.TAURI_SIGNING_PRIVATE_KEY, "${{ runner.temp }}/dry-run/updater.key");
+    const unsigned = pair("compile", isTauriBundle);
+    const macOS = pair("bundle-macos", isTauriBundle);
+    for (const { release, dryRun } of [compile, unsigned, macOS]) {
+      assert.doesNotMatch(textOf(release), /dry-run/, `${release.name} mentions the dry run`);
+      assert.match(scriptOf(dryRun), overlay, `${dryRun.name} doesn't use the overlay`);
+    }
+    // Linux and Windows bundle in compile, with no key; macOS signs in bundle-macos.
+    for (const step of [unsigned.release, unsigned.dryRun]) {
+      assert.ok(requires(step.if, NOT_MACOS), `${step.name} runs on macOS too`);
+      assert.match(scriptOf(step), /(^|\s)tauri bundle --no-sign\s/, `${step.name} doesn't pass --no-sign`);
+      assert.equal(step.env, undefined, `${step.name} gets an environment`);
+    }
+    for (const step of [macOS.release, macOS.dryRun]) assert.doesNotMatch(scriptOf(step), /--no-sign/, `${step.name} doesn't sign`);
+    assert.deepEqual(macOS.release.env, {
+      TAURI_SIGNING_PRIVATE_KEY: "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}",
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: "${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}",
+    });
+    assert.deepEqual(macOS.dryRun.env, { TAURI_SIGNING_PRIVATE_KEY: "${{ runner.temp }}/dry-run/updater.key", TAURI_SIGNING_PRIVATE_KEY_PASSWORD: "" });
   });
 
-  yamlTest("every tauri build and bundle names the target and adds src-tauri/tauri.release.conf.json", () => {
-    for (const id of ["compile", "bundle"]) {
-      const commands = (jobOf(BUILD, id).steps ?? []).filter((step) => isTauriBuild(step) || isTauriBundle(step));
+  yamlTest("every tauri build and bundle names the target, adds src-tauri/tauri.release.conf.json, and every bundle is --verbose", () => {
+    for (const id of ["compile", "bundle-macos"]) {
+      const commands = stepsOf(id).filter((step) => isTauriBuild(step) || isTauriBundle(step));
       assert.ok(commands.length > 0, `job ${id} runs neither tauri build nor tauri bundle`);
       for (const step of commands) {
-        assert.match(scriptOf(step), /\s--target "\$TRIPLE"\s/, `${step.name ?? "a tauri command"} doesn't name the target`);
-        assert.match(scriptOf(step), /--config src-tauri\/tauri\.release\.conf\.json(\s|$)/, `${step.name ?? "a tauri command"} misses the release config`);
+        assert.match(scriptOf(step), /\s--target "\$TRIPLE"\s/, `${step.name} doesn't name the target`);
+        assert.match(scriptOf(step), /--config src-tauri\/tauri\.release\.conf\.json(\s|$)/, `${step.name} misses the release config`);
+        // --verbose logs each command the bundler runs.
+        if (isTauriBundle(step)) assert.match(scriptOf(step), /(^|\s)tauri bundle (--no-sign )?--verbose(\s|$)/, `${step.name} doesn't pass --verbose`);
       }
     }
   });
 
-  yamlTest("the bundle job bundles the files the compile job built", () => {
-    const compile = jobOf(BUILD, "compile").steps ?? [];
-    const pack = compile.findIndex((step) => /(^|\s)tar -cf compiled\.tar\s/m.test(scriptOf(step)));
-    assert.ok(pack > compile.findLastIndex(isTauriBuild), "the compile job must pack compiled.tar after it builds");
-    for (const path of [/release\/fleetify-app/, /release\/fleet-\*-mcp/, /\ssrc-tauri\/binaries(\s|$)/, /\sdist(\s|$)/]) {
-      assert.match(scriptOf(compile[pack]), path, `compiled.tar misses ${path}`);
-    }
-    const upload = compile.find((step) => usesAction(step, "actions/upload-artifact") && step.with?.name === "compiled-${{ matrix.triple }}");
-    assert.deepEqual([upload?.with?.path, upload?.with?.["if-no-files-found"], upload?.with?.["retention-days"]], ["compiled.tar", "error", 1]);
-    const bundle = jobOf(BUILD, "bundle").steps ?? [];
-    const download = bundle.findIndex((step) => usesAction(step, "actions/download-artifact") && step.with?.name === "compiled-${{ matrix.triple }}");
-    const unpack = bundle.findIndex((step) => /(^|\s)tar -xf compiled\.tar(\s|$)/m.test(scriptOf(step)));
-    assert.ok(download !== -1 && download < unpack && unpack < bundle.findIndex(isTauriBundle), "the bundle job must unpack compiled.tar before it bundles");
+  yamlTest("the Linux compile leg installs the pinned AppImage tools before it bundles", () => {
+    const steps = stepsOf("compile");
+    const tools = steps.findIndex((step) => commandLines(step).includes("node scripts/release/appimage-tools.mjs"));
+    assert.ok(tools !== -1, "the compile job doesn't install the pinned AppImage tools");
+    assert.equal(steps[tools].if, "runner.os == 'Linux'");
+    const bundles = steps.map((step, i) => (isTauriBundle(step) ? i : -1)).filter((i) => i !== -1);
+    assert.ok(bundles.length > 0 && bundles.every((i) => i > tools), "a tauri bundle runs before the AppImage tools are installed");
   });
 
-  yamlTest("Tauri signs the macOS app with APPLE_SIGNING_IDENTITY alone, from a keychain the job makes", () => {
+  yamlTest("the macOS compile legs pack exactly compiled-tar.mjs's list, in ustar without macOS metadata, and check the archive", () => {
+    const steps = stepsOf("compile");
+    const pack = steps.find((step) => /(^|\s)tar\s/m.test(scriptOf(step)));
+    assert.ok(pack, "the compile job doesn't pack compiled.tar");
+    assert.equal(pack.if, MACOS_ONLY);
+    const lines = commandLines(pack);
+    const at = (line) => lines.indexOf(line);
+    const order = [
+      at('node scripts/release/compiled-tar.mjs list --target "$TRIPLE" > "$RUNNER_TEMP/compiled-files.txt"'),
+      at('tar --format ustar --no-mac-metadata -cf "$RUNNER_TEMP/compiled/compiled.tar" -T "$RUNNER_TEMP/compiled-files.txt"'),
+      at('node scripts/release/compiled-tar.mjs unpack --target "$TRIPLE" --tar "$RUNNER_TEMP/compiled/compiled.tar" --out "$RUNNER_TEMP/compiled-check"'),
+    ];
+    assert.ok(order.every((i, n) => i !== -1 && (n === 0 || i > order[n - 1])), `the step must list, pack and check, in that order:\n${lines.join("\n")}`);
+    assert.ok(steps.indexOf(pack) > steps.findLastIndex(isTauriBuild), "compiled.tar is packed before the app is built");
+    const upload = steps.find((step) => usesAction(step, "actions/upload-artifact") && step.with?.name === "compiled-${{ matrix.triple }}");
+    assert.deepEqual(
+      [upload?.if, upload?.with?.path, upload?.with?.["if-no-files-found"]],
+      [MACOS_ONLY, "${{ runner.temp }}/compiled/compiled.tar", "error"],
+    );
+  });
+
+  yamlTest("bundle-macos unpacks compiled.tar with compiled-tar.mjs, looks for anything else, and copies only the listed files", () => {
+    const steps = stepsOf("bundle-macos");
+    const download = steps.findIndex((step) => usesAction(step, "actions/download-artifact") && step.with?.name === "compiled-${{ matrix.triple }}");
+    assert.ok(download !== -1, "bundle-macos doesn't download compiled-<triple>");
+    const unpack = download + 1;
+    const lines = commandLines(steps[unpack]);
+    const at = (pattern) => lines.findIndex((line) => pattern.test(line));
+    const order = [
+      at(/^node scripts\/release\/check-artifact\.mjs "\$RUNNER_TEMP\/compiled-download" compiled\.tar$/),
+      at(/^node scripts\/release\/compiled-tar\.mjs unpack --target "\$TRIPLE" --tar "\$RUNNER_TEMP\/compiled-download\/compiled\.tar" --out "\$out"$/),
+      at(/^odd=\$\(find "\$out" ! -type f ! -type d\)$/),
+      at(/^found=\$\(cd "\$out" && find \. -type f \| /),
+      at(/^cp -p "\$out\/\$file" "\$file"$/),
+    ];
+    assert.ok(order.every((i, n) => i !== -1 && (n === 0 || i > order[n - 1])), `the step must check, unpack, look for anything else, compare with the list and copy, in that order:\n${lines.join("\n")}`);
+    assert.ok(unpack < steps.findIndex(isTauriBundle), "the compiled files are unpacked after tauri bundle");
+    assert.doesNotMatch(read(BUILD), /tar -x/, "build.yml unpacks an archive with tar");
+  });
+
+  test("bundle-macos's unpack copies a good hand-off into the checkout, executable, and refuses one with a file more", { skip: YAML_SKIP || BASH_SKIP || TAR_SKIP }, () => {
+    const step = stepsOf("bundle-macos").find((candidate) => scriptOf(candidate).includes("compiled-tar.mjs unpack"));
+    const triple = "aarch64-apple-darwin";
+    const files = compiledFiles(triple);
+    inTempDir((dir) => {
+      const handOff = (name, extra) => {
+        const checkout = join(dir, name, "checkout");
+        const temp = join(dir, name, "temp");
+        for (const rel of ["scripts/release/compiled-tar.mjs", "scripts/release/check-artifact.mjs", "src-tauri/tauri.conf.json"]) {
+          mkdirSync(dirname(join(checkout, rel)), { recursive: true });
+          copyFileSync(join(ROOT, rel), join(checkout, rel));
+        }
+        const src = join(dir, name, "src");
+        for (const file of [...files, ...extra]) {
+          mkdirSync(dirname(join(src, file)), { recursive: true });
+          writeFileSync(join(src, file), `binary ${file}\n`, { mode: 0o755 });
+        }
+        mkdirSync(join(temp, "compiled-download"), { recursive: true });
+        const packed = spawnSync("tar", ["--format", "ustar", "-cf", join(temp, "compiled-download", "compiled.tar"), ...files, ...extra], { cwd: src, encoding: "utf8" });
+        assert.equal(packed.status, 0, packed.stderr);
+        const result = runScript(step.run, { cwd: checkout, env: { RUNNER_TEMP: temp, TRIPLE: triple } });
+        return { ...result, checkout };
+      };
+      const good = handOff("good", []);
+      assert.equal(good.status, 0, `${good.stdout}${good.stderr}`);
+      for (const file of files) {
+        assert.equal(readFileSync(join(good.checkout, file), "utf8"), `binary ${file}\n`);
+        assert.equal(statSync(join(good.checkout, file)).mode & 0o111, 0o111, `${file} isn't executable`);
+      }
+      const extra = handOff("extra", ["src-tauri/tauri.macos.conf.json"]);
+      assert.equal(extra.status, 1, `${extra.stdout}${extra.stderr}`);
+      assert.match(extra.stderr, /unexpected file "src-tauri\/tauri\.macos\.conf\.json"/);
+      assert.ok(!existsSync(join(extra.checkout, "target")) && !existsSync(join(extra.checkout, "src-tauri", "tauri.macos.conf.json")), "a refused hand-off put files in the checkout");
+    });
+  });
+
+  yamlTest("bundle-macos makes the dry run's overlay again from the run's public key, before it bundles", () => {
+    const steps = stepsOf("bundle-macos");
+    const make = steps.findIndex((step) =>
+      commandLines(step).includes('node scripts/release/dry-run-config.mjs --pubkey-file "$RUNNER_TEMP/dry-run/updater.key.pub" --out "$RUNNER_TEMP/dry-run-config/dry-run.json"'),
+    );
+    assert.ok(make !== -1, "bundle-macos doesn't make the overlay from the run's public key");
+    assert.ok(requires(steps[make].if, DRY_RUN_ONLY));
+    const check = commandLines(steps[make]).indexOf('node scripts/release/check-artifact.mjs "$RUNNER_TEMP/dry-run" updater.key updater.key.pub');
+    assert.equal(check, 0, "the key isn't checked before the overlay is made from it");
+    const bundle = steps.findIndex((step) => isTauriBundle(step) && requires(step.if, DRY_RUN_ONLY));
+    assert.ok(make < bundle, "the overlay is made after the dry run bundles");
+    const downloaded = Object.values(workflow(BUILD).jobs ?? {}).flatMap((job) => (job.steps ?? []).filter((step) => usesAction(step, "actions/download-artifact") && /dry-run-config/.test(textOf(step))));
+    assert.deepEqual(downloaded, [], "a job downloads the overlay");
+  });
+
+  yamlTest("bundle-macos checks that the Tauri configs are the tracked ones, after the downloads and before it bundles", () => {
+    const steps = stepsOf("bundle-macos");
+    const check = steps.findIndex((step) => scriptOf(step).includes("git ls-files --others"));
+    assert.ok(check !== -1, "bundle-macos doesn't check for Tauri configs that aren't tracked");
+    assert.equal(steps[check].if, undefined, "the check must run in release builds and dry runs alike");
+    assert.ok(check > steps.findLastIndex((step) => usesAction(step, "actions/download-artifact")), "an artifact is downloaded after the check");
+    assert.ok(check < steps.findIndex(isTauriBundle), "the check runs after tauri bundle");
+  });
+
+  scriptTest("the config check fails on an untracked or ignored Tauri config, and on a changed tracked one", () => {
+    const step = stepsOf("bundle-macos").find((candidate) => scriptOf(candidate).includes("git ls-files --others"));
+    inTempDir((dir) => {
+      const git = (...args) => {
+        const result = spawnSync("git", ["-c", "user.name=test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", ...args], { cwd: dir, encoding: "utf8" });
+        assert.equal(result.status, 0, result.stderr);
+      };
+      git("init", "-q");
+      mkdirSync(join(dir, "src-tauri"));
+      writeFileSync(join(dir, "src-tauri", "tauri.conf.json"), "{}\n");
+      writeFileSync(join(dir, "src-tauri", "tauri.release.conf.json"), "{}\n");
+      writeFileSync(join(dir, ".gitignore"), "src-tauri/Tauri.toml\n");
+      git("add", ".");
+      git("commit", "-q", "-m", "configs");
+      const check = () => runScript(step.run, { cwd: dir });
+      assert.equal(check().status, 0, "a clean checkout fails the check");
+      for (const [file, text] of [
+        ["src-tauri/tauri.macos.conf.json", '{"build":{"beforeBundleCommand":"id"}}'],
+        ["src-tauri/Tauri.toml", "[build]\n"],
+        ["src-tauri/tauri.conf.json5", "{}"],
+      ]) {
+        writeFileSync(join(dir, file), text);
+        const result = check();
+        assert.equal(result.status, 1, `${file} passes the check`);
+        assert.match(result.stdout, new RegExp(`::error::Tauri configs that aren't tracked are in the checkout: ${file.replaceAll(".", "\\.")}`));
+        rmSync(join(dir, file));
+      }
+      writeFileSync(join(dir, "src-tauri", "tauri.release.conf.json"), '{"build":{"beforeBundleCommand":"id"}}\n');
+      assert.notEqual(check().status, 0, "a changed tracked config passes the check");
+    });
+  });
+
+  yamlTest("each environment sets up its macOS identity with macos-keychain.sh, before tauri bundle", () => {
+    const steps = stepsOf("bundle-macos");
+    const identity = steps.filter((step) => scriptOf(step).includes("macos-keychain.sh"));
+    const dryRun = identity.filter((step) => requires(step.if, DRY_RUN_ONLY));
+    const release = identity.filter((step) => requires(step.if, RELEASE_ONLY));
+    assert.deepEqual([identity.length, dryRun.length, release.length], [2, 1, 1], `one identity step if "${RELEASE_ONLY}" and one if "${DRY_RUN_ONLY}"`);
+    assert.ok(commandLines(dryRun[0]).includes("bash scripts/release/macos-keychain.sh dry-run || status=$?"));
+    assert.deepEqual(dryRun[0].env, { IDENTITY: "Fleetify Dry Run Code Signing" });
+    // The release step only decodes the p12; the password stays in the environment.
+    assert.deepEqual(release[0].env, {
+      APPLE_CERTIFICATE: "${{ secrets.APPLE_CERTIFICATE }}",
+      P12_PASSWORD: "${{ secrets.APPLE_CERTIFICATE_PASSWORD }}",
+      IDENTITY: "${{ vars.APPLE_SIGNING_IDENTITY }}",
+    });
+    assert.ok(commandLines(release[0]).includes('P12="$dir/release.p12" bash scripts/release/macos-keychain.sh import'));
+    assert.doesNotMatch(scriptOf(release[0]), /P12_PASSWORD/, "the release step uses the p12's password itself");
+    const firstBundle = steps.findIndex(isTauriBundle);
+    for (const step of identity) {
+      assert.equal(step["timeout-minutes"], 5, `${step.name} must give up after five minutes`);
+      assert.ok(steps.indexOf(step) < firstBundle, `${step.name} runs after tauri bundle`);
+    }
+    // The dry run keeps what codesign can see even when the script fails.
+    const lines = commandLines(dryRun[0]);
+    const script = lines.indexOf("bash scripts/release/macos-keychain.sh dry-run || status=$?");
+    for (const kept of ['security find-identity -v -p codesigning > "$out/find-identity.txt" 2>&1 || true', 'security list-keychains -d user > "$out/list-keychains.txt" 2>&1 || true']) {
+      assert.ok(lines.indexOf(kept) > script, `the dry run's identity step doesn't keep, after the script: ${kept}`);
+    }
+    assert.equal(lines.at(-1), 'exit "$status"');
+    // The certificate comes from the script's own config: build.yml makes none.
+    assert.doesNotMatch(read(BUILD), /openssl req|-addext/);
+  });
+
+  yamlTest("Tauri signs the macOS app with APPLE_SIGNING_IDENTITY alone, from the keychain the job made", () => {
     // tauri-macos-sign's own import (APPLE_CERTIFICATE) finds only identities
     // named like Apple's, never a self-signed one, and fails the build.
-    const steps = jobOf(BUILD, "bundle").steps ?? [];
+    const steps = stepsOf("bundle-macos");
     const problems = steps
-      .filter((step) => Object.keys(step.env ?? {}).some((name) => name.startsWith("APPLE_CERTIFICATE")) && isTauriBundle(step))
-      .map((step) => `${step.name ?? "a tauri bundle"} gets APPLE_CERTIFICATE`);
-    problems.push(...steps.filter((step) => /APPLE_CERTIFICATE[A-Z_]*=/.test(scriptOf(step))).map((step) => `${step.name ?? "a step"} sets APPLE_CERTIFICATE for later steps`));
+      .filter((step) => isTauriBundle(step) && Object.keys(step.env ?? {}).some((name) => name.startsWith("APPLE_")))
+      .map((step) => `${step.name} gets ${Object.keys(step.env).filter((name) => name.startsWith("APPLE_")).join(", ")}`);
+    problems.push(...steps.filter((step) => /APPLE_CERTIFICATE[A-Z_]*=/.test(scriptOf(step))).map((step) => `${step.name} sets APPLE_CERTIFICATE for later steps`));
     assert.deepEqual(problems, [], problems.join("\n"));
   });
 
-  yamlTest("each environment imports its macOS identity once, trusts it for code signing and checks it is valid", () => {
-    // codesign signs only with a valid identity, and a self-signed
-    // certificate is valid only where it is trusted.
-    const steps = jobOf(BUILD, "bundle").steps ?? [];
-    const keychains = steps.filter((step) => /security create-keychain/.test(scriptOf(step)));
-    const macOS = "runner.os == 'macOS'";
-    const forEnvironment = (clause) => keychains.filter((step) => requires(step.if, clause) && requires(step.if, macOS));
-    assert.deepEqual(
-      [keychains.length, forEnvironment(RELEASE_ONLY).length, forEnvironment(DRY_RUN_ONLY).length],
-      [2, 1, 1],
-      `the bundle job must make one keychain if "${RELEASE_ONLY} && ${macOS}" and one if "${DRY_RUN_ONLY} && ${macOS}"`,
-    );
-    const firstBundle = steps.findIndex(isTauriBundle);
-    for (const step of keychains) {
-      const script = scriptOf(step);
-      const where = step.name ?? "a keychain step";
-      assert.ok(steps.indexOf(step) < firstBundle, `${where} runs after tauri bundle`);
-      for (const command of [/security set-key-partition-list /, /security list-keychains -d user -s "\$keychain"/]) {
-        assert.match(script, command, `${where} misses ${command}`);
-      }
-      const trust = script.search(/sudo security add-trusted-cert -d -r trustRoot -p codeSign -k \/Library\/Keychains\/System\.keychain "\$cert"/);
-      const check = script.search(/security find-identity -v -p codesigning "\$keychain"/);
-      assert.ok(trust !== -1, `${where} doesn't trust its certificate for code signing`);
-      assert.ok(check > trust, `${where} doesn't check, after trusting it, that the identity is valid`);
-    }
-    // The certificate alone: the key goes nowhere but into the keychain.
-    assert.match(scriptOf(forEnvironment(RELEASE_ONLY)[0]), /openssl pkcs12 [^\n]*-nokeys/, "the release certificate isn't read out of the p12 without its key");
-    const cleanup = steps.find((step) => /security delete-keychain/.test(scriptOf(step)));
-    assert.ok(cleanup && requires(cleanup.if, "always()") && requires(cleanup.if, macOS), "the keychain isn't deleted whatever happened");
-  });
-
-  yamlTest("each identity step signs a probe binary the way Tauri will, before Tauri runs", () => {
-    // Tauri runs codesign --force -s <identity> --options runtime
-    // --entitlements <file> <binary>, without --keychain. The probe does the
-    // same, so a refusal shows before the bundling, with what codesign sees.
-    const entitlements = `src-tauri/${JSON.parse(read("src-tauri/tauri.conf.json")).bundle.macOS.entitlements}`;
-    const steps = jobOf(BUILD, "bundle").steps ?? [];
-    const identitySteps = steps.filter((step) => /security create-keychain/.test(scriptOf(step)));
-    assert.equal(identitySteps.length, 2, "two identity steps make a keychain");
-    const firstBundle = steps.findIndex(isTauriBundle);
-    for (const step of identitySteps) {
-      const where = step.name ?? "an identity step";
-      const script = scriptOf(step);
-      const signs = script.split("\n").filter((line) => /(^|\s)codesign --force(\s|$)/.test(line));
-      assert.ok(signs.length > 0, `${where} doesn't sign a probe`);
-      const [first] = signs;
-      assert.doesNotMatch(first, /--keychain/, `${where}'s first probe names a keychain, which Tauri's codesign doesn't`);
-      assert.match(first, /\s-s "\$IDENTITY"\s/, `${where}'s first probe doesn't sign as "$IDENTITY"`);
-      assert.match(first, /\s--options runtime\s/, `${where}'s probe doesn't turn the hardened runtime on`);
-      assert.ok(first.includes(` --entitlements ${entitlements} "$probe"`), `${where}'s probe doesn't sign "$probe" with ${entitlements}`);
-      assert.match(script, /^\s*probe="\$dir\//m, `${where}'s probe isn't in $dir, the step's own folder`);
-      assert.match(script, /codesign --verify --strict "\$probe"/, `${where} doesn't verify the probe's signature`);
-      const probeAt = script.indexOf(first);
-      assert.ok(probeAt > script.search(/sudo security add-trusted-cert /), `${where} probes before it trusts the certificate`);
-      assert.ok(probeAt > script.search(/security find-identity -v -p codesigning "\$keychain"/), `${where} probes before it checks the identity is valid`);
-      // What it prints when the probe fails: every identity codesign can see,
-      // the search list, and a retry with the keychain and one by SHA-1.
-      for (const diagnostic of [
-        /^\s*security find-identity -v -p codesigning( \|\||$)/m,
-        /^\s*security list-keychains -d user( \|\||$)/m,
-        /\s--keychain "\$keychain"/,
-        /openssl x509 -in "\$cert" -noout -fingerprint -sha1/,
-      ]) {
-        assert.match(script, diagnostic, `${where} misses the diagnostic ${diagnostic}`);
-      }
-      assert.ok(steps.indexOf(step) < firstBundle, `${where} runs after tauri bundle`);
-    }
-  });
-
-  yamlTest("both tauri bundle steps run with --verbose, so the log shows each command the bundler runs", () => {
-    const bundles = (jobOf(BUILD, "bundle").steps ?? []).filter(isTauriBundle);
-    assert.equal(bundles.length, 2, "the bundle job runs tauri bundle once per environment");
-    for (const step of bundles) {
-      assert.match(scriptOf(step), /(^|\s)tauri bundle --verbose(\s|$)/, `${step.name ?? "a tauri bundle"} doesn't pass --verbose`);
-    }
-  });
-
-  yamlTest("the macOS identity steps and the keychain cleanup give up after five minutes", () => {
-    // A security command waiting on a dialog then fails in minutes, and the
-    // job keeps its logs; a cancelled always() step needs a force-cancel,
-    // which loses them.
-    const steps = jobOf(BUILD, "bundle").steps ?? [];
-    const keychainSteps = steps.filter((step) => /security (create|delete)-keychain/.test(scriptOf(step)));
-    assert.equal(keychainSteps.length, 3, "two identity steps and one cleanup make or delete a keychain");
-    for (const [i, step] of keychainSteps.entries()) {
-      assert.equal(step["timeout-minutes"], 5, `${stepLabel(step, i)} must have timeout-minutes: 5`);
-    }
-  });
-
-  yamlTest("no step removes the macOS trust setting, which waits for a dialog no one can answer", () => {
+  yamlTest("bundle-macos deletes the keychain right after tauri bundle, whatever happened, and keeps the trust setting", () => {
     // GitHub discards a hosted runner's VM after the job, trust setting and
     // all, while removing it waits for an authorization dialog: the second
     // dry run's cleanup hung there for 40 minutes.
-    const found = Object.entries(workflow(BUILD).jobs ?? {}).flatMap(([id, job]) =>
-      (job.steps ?? []).flatMap((step, i) => (/remove-trusted-cert/.test(scriptOf(step)) ? [`job ${id}, ${stepLabel(step, i)}`] : [])),
-    );
-    assert.deepEqual(found, [], `these steps remove a trust setting:\n${found.join("\n")}`);
+    const steps = stepsOf("bundle-macos");
+    const cleanup = steps.findIndex((step) => /security delete-keychain/.test(scriptOf(step)));
+    assert.equal(cleanup, steps.findLastIndex(isTauriBundle) + 1, "the keychain isn't deleted right after tauri bundle");
+    assert.deepEqual([steps[cleanup].if, steps[cleanup]["timeout-minutes"]], ["always()", 5]);
+    assert.ok(commandLines(steps[cleanup]).includes('rm -rf "$RUNNER_TEMP/codesign"'));
+    const script = read("scripts/release/macos-keychain.sh");
+    for (const [what, text] of [["build.yml", read(BUILD)], ["macos-keychain.sh", script]]) {
+      assert.doesNotMatch(text, /remove-trusted-cert/, `${what} removes a trust setting`);
+    }
+    const sudo = script.split("\n").filter((line) => /(^|\s)sudo\s/.test(line) && !line.trim().startsWith("#"));
+    assert.deepEqual(sudo.map((line) => line.trim().split(" ").slice(0, 3).join(" ")), ["sudo security add-trusted-cert"], "macos-keychain.sh runs another sudo command");
   });
 
-  yamlTest("scan-secrets.mjs scans the UI and the binaries after the bundling", () => {
-    const steps = jobOf(BUILD, "bundle").steps ?? [];
+  yamlTest("bundle-macos checks the app's signature with macos-signature.mjs in every build, before it collects the bundles", () => {
+    const steps = stepsOf("bundle-macos");
+    const check = steps.findIndex((step) => commandLines(step).includes('node scripts/release/macos-signature.mjs "target/$TRIPLE/release/bundle/macos/Fleetify.app"'));
+    assert.ok(check !== -1, "bundle-macos doesn't check the app's signature");
+    assert.equal(steps[check].if, undefined, "the signature check must run in release builds and dry runs alike");
+    assert.ok(check > steps.findLastIndex(isTauriBundle), "the signature is checked before the app is bundled");
+    assert.ok(check < steps.findIndex((step) => scriptOf(step).includes("collect-bundles.mjs")), "the bundles are collected before the signature is checked");
+  });
+
+  yamlTest("scan-secrets.mjs scans the UI and the binaries in every compile leg, after the app is built", () => {
+    const steps = stepsOf("compile");
     const scan = steps.findIndex((step) => scriptOf(step).includes("scan-secrets.mjs"));
-    assert.ok(scan !== -1, "the bundle job doesn't run scan-secrets.mjs");
-    assert.ok(scan > steps.findLastIndex(isTauriBundle), "scan-secrets.mjs runs before a tauri bundle");
+    assert.ok(scan !== -1, "the compile job doesn't run scan-secrets.mjs");
+    assert.ok(scan > steps.findLastIndex(isTauriBuild), "scan-secrets.mjs runs before the app is built");
     assert.equal(steps[scan].if, undefined, "the secret scan must run in every build");
-    const script = scriptOf(steps[scan]);
     for (const path of [/\sdist\s/, /release\/fleetify-app/, /release\/fleet-\*-mcp/]) {
-      assert.match(script, path, `the secret scan misses ${path}`);
+      assert.match(scriptOf(steps[scan]), path, `the secret scan misses ${path}`);
     }
   });
 
   scriptTest("the updater check fails a release build with the dry run's overlay, and a dry run without it", () => {
-    const steps = jobOf(BUILD, "bundle").steps ?? [];
+    const steps = stepsOf("compile");
     const step = steps.find((candidate) => scriptOf(candidate).includes("127.0.0.1:18080/update"));
-    assert.ok(step, "the bundle job doesn't check the updater settings compiled into the app");
+    assert.ok(step, "the compile job doesn't check the updater settings compiled into the app");
     assert.equal(step.if, undefined, "the check must run in release builds and dry runs alike");
-    assert.ok(steps.indexOf(step) > steps.findLastIndex(isTauriBundle), "the check runs before a tauri bundle");
+    assert.ok(steps.indexOf(step) > steps.findLastIndex(isTauriBuild), "the check runs before the app is built");
     const shipped = JSON.parse(read("src-tauri/tauri.conf.json")).plugins.updater;
     const [overlay] = dryRunConfig({ pubkey: shipped.pubkey }).plugins.updater.endpoints;
     const triple = "x86_64-unknown-linux-gnu";
@@ -1031,54 +1353,137 @@ describe("build.yml", () => {
     });
   });
 
-  yamlTest("collect-bundles.mjs fills an empty folder before anything else goes in", () => {
-    // collect refuses a folder that holds anything, so the artifact holds only this build's files.
-    const steps = jobOf(BUILD, "bundle").steps ?? [];
+  yamlTest("the Linux and Windows legs collect their unsigned bundles into an empty folder, add the AppImage's libraries, and upload them", () => {
+    const steps = stepsOf("compile");
     const collect = steps.findIndex((step) => scriptOf(step).includes("collect-bundles.mjs"));
-    assert.ok(collect !== -1, "the bundle job doesn't run collect-bundles.mjs");
-    assert.match(scriptOf(steps[collect]), /--out "\$RUNNER_TEMP\/bundles"/);
-    const earlier = steps
-      .slice(0, collect)
-      .filter((step) => /RUNNER_TEMP\/bundles|runner\.temp \}\}\/bundles/.test(textOf(step)))
-      .map(stepLabel);
-    assert.deepEqual(earlier, [], "these steps use the bundles folder before collect-bundles.mjs fills it");
-    const upload = steps.findIndex((step) => usesAction(step, "actions/upload-artifact") && step.with?.name === "bundles-${{ matrix.triple }}");
-    assert.ok(upload !== -1, "the bundle job doesn't upload bundles-<triple>");
-    assert.deepEqual([steps[upload].with?.path, steps[upload].with?.["if-no-files-found"], steps[upload].with?.["retention-days"]], ["${{ runner.temp }}/bundles", "error", 7]);
-    for (const file of ["updater-pubkey.txt", "LINUX-APPIMAGE-LIBRARIES.txt"]) {
-      const at = steps.findIndex((step) => textOf(step).includes(file));
-      assert.ok(at > collect && at < upload, `${file} isn't added after collect-bundles.mjs and before the upload`);
+    assert.ok(collect !== -1, "the compile job doesn't run collect-bundles.mjs");
+    assert.equal(steps[collect].if, NOT_MACOS);
+    assert.ok(commandLines(steps[collect]).includes('node scripts/release/collect-bundles.mjs --unsigned --target "$TRIPLE" --version "$VERSION" --out "$RUNNER_TEMP/unsigned"'));
+    assert.ok(collect > steps.findLastIndex(isTauriBundle), "the bundles are collected before they're made");
+    const earlier = steps.slice(0, collect).filter((step) => /RUNNER_TEMP\/unsigned|runner\.temp \}\}\/unsigned/.test(textOf(step))).map(stepLabel);
+    assert.deepEqual(earlier, [], "these steps use the folder before collect-bundles.mjs fills it");
+    const upload = steps.findIndex((step) => usesAction(step, "actions/upload-artifact") && step.with?.name === "unsigned-${{ matrix.triple }}");
+    assert.ok(upload !== -1, "the compile job doesn't upload unsigned-<triple>");
+    assert.deepEqual([steps[upload].if, steps[upload].with?.path, steps[upload].with?.["if-no-files-found"]], [NOT_MACOS, "${{ runner.temp }}/unsigned", "error"]);
+    const libraries = steps.findIndex((step) => textOf(step).includes("RUNNER_TEMP/unsigned/LINUX-APPIMAGE-LIBRARIES.txt"));
+    assert.ok(libraries > collect && libraries < upload, "LINUX-APPIMAGE-LIBRARIES.txt isn't added after collect-bundles.mjs and before the upload");
+    assert.equal(steps[libraries].if, "runner.os == 'Linux'");
+  });
+
+  yamlTest("sign signs each updater artifact with the Tauri CLI's signer: the release key from the environment, the run's from its file", () => {
+    const steps = stepsOf("sign");
+    const signs = steps.filter((step) => /(^|\s)npx --no tauri signer sign /m.test(scriptOf(step)));
+    const release = signs.filter((step) => requires(step.if, RELEASE_ONLY));
+    const dryRun = signs.filter((step) => requires(step.if, DRY_RUN_ONLY));
+    assert.deepEqual([signs.length, release.length, dryRun.length], [2, 1, 1], `sign must sign once if "${RELEASE_ONLY}" and once if "${DRY_RUN_ONLY}"`);
+    for (const step of signs) {
+      assert.equal(commandLines(step)[0], 'updaters=$(node scripts/release/release-assets.mjs updaters "$TRIPLE" "$VERSION")', `${step.name} doesn't sign release-assets.mjs's updater artifacts`);
+    }
+    assert.deepEqual(release[0].env, {
+      TAURI_SIGNING_PRIVATE_KEY: "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}",
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: "${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}",
+    });
+    assert.ok(commandLines(release[0]).includes('npx --no tauri signer sign "$RUNNER_TEMP/bundles/$name"'));
+    assert.equal(dryRun[0].env, undefined);
+    assert.ok(commandLines(dryRun[0]).includes('npx --no tauri signer sign -f "$RUNNER_TEMP/dry-run/updater.key" -p "" "$RUNNER_TEMP/bundles/$name"'));
+  });
+
+  scriptTest("sign's loop signs every updater artifact of the target, and nothing else", () => {
+    const step = stepsOf("sign").find((candidate) => requires(candidate.if, RELEASE_ONLY) && /tauri signer sign/.test(scriptOf(candidate)));
+    for (const triple of TARGETS.filter((target) => !isMacOS(target)).map(({ triple: t }) => t)) {
+      inTempDir((dir) => {
+        const bin = join(dir, "bin");
+        mkdirSync(bin);
+        writeFileSync(join(bin, "npx"), `#!/bin/sh\nprintf '%s\\n' "$*" >> "${join(dir, "npx.log")}"\n`, { mode: 0o755 });
+        const result = runScript(step.run, { cwd: ROOT, env: { PATH: `${bin}:${process.env.PATH}`, RUNNER_TEMP: dir, TRIPLE: triple, VERSION: "1.2.3" } });
+        assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
+        assert.deepEqual(
+          readFileSync(join(dir, "npx.log"), "utf8").trim().split("\n"),
+          updaterAssets(triple, "1.2.3").map((name) => `--no tauri signer sign ${join(dir, "bundles", name)}`),
+          triple,
+        );
+      });
     }
   });
 
-  yamlTest("both build jobs install CONTRIBUTING's Linux packages", () => {
-    // compile builds against them; bundle's AppImage carries the libraries,
-    // which linuxdeploy copies from the system.
+  yamlTest("every updater signature is checked before upload: against the shipped key in a release, the run's in a dry run", () => {
+    for (const id of KEYED_JOBS) {
+      const steps = stepsOf(id);
+      const verifies = steps.filter((step) => scriptOf(step).includes("minisign.mjs verify"));
+      const release = verifies.filter((step) => requires(step.if, RELEASE_ONLY));
+      const dryRun = verifies.filter((step) => requires(step.if, DRY_RUN_ONLY));
+      assert.deepEqual([verifies.length, release.length, dryRun.length], [2, 1, 1], `job ${id} must check the signatures once per environment`);
+      assert.equal(commandLines(release[0]).at(-1), `node scripts/release/minisign.mjs verify --pubkey-config src-tauri/tauri.conf.json --expect-key-id ${UPDATER_KEY_ID} "\${files[@]}"`);
+      assert.equal(commandLines(dryRun[0]).at(-1), 'node scripts/release/minisign.mjs verify --pubkey-file "$RUNNER_TEMP/dry-run/updater.key.pub" "${files[@]}"');
+      for (const step of verifies) {
+        assert.equal(commandLines(step)[0], 'updaters=$(node scripts/release/release-assets.mjs updaters "$TRIPLE" "$VERSION")', `${step.name} doesn't check every updater artifact`);
+      }
+      const upload = steps.findIndex((step) => usesAction(step, "actions/upload-artifact") && step.with?.name === "bundles-${{ matrix.triple }}");
+      const signed = Math.max(steps.findLastIndex(isTauriBundle), steps.findLastIndex((step) => /tauri signer sign/.test(scriptOf(step))));
+      for (const step of verifies) {
+        const at = steps.indexOf(step);
+        assert.ok(at > signed && at < upload, `job ${id}: ${step.name} must run after the signing and before the upload`);
+      }
+    }
+  });
+
+  yamlTest("sign and bundle-macos upload bundles-<triple> after the bundles are complete", () => {
+    // assemble.mjs takes exactly these artifacts: the files under their
+    // release names, their signatures, and in a dry run the run's public key.
+    for (const [id, folderFilledBy] of [
+      ["sign", (step) => usesAction(step, "actions/download-artifact") && step.with?.name === "unsigned-${{ matrix.triple }}"],
+      ["bundle-macos", (step) => commandLines(step).includes('node scripts/release/collect-bundles.mjs --target "$TRIPLE" --version "$VERSION" --out "$RUNNER_TEMP/bundles"')],
+    ]) {
+      const steps = stepsOf(id);
+      const filled = steps.findIndex(folderFilledBy);
+      assert.ok(filled !== -1, `job ${id} doesn't fill its bundles folder as expected`);
+      const earlier = steps.slice(0, filled).filter((step) => /RUNNER_TEMP\/bundles|runner\.temp \}\}\/bundles/.test(textOf(step))).map(stepLabel);
+      assert.deepEqual(earlier, [], `job ${id}: these steps use the bundles folder before it's filled`);
+      const upload = steps.findIndex((step) => usesAction(step, "actions/upload-artifact") && step.with?.name === "bundles-${{ matrix.triple }}");
+      assert.deepEqual([steps[upload]?.with?.path, steps[upload]?.with?.["if-no-files-found"]], ["${{ runner.temp }}/bundles", "error"], `job ${id}'s upload`);
+      const pubkey = steps.findIndex((step) => textOf(step).includes("updater-pubkey.txt"));
+      assert.ok(pubkey > filled && pubkey < upload, `job ${id}: updater-pubkey.txt isn't added after the folder is filled and before the upload`);
+    }
+    const collect = stepsOf("bundle-macos").findIndex((step) => scriptOf(step).includes("collect-bundles.mjs"));
+    assert.ok(collect > stepsOf("bundle-macos").findIndex((step) => scriptOf(step).includes("macos-signature.mjs")), "bundle-macos collects before it checks the signature");
+  });
+
+  yamlTest("compiled-* and unsigned-* are kept a week, as a release's approval can come days later, and the dry run's key a day", () => {
+    const uploads = Object.values(workflow(BUILD).jobs ?? {}).flatMap((job) => (job.steps ?? []).filter((step) => usesAction(step, "actions/upload-artifact")));
+    const retention = {};
+    for (const step of uploads) retention[step.with.name] = [...new Set([...(retention[step.with.name] ?? []), step.with["retention-days"]])];
+    assert.deepEqual(retention, {
+      "third-party-notices": [7],
+      "unsigned-${{ matrix.triple }}": [7],
+      "compiled-${{ matrix.triple }}": [7],
+      "updater-key-${{ matrix.triple }}": [1],
+      "bundles-${{ matrix.triple }}": [7],
+      "codesign-output-${{ matrix.triple }}": [7],
+    });
+  });
+
+  yamlTest("the compile job installs CONTRIBUTING's Linux packages", () => {
+    // It builds against them, and the AppImage carries the libraries, which
+    // linuxdeploy copies from the system.
     const documented = aptPackages(codeBlockUnder("CONTRIBUTING.md", "### Linux"));
-    for (const id of ["compile", "bundle"]) {
-      const installed = new Set((jobOf(BUILD, id).steps ?? []).flatMap((step) => aptPackages(scriptOf(step))));
-      assert.deepEqual(documented.filter((name) => !installed.has(name)), [], `job ${id} misses these packages that CONTRIBUTING.md lists`);
-    }
+    const installed = new Set(stepsOf("compile").flatMap((step) => aptPackages(scriptOf(step))));
+    assert.deepEqual(documented.filter((name) => !installed.has(name)), [], "the compile job misses these packages that CONTRIBUTING.md lists");
   });
 
-  yamlTest("a macOS dry run keeps codesign's own output, whatever the checks say", () => {
+  yamlTest("a macOS dry run keeps codesign's own output and the app's extended attributes, whatever the checks say", () => {
     // So the codesign fixtures of macos-signature.test.mjs can be replaced with real output.
-    const steps = jobOf(BUILD, "bundle").steps ?? [];
-    const when = ["always()", DRY_RUN_ONLY, "runner.os == 'macOS'"];
-    const capture = steps.find((step) => /\bcodesign\b/.test(scriptOf(step)) && ["--verify", "-r-", "-vvv", "--entitlements"].every((arg) => scriptOf(step).includes(arg)) && !scriptOf(step).includes("macos-signature.mjs"));
+    const steps = stepsOf("bundle-macos");
+    const when = ["always()", DRY_RUN_ONLY];
+    const capture = steps.find((step) => ["--verify", "-r-", "-vvv", "--entitlements"].every((arg) => scriptOf(step).includes(arg)) && /\bcodesign\b/.test(scriptOf(step)));
     assert.ok(capture, "no step keeps the output of the four codesign commands");
     assert.deepEqual(when.filter((clause) => !requires(capture.if, clause)), [], `the capture's condition must hold ${when.join(" && ")}`);
-    // The identities codesign can see, and the search list, kept whether the
-    // app was built or not, so a failed signing leaves them even if the
-    // job's log is lost.
-    const appCheck = scriptOf(capture).search(/if \[ ! -d "\$app" \]/);
-    for (const command of [/security find-identity -v -p codesigning >/, /security list-keychains -d user >/]) {
-      const at = scriptOf(capture).search(command);
-      assert.ok(at !== -1 && at < appCheck, `the capture must save ${command} before it looks for the app`);
-    }
+    // Tauri clears the app's extended attributes between making and signing it.
+    const lines = commandLines(capture);
+    const xattr = lines.indexOf('xattr -lr "$app" > "$out/xattr.txt" 2>&1 || true');
+    assert.ok(xattr > lines.findIndex((line) => line.startsWith('if [ ! -d "$app" ]')), "the capture doesn't keep the app's extended attributes once it knows the app is there");
     const upload = steps.find((step) => usesAction(step, "actions/upload-artifact") && String(step.with?.name).startsWith("codesign-output-"));
     assert.ok(upload, "codesign's output isn't uploaded");
-    assert.deepEqual([upload.with.name, upload.with["retention-days"]], ["codesign-output-${{ matrix.triple }}", 7]);
+    assert.equal(upload.with.name, "codesign-output-${{ matrix.triple }}");
     assert.deepEqual(when.filter((clause) => !requires(upload.if, clause)), [], `the upload's condition must hold ${when.join(" && ")}`);
   });
 });

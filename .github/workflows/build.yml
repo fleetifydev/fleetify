@@ -1,23 +1,35 @@
 # Builds Fleetify's release bundles, for the release dry run
-# (release-dry-run.yml) and the release. Each release target is compiled in
-# one job and bundled in another, so no dependency's code runs near a key:
+# (release-dry-run.yml) and the release. Each target is compiled in a job
+# that holds no key, and signed in a job that runs nothing it didn't check:
 # - compile builds the app, its sidecars and the UI, which runs the code of
 #   every dependency: crate build scripts, proc macros, Vite plugins. It runs
-#   in no environment and sees no secret.
-# - bundle runs only the Tauri CLI's bundler on what compile built, in the
-#   environment the caller names, which holds the signing keys.
+#   in no environment and sees no secret. On Linux and Windows it also makes
+#   the bundles, without signing them, and uploads unsigned-<triple>; on
+#   macOS, whose bundles carry the signature inside, it uploads the app and
+#   its sidecars as compiled-<triple>.
+# - sign, for Linux and Windows, and bundle-macos, for macOS, run in the
+#   environment the caller names, which holds the signing keys. They run
+#   only GitHub's own actions, pinned to a commit, the Tauri CLI the
+#   lockfile pins (npx --no tauri, so npx downloads nothing), system tools
+#   and the repository's scripts. Each downloads an artifact into a folder
+#   of its own and checks that it holds exactly the files expected before it
+#   uses one; bundle-macos also reads compiled.tar member by member before
+#   it copies the listed files into the checkout. sign signs the updater
+#   artifacts with the Tauri CLI's signer; bundle-macos bundles and signs
+#   the app, and is the only job with the macOS identity.
 # npm installs everywhere with --ignore-scripts: no install script runs.
-# Each bundle job uploads bundles-<triple>: that target's files under their
+# Each of the two uploads bundles-<triple>: that target's files under their
 # release names (scripts/release/release-assets.mjs), which assemble.mjs
 # turns into a release together with the third-party-notices artifact.
 #
 # The environment input picks the signing keys:
 # - release: the updater key and the macOS identity of the release
 #   environment, whose deployments wait for the owner's approval.
-# - dry-run: keys made for the run and deleted after it, and an updater
-#   overlay (dry-run-config.mjs) whose only endpoint is the smoke's update
-#   server on 127.0.0.1, over plain http. What it builds stays in the run's
-#   artifacts.
+# - dry-run: keys made for the run, and an updater overlay
+#   (dry-run-config.mjs) whose only endpoint is the smoke's update server on
+#   127.0.0.1, over plain http. The run's updater key stays among the run's
+#   artifacts for a day, as only this run's builds trust it; the macOS
+#   identity goes with the job. What the run builds stays in its artifacts.
 # Either way the build starts from a clean target folder, without a cache.
 #
 # Every job uses the Tauri CLI directly, so the asset names stay the ones
@@ -57,7 +69,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      # Every bundle job needs this one, so a bad input stops the run before
+      # Every job after this one needs it, so a bad input stops the run before
       # any job enters an environment.
       - name: Check the inputs
         env:
@@ -110,7 +122,7 @@ jobs:
           retention-days: 7
 
   compile:
-    name: Compile (${{ matrix.triple }})
+    name: Compile (${{ matrix.label }})
     needs: notices
     runs-on: ${{ matrix.runner }}
     # A cold build compiles the whole workspace in release mode, whisper.cpp
@@ -125,17 +137,24 @@ jobs:
           - triple: x86_64-unknown-linux-gnu
             runner: ubuntu-22.04
             bundles: [appimage, deb, rpm]
+            label: Linux x64
           - triple: x86_64-pc-windows-msvc
             runner: windows-2025
             bundles: [nsis]
+            label: Windows x64
           - triple: aarch64-apple-darwin
             runner: macos-15
             bundles: [app, dmg]
+            label: macOS Apple Silicon
           - triple: x86_64-apple-darwin
             runner: macos-15-intel
             bundles: [app, dmg]
+            label: macOS Intel
     env:
+      ENVIRONMENT: ${{ inputs.environment }}
+      VERSION: ${{ inputs.version }}
       TRIPLE: ${{ matrix.triple }}
+      BUNDLES: ${{ join(matrix.bundles, ',') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -152,7 +171,8 @@ jobs:
           rustup toolchain install
           rustup show active-toolchain
       # CONTRIBUTING.md's Linux packages, which a script test keeps in step
-      # with this list.
+      # with this list. The AppImage carries the libraries the app links to,
+      # which linuxdeploy copies from this system.
       - name: System packages (Linux)
         if: runner.os == 'Linux'
         run: |
@@ -168,20 +188,25 @@ jobs:
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: third-party-notices
-          path: .
+          path: ${{ runner.temp }}/notices
+      - name: Check the notices and put them in place
+        run: |
+          node scripts/release/check-artifact.mjs "$RUNNER_TEMP/notices" THIRD-PARTY-NOTICES
+          cp "$RUNNER_TEMP/notices/THIRD-PARTY-NOTICES" THIRD-PARTY-NOTICES
       # A dry run signs its updates with a key made for the run. The overlay
       # gives the updater that key's public half and one endpoint, the
       # smoke's update server on 127.0.0.1:18080, which speaks plain http.
-      # Both are compiled into the app.
+      # Both are compiled into the app. Only the key goes to the jobs that
+      # sign; bundle-macos makes the overlay again from the public key.
       - name: Updater key and overlay for this run (dry run)
         if: inputs.environment == 'dry-run'
         run: |
-          mkdir -p "$RUNNER_TEMP/dry-run"
-          npx tauri signer generate --ci -p "" -w "$RUNNER_TEMP/dry-run/updater.key" > /dev/null
-          node scripts/release/dry-run-config.mjs --pubkey-file "$RUNNER_TEMP/dry-run/updater.key.pub" --out "$RUNNER_TEMP/dry-run/dry-run.json"
+          mkdir -p "$RUNNER_TEMP/dry-run" "$RUNNER_TEMP/dry-run-config"
+          npx --no tauri signer generate --ci -p "" -w "$RUNNER_TEMP/dry-run/updater.key" > /dev/null
+          node scripts/release/dry-run-config.mjs --pubkey-file "$RUNNER_TEMP/dry-run/updater.key.pub" --out "$RUNNER_TEMP/dry-run-config/dry-run.json"
       - name: Stage the MCP sidecars
         run: node scripts/build-sidecars.mjs --release --target "$TRIPLE"
-      # The app, with the UI built in; the bundle job bundles and signs it.
+      # The app, with the UI built in.
       - name: Compile the app (release)
         if: inputs.environment == 'release'
         env:
@@ -189,7 +214,7 @@ jobs:
           POSTHOG_HOST: ${{ vars.POSTHOG_HOST }}
           VITE_POSTHOG_KEY: ${{ vars.VITE_POSTHOG_KEY }}
           VITE_POSTHOG_HOST: ${{ vars.VITE_POSTHOG_HOST }}
-        run: npx tauri build --ci --target "$TRIPLE" --no-bundle --config src-tauri/tauri.release.conf.json
+        run: npx --no tauri build --ci --target "$TRIPLE" --no-bundle --config src-tauri/tauri.release.conf.json
       - name: Compile the app (dry run)
         if: inputs.environment == 'dry-run'
         env:
@@ -198,313 +223,11 @@ jobs:
           VITE_POSTHOG_KEY: ${{ vars.VITE_POSTHOG_KEY }}
           VITE_POSTHOG_HOST: ${{ vars.VITE_POSTHOG_HOST }}
         run: >-
-          npx tauri build --ci --target "$TRIPLE" --no-bundle
-          --config src-tauri/tauri.release.conf.json --config "$RUNNER_TEMP/dry-run/dry-run.json"
-      # What the bundler needs, and the secret scan reads: the app, the
-      # sidecars beside it and their staged copies, and the UI. tar keeps
-      # the binaries executable, which an artifact's zip doesn't.
-      - name: Pack the compiled files
-        run: |
-          exe=""
-          if [ "$RUNNER_OS" = Windows ]; then exe=.exe; fi
-          tar -cf compiled.tar "target/$TRIPLE/release/fleetify-app$exe" target/"$TRIPLE"/release/fleet-*-mcp"$exe" src-tauri/binaries dist
-      - name: Upload the compiled files
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: compiled-${{ matrix.triple }}
-          path: compiled.tar
-          if-no-files-found: error
-          retention-days: 1
-      # The bundle job signs the updater artifacts with the run's key. Only
-      # this run's dry-run builds trust it, so a copy among the run's own
-      # artifacts, kept for a day, puts nothing else at risk.
-      - name: Upload the run's updater key (dry run)
-        if: inputs.environment == 'dry-run'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: updater-key-${{ matrix.triple }}
-          path: ${{ runner.temp }}/dry-run
-          if-no-files-found: error
-          retention-days: 1
-      - name: Delete the run's updater key (dry run)
-        if: always() && inputs.environment == 'dry-run'
-        run: rm -f "$RUNNER_TEMP/dry-run/updater.key" "$RUNNER_TEMP/dry-run/updater.key.pub" "$RUNNER_TEMP/dry-run/dry-run.json"
-
-  bundle:
-    name: Bundle (${{ matrix.triple }})
-    needs: compile
-    runs-on: ${{ matrix.runner }}
-    environment: ${{ inputs.environment }}
-    timeout-minutes: 60
-    strategy:
-      # Each target reports on its own, so one failing doesn't cancel the rest.
-      fail-fast: false
-      # release-assets.mjs's TARGETS, which a script test keeps this list equal to.
-      matrix:
-        include:
-          - triple: x86_64-unknown-linux-gnu
-            runner: ubuntu-22.04
-            bundles: [appimage, deb, rpm]
-          - triple: x86_64-pc-windows-msvc
-            runner: windows-2025
-            bundles: [nsis]
-          - triple: aarch64-apple-darwin
-            runner: macos-15
-            bundles: [app, dmg]
-          - triple: x86_64-apple-darwin
-            runner: macos-15-intel
-            bundles: [app, dmg]
-    env:
-      ENVIRONMENT: ${{ inputs.environment }}
-      VERSION: ${{ inputs.version }}
-      TRIPLE: ${{ matrix.triple }}
-      BUNDLES: ${{ join(matrix.bundles, ',') }}
-    steps:
-      # The config, the icons and the bundled resources.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ inputs.ref }}
-          persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version-file: .nvmrc
-          package-manager-cache: false
-      # tauri bundle asks `cargo metadata --no-deps` where the target folder
-      # is. That reads the manifests: it compiles nothing and runs no build
-      # script.
-      - name: Rust toolchain (rust-toolchain.toml)
-        run: |
-          rustup toolchain install
-          rustup show active-toolchain
-      # The AppImage carries the libraries the app links to, which linuxdeploy
-      # copies from this system, and appimage-libraries.mjs asks its dpkg
-      # where each one came from. These are Ubuntu's packages, as in compile.
-      - name: System packages (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential curl wget file pkg-config cmake libclang-dev \
-            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libasound2-dev libdbus-1-dev patchelf
-      # For the Tauri CLI. No install script runs.
-      - name: npm packages
-        run: npm ci --ignore-scripts
-      - name: Download the compiled files
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: compiled-${{ matrix.triple }}
-          path: .
-      - name: Unpack the compiled files
-        run: |
-          tar -xf compiled.tar
-          rm compiled.tar
-      # tauri.release.conf.json bundles ./THIRD-PARTY-NOTICES as legal/THIRD-PARTY-NOTICES.
-      - name: Download the notices
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: third-party-notices
-          path: .
-      - name: Download the run's updater key (dry run)
-        if: inputs.environment == 'dry-run'
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: updater-key-${{ matrix.triple }}
-          path: ${{ runner.temp }}/dry-run
-      # Each macOS keychain step gives up after five minutes, so a security
-      # command waiting on a dialog fails the job with its logs kept.
-      #
-      # The macOS signing identity goes into a keychain the job makes, and
-      # Tauri signs with APPLE_SIGNING_IDENTITY alone, which codesign looks
-      # up in the keychain search list:
-      # - Tauri's own import, through APPLE_CERTIFICATE, looks only for
-      #   certificates named like Apple's ("Developer ID Application: …",
-      #   with an organizational unit), so it can't find a self-signed one
-      #   (tauri-macos-sign 2.3.4, which tauri-cli 2.11.2 uses).
-      # - codesign signs only with a valid identity, and a self-signed
-      #   certificate is valid only where it is trusted. Untrusted, the first
-      #   dry run's identity showed as CSSMERR_TP_NOT_TRUSTED, with 0 valid
-      #   identities, and codesign failed with "The specified item could not
-      #   be found in the keychain". So the certificate is trusted for code
-      #   signing in the System keychain, and the step checks that
-      #   `security find-identity -v` lists the identity before Tauri runs.
-      # The keychain doesn't lock on its own while the job runs, and goes at
-      # the end of the job, whatever happened. The trust setting stays: GitHub
-      # discards a hosted runner's VM after the job, and removing the setting
-      # waits for an authorization dialog no one can answer.
-      #
-      # A dry run makes an identity of its own, shaped like the release one:
-      # self-signed, for code signing only.
-      - name: Code-signing identity for this run (macOS dry run)
-        if: inputs.environment == 'dry-run' && runner.os == 'macOS'
-        timeout-minutes: 5
-        env:
-          IDENTITY: Fleetify Dry Run Code Signing
-        run: |
-          dir="$RUNNER_TEMP/codesign"
-          mkdir -p "$dir"
-          keychain="$dir/fleetify.keychain-db"
-          cert="$dir/identity.pem"
-          p12_password=$(openssl rand -hex 24)
-          keychain_password=$(openssl rand -hex 24)
-          echo "::add-mask::$p12_password"
-          echo "::add-mask::$keychain_password"
-          openssl req -x509 -newkey rsa:2048 -sha256 -days 2 -nodes \
-            -keyout "$dir/identity.key" -out "$cert" \
-            -subj "/CN=$IDENTITY/O=The Fleetify Authors" \
-            -addext "basicConstraints=critical,CA:FALSE" \
-            -addext "keyUsage=critical,digitalSignature" \
-            -addext "extendedKeyUsage=critical,codeSigning"
-          # macOS's security import reads only the older PKCS#12 ciphers.
-          openssl pkcs12 -export -inkey "$dir/identity.key" -in "$cert" -name "$IDENTITY" \
-            -out "$dir/identity.p12" -passout "pass:$p12_password" \
-            -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg sha1
-          rm -f "$dir/identity.key"
-          security create-keychain -p "$keychain_password" "$keychain"
-          echo "CODESIGN_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
-          security set-keychain-settings "$keychain"
-          security unlock-keychain -p "$keychain_password" "$keychain"
-          security import "$dir/identity.p12" -k "$keychain" -f pkcs12 -P "$p12_password" -T /usr/bin/codesign
-          rm -f "$dir/identity.p12"
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain" > /dev/null
-          searched=()
-          while IFS= read -r path; do searched+=("$path"); done \
-            < <(security list-keychains -d user | sed -e 's/^[[:space:]]*"//' -e 's/"$//')
-          security list-keychains -d user -s "$keychain" "${searched[@]}"
-          sudo security add-trusted-cert -d -r trustRoot -p codeSign -k /Library/Keychains/System.keychain "$cert"
-          valid=$(security find-identity -v -p codesigning "$keychain")
-          echo "$valid"
-          if ! grep -qF "\"$IDENTITY\"" <<< "$valid"; then
-            security find-identity -p codesigning "$keychain"
-            echo "::error::codesign can't sign with \"$IDENTITY\": security find-identity -v doesn't list it as valid"
-            exit 1
-          fi
-          # The probe: a binary like the ones Tauri signs (built here with cc:
-          # thin, of this machine's arch, linker-signed on arm64), signed the
-          # way Tauri signs them, with no --keychain: codesign finds the
-          # identity by name in the search list. A refusal shows here, with
-          # what codesign sees, rather than inside tauri bundle.
-          probe="$dir/probe"
-          printf 'int main(void) { return 0; }\n' | cc -x c -o "$probe" -
-          if codesign --force -s "$IDENTITY" --options runtime --entitlements src-tauri/Entitlements.plist "$probe" \
-            && codesign --verify --strict "$probe"; then
-            echo "codesign signs a probe as \"$IDENTITY\", the way Tauri will"
-          else
-            echo "Code-signing identities in the whole keychain search list:"
-            security find-identity -v -p codesigning || true
-            echo "The user keychain search list:"
-            security list-keychains -d user || true
-            retry() {
-              local how=$1
-              shift
-              if codesign --force "$@" --options runtime --entitlements src-tauri/Entitlements.plist "$probe" \
-                && codesign --verify --strict "$probe"; then
-                echo "Retry $how: signed"
-              else
-                echo "Retry $how: failed"
-              fi
-            }
-            retry "with --keychain $keychain" -s "$IDENTITY" --keychain "$keychain"
-            sha1=$(openssl x509 -in "$cert" -noout -fingerprint -sha1 | sed -e 's/^[^=]*=//' -e 's/://g')
-            retry "by the certificate's SHA-1, $sha1" -s "$sha1"
-            echo "::error::codesign can't sign as \"$IDENTITY\" the way Tauri does; the lines above show what it sees"
-            exit 1
-          fi
-          echo "APPLE_SIGNING_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
-      # The release identity, from the release environment. Its certificate
-      # alone is read out of the p12 for the trust setting; the key goes
-      # nowhere but into the keychain.
-      - name: Release code-signing identity (macOS release)
-        if: inputs.environment == 'release' && runner.os == 'macOS'
-        timeout-minutes: 5
-        env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
-        run: |
-          dir="$RUNNER_TEMP/codesign"
-          mkdir -p "$dir"
-          keychain="$dir/fleetify.keychain-db"
-          cert="$dir/identity.pem"
-          keychain_password=$(openssl rand -hex 24)
-          echo "::add-mask::$keychain_password"
-          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$dir/identity.p12"
-          openssl pkcs12 -in "$dir/identity.p12" -passin env:APPLE_CERTIFICATE_PASSWORD -nokeys -clcerts | openssl x509 -out "$cert"
-          security create-keychain -p "$keychain_password" "$keychain"
-          echo "CODESIGN_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
-          security set-keychain-settings "$keychain"
-          security unlock-keychain -p "$keychain_password" "$keychain"
-          security import "$dir/identity.p12" -k "$keychain" -f pkcs12 -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
-          rm -f "$dir/identity.p12"
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain" > /dev/null
-          searched=()
-          while IFS= read -r path; do searched+=("$path"); done \
-            < <(security list-keychains -d user | sed -e 's/^[[:space:]]*"//' -e 's/"$//')
-          security list-keychains -d user -s "$keychain" "${searched[@]}"
-          sudo security add-trusted-cert -d -r trustRoot -p codeSign -k /Library/Keychains/System.keychain "$cert"
-          valid=$(security find-identity -v -p codesigning "$keychain")
-          echo "$valid"
-          if ! grep -qF "\"$IDENTITY\"" <<< "$valid"; then
-            security find-identity -p codesigning "$keychain"
-            echo "::error::codesign can't sign with \"$IDENTITY\": security find-identity -v doesn't list it as valid"
-            exit 1
-          fi
-          # The probe: a binary like the ones Tauri signs (built here with cc:
-          # thin, of this machine's arch, linker-signed on arm64), signed the
-          # way Tauri signs them, with no --keychain: codesign finds the
-          # identity by name in the search list. A refusal shows here, with
-          # what codesign sees, rather than inside tauri bundle.
-          probe="$dir/probe"
-          printf 'int main(void) { return 0; }\n' | cc -x c -o "$probe" -
-          if codesign --force -s "$IDENTITY" --options runtime --entitlements src-tauri/Entitlements.plist "$probe" \
-            && codesign --verify --strict "$probe"; then
-            echo "codesign signs a probe as \"$IDENTITY\", the way Tauri will"
-          else
-            echo "Code-signing identities in the whole keychain search list:"
-            security find-identity -v -p codesigning || true
-            echo "The user keychain search list:"
-            security list-keychains -d user || true
-            retry() {
-              local how=$1
-              shift
-              if codesign --force "$@" --options runtime --entitlements src-tauri/Entitlements.plist "$probe" \
-                && codesign --verify --strict "$probe"; then
-                echo "Retry $how: signed"
-              else
-                echo "Retry $how: failed"
-              fi
-            }
-            retry "with --keychain $keychain" -s "$IDENTITY" --keychain "$keychain"
-            sha1=$(openssl x509 -in "$cert" -noout -fingerprint -sha1 | sed -e 's/^[^=]*=//' -e 's/://g')
-            retry "by the certificate's SHA-1, $sha1" -s "$sha1"
-            echo "::error::codesign can't sign as \"$IDENTITY\" the way Tauri does; the lines above show what it sees"
-            exit 1
-          fi
-      # The release keys: the updater key signs the updater artifacts, and
-      # the identity imported above signs the macOS app. tauri bundle
-      # bundles the binaries the compile job built; it doesn't rebuild them.
-      # --verbose logs each command the bundler runs (codesign, hdiutil,
-      # linuxdeploy, makensis). None takes a secret as an argument: the
-      # updater key reaches the CLI through the environment, and the macOS
-      # identity is a certificate's name.
-      - name: Bundle (release)
-        if: inputs.environment == 'release'
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
-        run: npx tauri bundle --verbose --ci --target "$TRIPLE" --bundles "$BUNDLES" --config src-tauri/tauri.release.conf.json
-      # The run's own keys, and the overlay the app was compiled with; on
-      # macOS, APPLE_SIGNING_IDENTITY comes from the identity step above.
-      - name: Bundle (dry run)
-        if: inputs.environment == 'dry-run'
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ runner.temp }}/dry-run/updater.key
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
-        run: >-
-          npx tauri bundle --verbose --ci --target "$TRIPLE" --bundles "$BUNDLES"
-          --config src-tauri/tauri.release.conf.json --config "$RUNNER_TEMP/dry-run/dry-run.json"
+          npx --no tauri build --ci --target "$TRIPLE" --no-bundle
+          --config src-tauri/tauri.release.conf.json --config "$RUNNER_TEMP/dry-run-config/dry-run.json"
       # A private key or token that got into the build would ship in the UI
       # bundle or a binary. The bundles themselves are compressed, which a
-      # text scan can't read, so it reads what went into them.
+      # text scan can't read, so it reads what goes into them.
       - name: Scan the build for secrets
         run: |
           exe=""
@@ -544,54 +267,29 @@ jobs:
             fi
             echo "$bin has the dry run's update endpoint"
           fi
-      - name: Check the macOS signature
-        if: runner.os == 'macOS'
-        run: node scripts/release/macos-signature.mjs "target/$TRIPLE/release/bundle/macos/Fleetify.app"
-      # A dry run keeps codesign's own answers to macos-signature.mjs's four
-      # commands, whether its checks pass or not, so the test fixtures in
-      # scripts/release/fixtures/codesign can be replaced with real output.
-      # It also keeps the code-signing identities codesign can see and the
-      # keychain search list, even when no app was built: a failed signing
-      # leaves them even if the job's log is lost.
-      - name: Keep codesign's output (macOS dry run)
-        if: always() && inputs.environment == 'dry-run' && runner.os == 'macOS'
-        run: |
-          app="target/$TRIPLE/release/bundle/macos/Fleetify.app"
-          out="$RUNNER_TEMP/codesign-output"
-          mkdir -p "$out"
-          sw_vers > "$out/sw_vers.txt"
-          security find-identity -v -p codesigning > "$out/find-identity.txt" 2>&1 || true
-          security list-keychains -d user > "$out/list-keychains.txt" 2>&1 || true
-          if [ ! -d "$app" ]; then
-            echo "no $app: the build didn't make it" > "$out/status.txt"
-            exit 0
-          fi
-          capture() {
-            local name=$1 status=0
-            shift
-            codesign "$@" "$app" > "$out/$name.stdout.txt" 2> "$out/$name.stderr.txt" || status=$?
-            echo "$name: codesign $* <app>: exit $status" >> "$out/status.txt"
-          }
-          capture verify --verify --deep --strict --verbose=2
-          capture requirements -d -r-
-          capture display -d -vvv
-          capture entitlements -d --entitlements - --xml
-      - name: Upload codesign's output (macOS dry run)
-        if: always() && inputs.environment == 'dry-run' && runner.os == 'macOS'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: codesign-output-${{ matrix.triple }}
-          path: ${{ runner.temp }}/codesign-output
-          if-no-files-found: warn
-          retention-days: 7
+      # The bundler downloads the tools that make the AppImage into its cache
+      # whenever they're missing, unchecked, and two of them ship inside it:
+      # these are the ones appimage-tools.json pins by SHA-256.
+      - name: Install the pinned AppImage tools (Linux)
+        if: runner.os == 'Linux'
+        run: node scripts/release/appimage-tools.mjs
+      # Linux and Windows bundles carry no signature inside, so they're made
+      # here, with no key: --no-sign leaves out the updater signatures, which
+      # the sign job adds. --verbose logs each command the bundler runs
+      # (linuxdeploy, makensis).
+      - name: Bundle without signing (Linux and Windows release)
+        if: runner.os != 'macOS' && inputs.environment == 'release'
+        run: npx --no tauri bundle --no-sign --verbose --ci --target "$TRIPLE" --bundles "$BUNDLES" --config src-tauri/tauri.release.conf.json
+      - name: Bundle without signing (Linux and Windows dry run)
+        if: runner.os != 'macOS' && inputs.environment == 'dry-run'
+        run: >-
+          npx --no tauri bundle --no-sign --verbose --ci --target "$TRIPLE" --bundles "$BUNDLES"
+          --config src-tauri/tauri.release.conf.json --config "$RUNNER_TEMP/dry-run-config/dry-run.json"
       # Into a folder of its own first: collect-bundles.mjs fills only an
       # empty one, so the artifact holds only this build's files.
-      - name: Collect the bundles
-        run: node scripts/release/collect-bundles.mjs --target "$TRIPLE" --version "$VERSION" --out "$RUNNER_TEMP/bundles"
-      # assemble.mjs checks each dry-run build's signatures against its own key.
-      - name: Add the run's updater public key (dry run)
-        if: inputs.environment == 'dry-run'
-        run: cp "$RUNNER_TEMP/dry-run/updater.key.pub" "$RUNNER_TEMP/bundles/updater-pubkey.txt"
+      - name: Collect the unsigned bundles (Linux and Windows)
+        if: runner.os != 'macOS'
+        run: node scripts/release/collect-bundles.mjs --unsigned --target "$TRIPLE" --version "$VERSION" --out "$RUNNER_TEMP/unsigned"
       # The system libraries inside the AppImage and the Ubuntu packages they
       # come from, read on the system that built it, whose dpkg knows them.
       - name: List the AppImage's libraries (Linux)
@@ -605,7 +303,150 @@ jobs:
           extract="$RUNNER_TEMP/appimage"
           mkdir -p "$extract"
           (cd "$extract" && "${appimages[0]}" --appimage-extract > /dev/null)
-          node scripts/release/appimage-libraries.mjs --root "$extract/squashfs-root" --out "$RUNNER_TEMP/bundles/LINUX-APPIMAGE-LIBRARIES.txt"
+          node scripts/release/appimage-libraries.mjs --root "$extract/squashfs-root" --out "$RUNNER_TEMP/unsigned/LINUX-APPIMAGE-LIBRARIES.txt"
+      # Kept a week, as a release's approval can come days after the build.
+      - name: Upload the unsigned bundles (Linux and Windows)
+        if: runner.os != 'macOS'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: unsigned-${{ matrix.triple }}
+          path: ${{ runner.temp }}/unsigned
+          if-no-files-found: error
+          retention-days: 7
+      # What the macOS bundler needs, as compiled-tar.mjs lists it: the app
+      # and each sidecar Tauri bundles. In ustar, which the bundle job's
+      # check reads, with no ._* entries for macOS's metadata; tar keeps the
+      # binaries executable, which an artifact's zip doesn't. The bundle
+      # job's check runs here too, so a problem with the archive shows first
+      # in this job.
+      - name: Pack the compiled files (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p "$RUNNER_TEMP/compiled"
+          node scripts/release/compiled-tar.mjs list --target "$TRIPLE" > "$RUNNER_TEMP/compiled-files.txt"
+          tar --format ustar --no-mac-metadata -cf "$RUNNER_TEMP/compiled/compiled.tar" -T "$RUNNER_TEMP/compiled-files.txt"
+          node scripts/release/compiled-tar.mjs unpack --target "$TRIPLE" --tar "$RUNNER_TEMP/compiled/compiled.tar" --out "$RUNNER_TEMP/compiled-check"
+          rm -rf "$RUNNER_TEMP/compiled-check"
+      - name: Upload the compiled files (macOS)
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: compiled-${{ matrix.triple }}
+          path: ${{ runner.temp }}/compiled/compiled.tar
+          if-no-files-found: error
+          retention-days: 7
+      # The jobs that sign do so with the run's key. Only this run's dry-run
+      # builds trust it, so a copy among the run's own artifacts, kept for a
+      # day, puts nothing else at risk.
+      - name: Upload the run's updater key (dry run)
+        if: inputs.environment == 'dry-run'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: updater-key-${{ matrix.triple }}
+          path: ${{ runner.temp }}/dry-run
+          if-no-files-found: error
+          retention-days: 1
+      - name: Delete the run's updater key (dry run)
+        if: always() && inputs.environment == 'dry-run'
+        run: rm -f "$RUNNER_TEMP/dry-run/updater.key" "$RUNNER_TEMP/dry-run/updater.key.pub" "$RUNNER_TEMP/dry-run-config/dry-run.json"
+
+  sign:
+    name: Sign (${{ matrix.label }})
+    # needs on a matrix job waits for every leg of it, so one compile leg
+    # that fails skips every leg of this job, and of bundle-macos.
+    needs: compile
+    runs-on: ubuntu-24.04
+    environment: ${{ inputs.environment }}
+    timeout-minutes: 30
+    strategy:
+      # Each target reports on its own, so one failing doesn't cancel the rest.
+      fail-fast: false
+      # release-assets.mjs's Linux and Windows TARGETS, which a script test
+      # keeps this list equal to.
+      matrix:
+        include:
+          - triple: x86_64-unknown-linux-gnu
+            label: Linux x64
+          - triple: x86_64-pc-windows-msvc
+            label: Windows x64
+    env:
+      VERSION: ${{ inputs.version }}
+      TRIPLE: ${{ matrix.triple }}
+    steps:
+      # The repository's checks, and the updater pubkey a release must match.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      # For the Tauri CLI's signer. No install script runs.
+      - name: npm packages
+        run: npm ci --ignore-scripts
+      - name: Download the unsigned bundles
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: unsigned-${{ matrix.triple }}
+          path: ${{ runner.temp }}/bundles
+      # Exactly the files release-assets.mjs names for the target, each a
+      # regular file.
+      - name: Check the unsigned bundles
+        run: |
+          expected=$(node scripts/release/release-assets.mjs unsigned "$TRIPLE" "$VERSION")
+          names=()
+          while IFS= read -r name; do names+=("$name"); done <<< "$expected"
+          node scripts/release/check-artifact.mjs "$RUNNER_TEMP/bundles" "${names[@]}"
+      - name: Download the run's updater key (dry run)
+        if: inputs.environment == 'dry-run'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: updater-key-${{ matrix.triple }}
+          path: ${{ runner.temp }}/dry-run
+      - name: Check the run's updater key (dry run)
+        if: inputs.environment == 'dry-run'
+        run: node scripts/release/check-artifact.mjs "$RUNNER_TEMP/dry-run" updater.key updater.key.pub
+      # The Tauri CLI's signer writes each <file>.sig as the bundler would,
+      # with the same function and trusted comment. The release key reaches
+      # it through the environment, never as an argument.
+      - name: Sign the updater artifacts (release)
+        if: inputs.environment == 'release'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          updaters=$(node scripts/release/release-assets.mjs updaters "$TRIPLE" "$VERSION")
+          while IFS= read -r name; do
+            npx --no tauri signer sign "$RUNNER_TEMP/bundles/$name"
+          done <<< "$updaters"
+      - name: Sign the updater artifacts (dry run)
+        if: inputs.environment == 'dry-run'
+        run: |
+          updaters=$(node scripts/release/release-assets.mjs updaters "$TRIPLE" "$VERSION")
+          while IFS= read -r name; do
+            npx --no tauri signer sign -f "$RUNNER_TEMP/dry-run/updater.key" -p "" "$RUNNER_TEMP/bundles/$name"
+          done <<< "$updaters"
+      # Each signature verifies against the key the release's updater trusts,
+      # or in a dry run the run's own.
+      - name: Check the updater signatures (release)
+        if: inputs.environment == 'release'
+        run: |
+          updaters=$(node scripts/release/release-assets.mjs updaters "$TRIPLE" "$VERSION")
+          files=()
+          while IFS= read -r name; do files+=("$RUNNER_TEMP/bundles/$name"); done <<< "$updaters"
+          node scripts/release/minisign.mjs verify --pubkey-config src-tauri/tauri.conf.json --expect-key-id 44C694713A20D751 "${files[@]}"
+      - name: Check the updater signatures (dry run)
+        if: inputs.environment == 'dry-run'
+        run: |
+          updaters=$(node scripts/release/release-assets.mjs updaters "$TRIPLE" "$VERSION")
+          files=()
+          while IFS= read -r name; do files+=("$RUNNER_TEMP/bundles/$name"); done <<< "$updaters"
+          node scripts/release/minisign.mjs verify --pubkey-file "$RUNNER_TEMP/dry-run/updater.key.pub" "${files[@]}"
+      # assemble.mjs checks each dry-run build's signatures against its own key.
+      - name: Add the run's updater public key (dry run)
+        if: inputs.environment == 'dry-run'
+        run: cp "$RUNNER_TEMP/dry-run/updater.key.pub" "$RUNNER_TEMP/bundles/updater-pubkey.txt"
       - name: Upload the bundles
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -615,16 +456,269 @@ jobs:
           retention-days: 7
       - name: Delete the run's updater key (dry run)
         if: always() && inputs.environment == 'dry-run'
-        run: rm -f "$RUNNER_TEMP/dry-run/updater.key" "$RUNNER_TEMP/dry-run/updater.key.pub" "$RUNNER_TEMP/dry-run/dry-run.json"
-      # The trust setting isn't removed: GitHub-hosted runners are single-use
-      # VMs, discarded after the job, setting and all, and removing it waits
-      # for an authorization dialog the runner can't answer (the second dry
-      # run's cleanup hung there for 40 minutes).
-      - name: Delete the signing keychain (macOS)
-        if: always() && runner.os == 'macOS'
+        run: rm -f "$RUNNER_TEMP/dry-run/updater.key" "$RUNNER_TEMP/dry-run/updater.key.pub"
+
+  bundle-macos:
+    name: Bundle (${{ matrix.label }})
+    # needs on a matrix job waits for every leg of it, so one compile leg
+    # that fails skips every leg of this job, and of sign.
+    needs: compile
+    runs-on: ${{ matrix.runner }}
+    environment: ${{ inputs.environment }}
+    timeout-minutes: 60
+    strategy:
+      # Each target reports on its own, so one failing doesn't cancel the rest.
+      fail-fast: false
+      # release-assets.mjs's macOS TARGETS, which a script test keeps this
+      # list equal to.
+      matrix:
+        include:
+          - triple: aarch64-apple-darwin
+            runner: macos-15
+            bundles: [app, dmg]
+            label: macOS Apple Silicon
+          - triple: x86_64-apple-darwin
+            runner: macos-15-intel
+            bundles: [app, dmg]
+            label: macOS Intel
+    env:
+      VERSION: ${{ inputs.version }}
+      TRIPLE: ${{ matrix.triple }}
+      BUNDLES: ${{ join(matrix.bundles, ',') }}
+    steps:
+      # The config, the icons, the entitlements and the bundled resources.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      # tauri bundle asks `cargo metadata --no-deps` where the target folder
+      # is. That reads the manifests: it compiles nothing and runs no build
+      # script.
+      - name: Rust toolchain (rust-toolchain.toml)
+        run: |
+          rustup toolchain install
+          rustup show active-toolchain
+      # For the Tauri CLI. No install script runs.
+      - name: npm packages
+        run: npm ci --ignore-scripts
+      - name: Download the compiled files
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: compiled-${{ matrix.triple }}
+          path: ${{ runner.temp }}/compiled-download
+      # The artifact must be compiled.tar alone. compiled-tar.mjs reads it
+      # member by member and writes the files it lists into an empty folder
+      # only if every member is one of them, or a folder above one; the
+      # folder must then hold nothing but those files. Only they are copied
+      # into the checkout, executable.
+      - name: Check and unpack the compiled files
+        run: |
+          node scripts/release/check-artifact.mjs "$RUNNER_TEMP/compiled-download" compiled.tar
+          out="$RUNNER_TEMP/compiled"
+          node scripts/release/compiled-tar.mjs unpack --target "$TRIPLE" --tar "$RUNNER_TEMP/compiled-download/compiled.tar" --out "$out"
+          listed=$(node scripts/release/compiled-tar.mjs list --target "$TRIPLE")
+          odd=$(find "$out" ! -type f ! -type d)
+          if [ -n "$odd" ]; then
+            echo "::error::the unpacked files hold more than files and folders: $odd"
+            exit 1
+          fi
+          found=$(cd "$out" && find . -type f | sed -e 's|^\./||' | LC_ALL=C sort)
+          if [ "$found" != "$(LC_ALL=C sort <<< "$listed")" ]; then
+            echo "::error::the unpacked files aren't the ones compiled-tar.mjs lists: $found"
+            exit 1
+          fi
+          while IFS= read -r file; do
+            mkdir -p "$(dirname "$file")"
+            cp -p "$out/$file" "$file"
+          done <<< "$listed"
+      # tauri.release.conf.json bundles ./THIRD-PARTY-NOTICES as legal/THIRD-PARTY-NOTICES.
+      - name: Download the notices
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: third-party-notices
+          path: ${{ runner.temp }}/notices
+      - name: Check the notices and put them in place
+        run: |
+          node scripts/release/check-artifact.mjs "$RUNNER_TEMP/notices" THIRD-PARTY-NOTICES
+          cp "$RUNNER_TEMP/notices/THIRD-PARTY-NOTICES" THIRD-PARTY-NOTICES
+      - name: Download the run's updater key (dry run)
+        if: inputs.environment == 'dry-run'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: updater-key-${{ matrix.triple }}
+          path: ${{ runner.temp }}/dry-run
+      # The overlay is made here again from the run's public key, which
+      # dry-run-config.mjs checks, rather than taken from the compile job.
+      - name: Check the run's updater key and make the overlay (dry run)
+        if: inputs.environment == 'dry-run'
+        run: |
+          node scripts/release/check-artifact.mjs "$RUNNER_TEMP/dry-run" updater.key updater.key.pub
+          mkdir -p "$RUNNER_TEMP/dry-run-config"
+          node scripts/release/dry-run-config.mjs --pubkey-file "$RUNNER_TEMP/dry-run/updater.key.pub" --out "$RUNNER_TEMP/dry-run-config/dry-run.json"
+      # The Tauri CLI merges a platform config such as tauri.macos.conf.json
+      # on its own, and tauri bundle runs a config's beforeBundleCommand: the
+      # only configs here are the tracked ones, unchanged.
+      - name: Check that the Tauri configs are the tracked ones
+        run: |
+          untracked=$(git ls-files --others -- 'src-tauri/tauri*.conf*' 'src-tauri/Tauri*.toml')
+          if [ -n "$untracked" ]; then
+            echo "::error::Tauri configs that aren't tracked are in the checkout: $untracked"
+            exit 1
+          fi
+          git diff --exit-code -- 'src-tauri/tauri*.conf*' 'src-tauri/Tauri*.toml'
+      # Each identity step gives up after five minutes, so a security
+      # command waiting on a dialog fails the job with its logs kept.
+      #
+      # The signing identity goes into a keychain the job makes, and Tauri
+      # signs with APPLE_SIGNING_IDENTITY alone, which codesign looks up in
+      # the keychain search list; macos-keychain.sh sets both up and signs a
+      # probe with the identity before Tauri runs. Tauri's own import,
+      # through APPLE_CERTIFICATE, looks only for certificates named like
+      # Apple's ("Developer ID Application: …", with an organizational unit),
+      # so it can't find a self-signed one (tauri-macos-sign 2.3.4, which
+      # tauri-cli 2.11.2 uses). A self-signed certificate is valid only where
+      # it is trusted, so the script trusts it for code signing in the
+      # System keychain. That setting stays: GitHub discards a hosted
+      # runner's VM after the job, and removing the setting waits for an
+      # authorization dialog no one can answer.
+      #
+      # A dry run makes an identity of its own, shaped like the release one,
+      # and imports it the same way. It keeps the identities codesign can
+      # see and the search list for codesign-output-<triple>, so a failed
+      # signing leaves them even if the job's log is lost.
+      - name: Code-signing identity for this run (dry run)
+        if: inputs.environment == 'dry-run'
+        timeout-minutes: 5
+        env:
+          IDENTITY: Fleetify Dry Run Code Signing
+        run: |
+          status=0
+          bash scripts/release/macos-keychain.sh dry-run || status=$?
+          out="$RUNNER_TEMP/codesign-output"
+          mkdir -p "$out"
+          security find-identity -v -p codesigning > "$out/find-identity.txt" 2>&1 || true
+          security list-keychains -d user > "$out/list-keychains.txt" 2>&1 || true
+          exit "$status"
+      # The release identity, from the release environment. This step only
+      # decodes the p12; its password reaches the script through the
+      # environment.
+      - name: Release code-signing identity (release)
+        if: inputs.environment == 'release'
+        timeout-minutes: 5
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          P12_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
+        run: |
+          dir="$RUNNER_TEMP/codesign"
+          mkdir -p "$dir"
+          chmod 700 "$dir"
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$dir/release.p12"
+          P12="$dir/release.p12" bash scripts/release/macos-keychain.sh import
+          rm -f "$dir/release.p12"
+      # The release keys: the updater key signs the updater artifact, and the
+      # identity the step above set up signs the app. tauri bundle bundles
+      # the binaries the compile job built; it doesn't rebuild them.
+      # --verbose logs each command the bundler runs (codesign, hdiutil).
+      # None takes a secret as an argument: the updater key reaches the CLI
+      # through the environment, and the identity is a certificate's name.
+      - name: Bundle (release)
+        if: inputs.environment == 'release'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npx --no tauri bundle --verbose --ci --target "$TRIPLE" --bundles "$BUNDLES" --config src-tauri/tauri.release.conf.json
+      # The run's own keys, and the overlay the app was compiled with.
+      - name: Bundle (dry run)
+        if: inputs.environment == 'dry-run'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ runner.temp }}/dry-run/updater.key
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        run: >-
+          npx --no tauri bundle --verbose --ci --target "$TRIPLE" --bundles "$BUNDLES"
+          --config src-tauri/tauri.release.conf.json --config "$RUNNER_TEMP/dry-run-config/dry-run.json"
+      # Right after the bundling, whatever happened: nothing after it signs,
+      # and codesign's checks don't need the key.
+      - name: Delete the signing keychain
+        if: always()
         timeout-minutes: 5
         run: |
           if [ -n "${CODESIGN_KEYCHAIN:-}" ]; then
             security delete-keychain "$CODESIGN_KEYCHAIN" || true
           fi
           rm -rf "$RUNNER_TEMP/codesign"
+      - name: Check the macOS signature
+        run: node scripts/release/macos-signature.mjs "target/$TRIPLE/release/bundle/macos/Fleetify.app"
+      # A dry run keeps codesign's own answers to macos-signature.mjs's four
+      # commands, whether its checks pass or not, so the test fixtures in
+      # scripts/release/fixtures/codesign can be replaced with real output.
+      # It keeps the app's extended attributes too: Tauri clears them
+      # (xattr -crs) between making the app and signing it.
+      - name: Keep codesign's output (dry run)
+        if: always() && inputs.environment == 'dry-run'
+        run: |
+          app="target/$TRIPLE/release/bundle/macos/Fleetify.app"
+          out="$RUNNER_TEMP/codesign-output"
+          mkdir -p "$out"
+          sw_vers > "$out/sw_vers.txt"
+          if [ ! -d "$app" ]; then
+            echo "no $app: the build didn't make it" > "$out/status.txt"
+            exit 0
+          fi
+          xattr -lr "$app" > "$out/xattr.txt" 2>&1 || true
+          capture() {
+            local name=$1 status=0
+            shift
+            codesign "$@" "$app" > "$out/$name.stdout.txt" 2> "$out/$name.stderr.txt" || status=$?
+            echo "$name: codesign $* <app>: exit $status" >> "$out/status.txt"
+          }
+          capture verify --verify --deep --strict --verbose=2
+          capture requirements -d -r-
+          capture display -d -vvv
+          capture entitlements -d --entitlements - --xml
+      - name: Upload codesign's output (dry run)
+        if: always() && inputs.environment == 'dry-run'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: codesign-output-${{ matrix.triple }}
+          path: ${{ runner.temp }}/codesign-output
+          if-no-files-found: warn
+          retention-days: 7
+      # Into a folder of its own first: collect-bundles.mjs fills only an
+      # empty one, so the artifact holds only this build's files.
+      - name: Collect the bundles
+        run: node scripts/release/collect-bundles.mjs --target "$TRIPLE" --version "$VERSION" --out "$RUNNER_TEMP/bundles"
+      # The updater artifact's signature verifies against the key the
+      # release's updater trusts, or in a dry run the run's own.
+      - name: Check the updater signature (release)
+        if: inputs.environment == 'release'
+        run: |
+          updaters=$(node scripts/release/release-assets.mjs updaters "$TRIPLE" "$VERSION")
+          files=()
+          while IFS= read -r name; do files+=("$RUNNER_TEMP/bundles/$name"); done <<< "$updaters"
+          node scripts/release/minisign.mjs verify --pubkey-config src-tauri/tauri.conf.json --expect-key-id 44C694713A20D751 "${files[@]}"
+      - name: Check the updater signature (dry run)
+        if: inputs.environment == 'dry-run'
+        run: |
+          updaters=$(node scripts/release/release-assets.mjs updaters "$TRIPLE" "$VERSION")
+          files=()
+          while IFS= read -r name; do files+=("$RUNNER_TEMP/bundles/$name"); done <<< "$updaters"
+          node scripts/release/minisign.mjs verify --pubkey-file "$RUNNER_TEMP/dry-run/updater.key.pub" "${files[@]}"
+      # assemble.mjs checks each dry-run build's signatures against its own key.
+      - name: Add the run's updater public key (dry run)
+        if: inputs.environment == 'dry-run'
+        run: cp "$RUNNER_TEMP/dry-run/updater.key.pub" "$RUNNER_TEMP/bundles/updater-pubkey.txt"
+      - name: Upload the bundles
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bundles-${{ matrix.triple }}
+          path: ${{ runner.temp }}/bundles
+          if-no-files-found: error
+          retention-days: 7
+      - name: Delete the run's updater key (dry run)
+        if: always() && inputs.environment == 'dry-run'
+        run: rm -f "$RUNNER_TEMP/dry-run/updater.key" "$RUNNER_TEMP/dry-run/updater.key.pub" "$RUNNER_TEMP/dry-run-config/dry-run.json"
