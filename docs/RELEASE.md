@@ -34,7 +34,7 @@ Releases come from release-please. It keeps a release pull request open, titled 
 4. **smoke** runs smoke.yml on those files. The macOS app's designated requirement must equal the one pinned in [`scripts/release/macos-designated-requirement.txt`](../scripts/release/macos-designated-requirement.txt).
 5. **publish**, in the `release-bot` environment, once assemble and smoke have passed, checks that the draft points at the commit that was built and that its tag doesn't exist yet, as publishing would keep a tag that exists already. Then it publishes the draft and marks it as the latest release. Publishing creates the tag, as the Release Bot. The job then checks that the release is no longer a draft, that the tag exists, and that GitHub's `latest.json` for the latest release names the new version.
 
-Two rulesets guard the tags: only the organisation's admins and the Release Bot may create a `v*` tag, and no one may move or delete one. A tag created before the checks passed would be permanent, which is why the tag only comes into being at publish. Don't create a `v*` tag by hand.
+Two rulesets guard the tags: only the organisation's admins and the Release Bot may create a `v*` tag, and no one may move or delete one. A tag created before the checks passed would be permanent, which is why the tag only comes into being at publish. Don't create a `v*` tag by hand. The one exception is publishing a checked draft by hand, as [If a run fails](#the-release-run-before-publish) describes, which makes its tag at the draft's commit.
 
 The attestation step runs in a job that release.yml defines itself, so the attestations name release.yml as their signer. That is what `--signer-workflow` checks when users [verify a download](INSTALL.md#verify-a-download).
 
@@ -148,11 +148,16 @@ The release-candidate (RC) checks run on real machines, with the candidate's fil
 1. Check the files against `SHA256SUMS`, as [INSTALL.md](INSTALL.md#verify-a-download) describes.
 2. Install each package as INSTALL.md describes, on a machine or user account that has never run Fleetify, and check that what you see matches it: the macOS Gatekeeper steps and their wording, the Windows SmartScreen steps, the `.deb`, the `.rpm`, and the AppImage on a clean Ubuntu 24.04 without `libfuse2t64`, where INSTALL.md's FUSE advice must hold.
 3. Sign in with a real Fleetify account.
-4. Run one real agent turn, for example with Claude Code.
+4. Run one real agent turn, for example with Claude Code. The `fleetify-mcp-*.json` file it writes in the temporary folder must be readable by you alone, and gone once the turn ends.
 5. Dictate a voice note. macOS asks for the microphone, once.
 6. Open the screens that load the most code: a chat with highlighted code, the terminal, math and Preview. The app's log must then have no `fleetify.csp` lines, which report content security policy violations; [INSTALL.md](INSTALL.md#remove-your-data) gives the log folder for each OS.
 7. In the Browser panel, open a page that shows `typeof window.__TAURI_INTERNALS__` and `typeof window.__TAURI__`. Both must be `undefined`, and **Select** must still hand a picked element to the chat.
 8. On Windows, quit Fleetify while an agent session runs, and start it again at once. It must start.
+9. With the Browser panel open, start Fleetify a second time, also while its window is minimised: the window must come back. Dragging, minimising, maximising, closing and resizing the window must all still work. On GNOME, note whether the second start raises the window.
+10. On Windows, after a page loads in the Browser panel, press Alt+Left or the mouse's back button: the window must stay on the app.
+11. On Windows, sign in to GitHub from Fleetify: it must not stall.
+12. On macOS, run Fleetify from `/Applications`.
+13. From the second release on, update on Windows while agent sessions run: the installer must replace every file, and Fleetify must start again.
 
 Fix any finding through a normal pull request, then cut a new candidate.
 
@@ -256,10 +261,27 @@ Nothing was published, and no version was used. Fix the cause in a normal pull r
 The release is still a draft and its tag doesn't exist, so nothing is public yet. While it stays a draft, release.yml opens or updates no release pull request: each run's release-please job says so in a warning. The release pull request comes back with the first push to `main` after the draft is published or deleted.
 
 - **A job failed for a reason that a second try can fix**, such as a runner fault or a network error: re-run the failed jobs, with the jobs after them, using `gh run rerun <run-id> --failed`. Approve the `release` environment again if the run asks.
-- **The release itself is wrong**: delete the draft with `gh release delete v<version> --yes`, and fix the cause in a normal pull request. The version is spent, as `main` already names it in `.release-please-manifest.json` and CHANGELOG.md, so the fix ships under the next version. Without a tag for the deleted version, release-please can't find the previous release, so the next release pull request's notes reach further back than they should: cut them down to what's new.
+- **Only the publish job's own commands failed**, after assemble and smoke passed: the draft is complete, so an owner publishes it by hand. Repeat the job's two checks first:
+
+  ```bash
+  v=<version>
+  gh release view "v$v" --json targetCommitish --jq .targetCommitish   # must be the commit the run built
+  git ls-remote --tags origin "refs/tags/v$v"                          # must print nothing
+  gh release edit "v$v" --draft=false --latest
+  ```
+
+  The organisation's admins may create `v*` tags, so publishing works without the Release Bot. Then verify the release as in [step 7](#7-verify).
+- **release.yml or a setting is at fault, not the release commit**: a step of release.yml, the Release Bot's credentials or an environment's settings, after release-please made the draft. Keep the version, and make the draft again from the same commit. A re-run replays the run's own copy of release.yml, so fix the cause first, in a `ci:` pull request or in the settings. Then:
+  1. Delete the draft with `gh release delete v<version> --yes`. Otherwise release-please makes a second draft with the same tag.
+  2. Mark the merged release pull request as pending again: `gh pr edit <number> --add-label "autorelease: pending" --remove-label "autorelease: tagged"`.
+  3. Merge the fix, whose push runs release.yml, or, after a fix in the settings, re-run the failed run's release-please job. Its release step finds the pending release pull request and makes a new draft at the same commit, and the run builds, assembles, smoke-tests and publishes it as usual.
+
+  The assemble and smoke jobs use `scripts/release` as the release commit has it, so this works only when the cause lies outside `scripts/release`.
+- **The release itself is wrong**, in the code or in `scripts/release` at the release commit: delete the draft with `gh release delete v<version> --yes`, and fix the cause in a normal pull request. The version is spent, as `main` already names it in `.release-please-manifest.json` and CHANGELOG.md, so the fix ships under the next version. Without a tag for the deleted version, release-please can't find the previous release, so the next release pull request's notes reach further back than they should: cut them down to what's new.
+  - For 0.2.0 only, a pull request can instead put back the state from before the first release, so that the fixed code still ships as 0.2.0: all 14 version sources at 0.1.0, `release-as` and `bootstrap-sha` back in release-please-config.json, and an empty CHANGELOG.md. Leave the old release pull request labelled `autorelease: tagged`. release-please then opens a new release pull request for 0.2.0, which needs the [preparation commit](#4-for-020-only-prepare-the-first-release) again.
 - **The release-please job failed.** Look for a draft of the version with `gh release list`:
   - **There is none**: the job failed before it made the draft, on the Release Bot's credentials for example. Fix the cause and re-run the job.
-  - **There is one**: the job failed after it made the draft, in its check of the draft or while release-please labelled the release pull request. Re-running the job won't build it: release-please finds no release pull request left to release, or makes a second draft, and the build never ran. Delete the draft and go on as when the release itself is wrong: the version is spent.
+  - **There is one**: the job failed after it made the draft, in its check of the draft or while release-please labelled the release pull request. Re-running the job won't build it: release-please finds no release pull request left to release, or makes a second draft, and the build never ran. The release commit is fine, so make the draft again as above, under "release.yml or a setting is at fault".
 
 ### After publish
 
@@ -427,7 +449,7 @@ Tauri stays on 2.11.2 until an upgrade is planned:
 
 - build.yml builds Linux on `ubuntu-22.04`, the oldest supported Ubuntu LTS, so that the bundles run on glibc 2.35 and later; Windows on `windows-2025`; and macOS on `macos-15` (Apple silicon) and `macos-15-intel` (Intel). smoke.yml runs on `ubuntu-24.04`, `windows-2025`, `macos-15` and `macos-15-intel`.
 - `TARGETS` in release-assets.mjs names each build's runner, and a script test keeps build.yml's matrices equal to it, so change them together.
-- Moving the Linux build to a newer image raises the oldest Linux that Fleetify runs on: update the requirements in INSTALL.md with it.
+- GitHub retires `ubuntu-22.04` on 17 April 2027, and jobs on it fail during brownouts on 23 and 30 March and on 6 and 13 April 2027. Move the Linux build before then. Building in an Ubuntu 22.04 container on `ubuntu-24.04`, for example, keeps glibc 2.35 as the floor; building on `ubuntu-24.04` itself raises the oldest Linux that Fleetify runs on to glibc 2.39, so update the requirements in INSTALL.md with it.
 - `macos-15-intel` builds and smoke-tests the Intel Mac bundle. When GitHub announces its retirement, decide how to build and test that bundle without it, for example by cross-compiling on an Apple silicon runner.
 
 ### A merge queue
