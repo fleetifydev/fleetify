@@ -4,11 +4,14 @@
 # push can take the place of a run still waiting; that run's work isn't lost,
 # as release-please finds every release pull request that has merged.
 #
-# - release-please, with the Release Bot's token, opens or updates the release
-#   pull request after an ordinary push. After the push that merges it, it
-#   creates the release instead: a draft, whose tag doesn't exist yet. Events
-#   made with the App's token start workflows, unlike those of the job's own
-#   token, so the release pull request gets its checks.
+# - release-please runs twice, with the Release Bot's token. First it makes
+#   the release of a release pull request that has merged, if there is one: a
+#   draft, whose tag doesn't exist yet. Only when it made none does the second
+#   run open or update the release pull request, and not while a draft is
+#   pending either: release-please finds the last release by its tag, so
+#   until a draft is published, it would offer a release of every commit it
+#   can reach. Events made with the App's token start workflows, unlike those
+#   of the job's own token, so the release pull request gets its checks.
 # - build runs build.yml on the draft's commit with the release keys, in the
 #   release environment, whose deployments wait for the owner's approval.
 # - assemble puts the release together with assemble.mjs, which checks every
@@ -70,14 +73,18 @@ jobs:
           permission-contents: write
           permission-pull-requests: write
           permission-issues: write
-      # It reads its config and manifest from main through the API.
-      - name: release-please
+      # The release of a release pull request that has merged, if any, and
+      # nothing else: the action would otherwise go on to the release pull
+      # request in the same step. It reads its config and manifest from main
+      # through the API.
+      - name: Release
         id: release
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         with:
           token: ${{ steps.app.outputs.token }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+          skip-github-pull-request: true
       # What the jobs after this one rely on. latest.json's download URLs look
       # for the files under v<version>. build.yml checks out the commit the
       # draft points at, as a branch could move on before publishing makes
@@ -99,6 +106,32 @@ jobs:
             exit 1
           fi
           echo "the draft $TAG points at $SHA"
+      # A draft has no tag, so release-please can't see it as the last
+      # release, and a release pull request made while one is pending would
+      # offer a release of every commit it can reach. The next step runs only
+      # once this one has found no draft.
+      - name: Look for a pending draft
+        id: drafts
+        if: steps.release.outputs.release_created != 'true'
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: |
+          drafts=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq 'map(select(.draft)) | length')
+          if [ "$drafts" -gt 0 ]; then
+            echo "::warning::a draft release is pending: publish it by re-running its release run, or delete it. The release pull request waits until then."
+            echo "pending=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "pending=false" >> "$GITHUB_OUTPUT"
+          fi
+      # The release pull request, opened or updated, after an ordinary push.
+      - name: Release pull request
+        if: steps.release.outputs.release_created != 'true' && steps.drafts.outputs.pending == 'false'
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          token: ${{ steps.app.outputs.token }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+          skip-github-release: true
 
   # The draft's tag doesn't exist yet, so the build checks out its commit.
   build:

@@ -43,10 +43,12 @@
  * that read the Release Bot's key, in the release-bot environment. Each makes
  * the bot's token, which every gh command gets in place of the workflow's own
  * token, and they run nothing but the actions, gh, git, curl and release
- * scripts they need. It builds the commit release-please's draft points at,
- * in the release environment, attests the assembled files in a job of its
- * own, uploads them only to a draft, and publishes once assemble and smoke
- * have passed. Candidate and release builds compare the macOS designated
+ * scripts they need. release-please runs twice, the release alone, then the
+ * release pull request alone, which waits while a draft is pending. It
+ * builds the commit release-please's draft points at, in the release
+ * environment, attests the assembled files in a job of its own, uploads them
+ * only to a draft, and publishes once assemble and smoke have passed.
+ * Candidate and release builds compare the macOS designated
  * requirement with the pinned one.
  *
  * Node has no YAML parser and the repo takes no dependency for a test, so the
@@ -2707,20 +2709,23 @@ const RELEASE_BOT_ACTIONS = {
 
 /**
  * A rule for gh's arguments in those jobs: gh release view reads a release
- * of the repository GH_REPO names; the two writes are the workflow's own,
- * each in its one form. The token can write the repository's contents, so
- * nothing else, such as gh release delete or gh api, may run.
+ * of the repository GH_REPO names; one gh api call lists the repository's
+ * releases, to count the drafts; the two writes are the workflow's own. Each
+ * but gh release view takes its one form. The token can write the
+ * repository's contents, so nothing else, such as gh release delete or
+ * another gh api call, may run.
  */
 function ghRule(args) {
   if (args[0] === "release" && args[1] === "view") {
     return args.some((arg) => /^(-R|--repo)(=|$)/.test(arg)) ? "must take the repository from GH_REPO" : null;
   }
-  const writes = [
+  const forms = [
+    ["api", "repos/$GITHUB_REPOSITORY/releases?per_page=100", "--jq", "map(select(.draft)) | length"],
     ["release", "upload", "$TAG", "release/*", "--clobber"],
     ["release", "edit", "$TAG", "--draft=false", "--latest"],
   ];
-  if (writes.some((form) => sameWords(form, args))) return null;
-  return `may only view a release, or run ${writes.map((form) => `gh ${form.join(" ")}`).join(" or ")}`;
+  if (forms.some((form) => sameWords(form, args))) return null;
+  return `may only view a release, or run ${forms.map((form) => `gh ${form.join(" ")}`).join(" or ")}`;
 }
 
 /** The commands those jobs may run, besides node on the release scripts, each with a rule for its arguments. */
@@ -2771,12 +2776,19 @@ const jqScriptTest = (name, fn) => test(name, { skip: YAML_SKIP || BASH_SKIP || 
  * gh, as the tests of release.yml's steps fake it. It logs its arguments.
  * gh release view answers with jq, as its --jq does, from a JSON file: the
  * release STUB_TAG names, from STUB_RELEASE, or with no tag, the latest
- * release, from STUB_LATEST. gh release upload and edit only log. Another
- * release, or another command, fails.
+ * release, from STUB_LATEST. gh api answers the repository's release list,
+ * STUB_RELEASES, the same way, and fails, as on an error status, without
+ * one. gh release upload and edit only log. Another release, endpoint or
+ * command fails.
  */
 const FAKE_GH = [
   "#!/bin/sh",
   "printf '%s\\n' \"$*\" >> \"$STUB_LOG.gh\"",
+  'if [ "$1" = api ]; then',
+  '  [ "$2" = "repos/$GITHUB_REPOSITORY/releases?per_page=100" ] && [ "$3" = --jq ] || exit 3',
+  '  [ -f "$STUB_RELEASES" ] || { echo "gh: Server Error (HTTP 502)" >&2; exit 1; }',
+  '  exec jq -r "$4" "$STUB_RELEASES"',
+  "fi",
   '[ "$1" = release ] || exit 3',
   "sub=$2",
   "shift 2",
@@ -2833,19 +2845,21 @@ const FAKE_SLEEP = "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$STUB_LOG.sleep\"\n";
  * and a release/ folder with `files`. node and jq are the real ones; gh, git,
  * curl and sleep are FAKE_GH, FAKE_GIT, FAKE_CURL and FAKE_SLEEP. `release`
  * and `latest` are what gh release view shows of the release `tag` names and
- * of the latest release; `served` holds what curl's calls print in turn, a
- * null for a 404. Returns { status, output, gh, git, curl, sleep }, the last
- * four the lines each stand-in logged.
+ * of the latest release, and `releases`, the list gh api gives; `served`
+ * holds what curl's calls print in turn, a null for a 404. Returns
+ * { status, output, gh, git, curl, sleep, outputs }: the lines each stand-in
+ * logged, and what the step wrote to GITHUB_OUTPUT.
  */
-function runReleaseStep(step, { env = {}, files = [], release, latest, tag = "v1.2.3", served = [] } = {}) {
+function runReleaseStep(step, { env = {}, files = [], release, latest, releases, tag = "v1.2.3", served = [] } = {}) {
   return inTempDir((dir) => {
     const bin = join(dir, "bin");
     for (const sub of ["bin", "release", "served", "scripts/release"]) mkdirSync(join(dir, sub), { recursive: true });
     copyFileSync(join(ROOT, "scripts/release/release-assets.mjs"), join(dir, "scripts/release/release-assets.mjs"));
     for (const name of files) writeFileSync(join(dir, "release", name), `${name}\n`);
-    for (const [name, value] of [["release.json", release], ["latest-release.json", latest]]) {
+    for (const [name, value] of [["release.json", release], ["latest-release.json", latest], ["releases.json", releases]]) {
       if (value !== undefined) writeFileSync(join(dir, name), JSON.stringify(value));
     }
+    writeFileSync(join(dir, "github-output"), "");
     served.forEach((body, i) => writeFileSync(join(dir, "served", String(i + 1)), body ?? "HTTP 404"));
     if (served.length > 0) writeFileSync(join(dir, "served", "last"), served.at(-1) ?? "HTTP 404");
     for (const [name, text] of [
@@ -2867,16 +2881,26 @@ function runReleaseStep(step, { env = {}, files = [], release, latest, tag = "v1
         STUB_TAG: tag,
         STUB_RELEASE: join(dir, "release.json"),
         STUB_LATEST: join(dir, "latest-release.json"),
+        STUB_RELEASES: join(dir, "releases.json"),
         STUB_SERVED: join(dir, "served"),
         GH_TOKEN: "the Release Bot's token",
         GH_REPO: "fleetifydev/fleetify",
+        GITHUB_OUTPUT: join(dir, "github-output"),
         ...env,
       },
       encoding: "utf8",
       timeout: 60_000,
     });
     const logged = (name) => (existsSync(`${log}.${name}`) ? readFileSync(`${log}.${name}`, "utf8").split("\n").filter(Boolean) : []);
-    return { status: result.status, output: `${result.stdout}${result.stderr}`, gh: logged("gh"), git: logged("git"), curl: logged("curl"), sleep: logged("sleep") };
+    return {
+      status: result.status,
+      output: `${result.stdout}${result.stderr}`,
+      gh: logged("gh"),
+      git: logged("git"),
+      curl: logged("curl"),
+      sleep: logged("sleep"),
+      outputs: readFileSync(join(dir, "github-output"), "utf8"),
+    };
   });
 }
 
@@ -2904,21 +2928,62 @@ describe("release.yml", () => {
     assert.equal(flow.defaults?.run?.shell, "bash", "release.yml's steps must run with bash");
   });
 
-  yamlTest("release-please runs with the Release Bot's token, and hands on the draft's tag, version and commit", () => {
-    // Events made with the App's token start workflows, unlike the job's own
+  yamlTest("release-please runs twice with the Release Bot's token, the release alone, then the release pull request alone, and hands on the release's tag, version and commit", () => {
+    // In one step, the action goes on from a release it has just made to the
+    // release pull request, which it would then work out from a history in
+    // which the new draft, with no tag yet, isn't the last release. Events
+    // made with the App's token start workflows, unlike the job's own
     // token's, so the release pull request gets its checks.
     const job = jobOf(RELEASE, "release-please");
     assert.equal(job["runs-on"], "ubuntu-24.04");
     const steps = releaseStepsOf("release-please");
     const [token] = tokenStepsOf("release-please");
     const runs = steps.filter((step) => usesAction(step, "googleapis/release-please-action"));
-    assert.equal(runs.length, 1, "release-please must run release-please-action once");
-    const [run] = runs;
-    assert.ok(token !== undefined && steps.indexOf(token) < steps.indexOf(run), "release-please must make the Release Bot's token before it runs release-please");
-    assert.equal(typeof run.id, "string", "the release-please step needs an id");
-    assert.deepEqual(run.with, { token: `\${{ steps.${token.id}.outputs.token }}`, "config-file": "release-please-config.json", "manifest-file": ".release-please-manifest.json" });
-    for (const file of [run.with["config-file"], run.with["manifest-file"]]) assert.ok(existsSync(join(ROOT, file)), `${file} is missing`);
-    assert.deepEqual(job.outputs, Object.fromEntries(["release_created", "tag_name", "version", "sha"].map((name) => [name, `\${{ steps.${run.id}.outputs.${name} }}`])));
+    assert.equal(runs.length, 2, "release-please must run release-please-action twice: for the release, then for the release pull request");
+    const [release, pullRequest] = runs;
+    assert.ok(token !== undefined && steps.indexOf(token) < steps.indexOf(release), "release-please must make the Release Bot's token before it runs release-please");
+    assert.equal(release.id, "release", "the job's outputs and the steps after it read the release step's outputs, as steps.release");
+    assert.equal(release.if, undefined, "the release step must run on every push");
+    const inputs = { token: `\${{ steps.${token.id}.outputs.token }}`, "config-file": "release-please-config.json", "manifest-file": ".release-please-manifest.json" };
+    assert.deepEqual(release.with, { ...inputs, "skip-github-pull-request": true });
+    assert.deepEqual(pullRequest.with, { ...inputs, "skip-github-release": true });
+    for (const file of [inputs["config-file"], inputs["manifest-file"]]) assert.ok(existsSync(join(ROOT, file)), `${file} is missing`);
+    assert.deepEqual(job.outputs, Object.fromEntries(["release_created", "tag_name", "version", "sha"].map((name) => [name, `\${{ steps.release.outputs.${name} }}`])));
+  });
+
+  yamlTest("the release pull request is made only in a run that made no release, once the step before it has found no draft pending", () => {
+    // A draft has no tag, so release-please can't see it as the last release.
+    const steps = releaseStepsOf("release-please");
+    const [release, pullRequest] = steps.filter((step) => usesAction(step, "googleapis/release-please-action"));
+    const looks = steps.filter((step) => scriptOf(step).includes("gh api"));
+    assert.equal(looks.length, 1, "release-please must look for a pending draft once");
+    const [look] = looks;
+    assert.equal(look.id, "drafts");
+    const condition = (step) => String(step.if).replace(/\s+/g, " ").trim();
+    assert.equal(condition(look), "steps.release.outputs.release_created != 'true'");
+    assert.ok(steps.indexOf(release) < steps.indexOf(look) && steps.indexOf(look) < steps.indexOf(pullRequest), "release-please must look for a draft after the release step and before the pull request step");
+    // Only the answer that there is none lets it run: no answer, as when the
+    // check is skipped, leaves it out.
+    assert.equal(condition(pullRequest), "steps.release.outputs.release_created != 'true' && steps.drafts.outputs.pending == 'false'");
+  });
+
+  jqScriptTest("the draft check answers pending=false only when GitHub lists no draft release, warns when one is pending, and fails when GitHub doesn't answer", () => {
+    const look = releaseStepsOf("release-please").find((step) => step.id === "drafts");
+    const release = (tag_name, draft) => ({ tag_name, draft });
+    for (const releases of [[], [release("v1.2.2", false), release("v1.2.1", false)]]) {
+      const none = runReleaseStep(look, { env: RELEASE_ENV, releases });
+      assert.equal(none.status, 0, none.output);
+      assert.equal(none.outputs, "pending=false\n", JSON.stringify(releases));
+      assert.doesNotMatch(none.output, /::warning::/);
+      assert.deepEqual(none.gh, ["api repos/fleetifydev/fleetify/releases?per_page=100 --jq map(select(.draft)) | length"]);
+    }
+    const pending = runReleaseStep(look, { env: RELEASE_ENV, releases: [release("v1.2.3", true), release("v1.2.2", false)] });
+    assert.equal(pending.status, 0, pending.output);
+    assert.equal(pending.outputs, "pending=true\n");
+    assert.match(pending.output, /::warning::a draft release is pending: publish it by re-running its release run, or delete it\. The release pull request waits until then\./);
+    const unanswered = runReleaseStep(look, { env: RELEASE_ENV });
+    assert.notEqual(unanswered.status, 0, unanswered.output);
+    assert.equal(unanswered.outputs, "", "the check gave an answer it didn't get");
   });
 
   scriptTest("release-please's check passes a draft tagged v<version> at a commit, and fails another tag, or anything but a commit", () => {
@@ -2926,13 +2991,13 @@ describe("release.yml", () => {
     // build.yml checks out the commit, where a branch could move on before
     // the tag is made.
     const steps = releaseStepsOf("release-please");
-    const run = steps.find((step) => usesAction(step, "googleapis/release-please-action"));
-    const checks = steps.filter((step) => scriptOf(step) !== "");
+    const run = steps.find((step) => step.id === "release");
+    const checks = steps.filter((step) => scriptOf(step).includes('"v$VERSION"'));
     assert.equal(checks.length, 1, "release-please must check what release-please made, once");
     const [check] = checks;
     assert.ok(steps.indexOf(check) > steps.indexOf(run));
-    assert.equal(String(check.if).replace(/\s+/g, " ").trim(), `steps.${run.id}.outputs.release_created == 'true'`);
-    assert.deepEqual(check.env, Object.fromEntries([["TAG", "tag_name"], ["VERSION", "version"], ["SHA", "sha"]].map(([name, output]) => [name, `\${{ steps.${run.id}.outputs.${output} }}`])));
+    assert.equal(String(check.if).replace(/\s+/g, " ").trim(), "steps.release.outputs.release_created == 'true'");
+    assert.deepEqual(check.env, Object.fromEntries([["TAG", "tag_name"], ["VERSION", "version"], ["SHA", "sha"]].map(([name, output]) => [name, `\${{ steps.release.outputs.${output} }}`])));
     inTempDir((dir) => {
       const status = (env) => runScript(check.run, { cwd: dir, env }).status;
       assert.equal(status({ TAG: "v1.2.3", VERSION: "1.2.3", SHA: DRAFT_COMMIT }), 0);
@@ -3290,6 +3355,10 @@ describe("release.yml", () => {
       "cat <<EOF",
       "sleep 3600",
       "sort -o x",
+      // gh api calls but the one.
+      "gh api repos/fleetifydev/fleetify/releases --jq length",
+      'gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/1"',
+      'gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq \'map(select(.draft)) | length\' -X PATCH',
     ]) {
       assert.notDeepEqual(refused(script), [], script);
     }
@@ -3306,6 +3375,8 @@ describe("release.yml", () => {
       'served=$(curl -fsSL "$url" | jq -r .version) || served=""',
       'if [ "$attempt" -gt 1 ]; then sleep 10; fi',
       'echo "::error::the draft $TAG doesn\'t hold exactly the release\'s assets"',
+      'drafts=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq \'map(select(.draft)) | length\')',
+      'echo "pending=false" >> "$GITHUB_OUTPUT"',
     ]) {
       assert.deepEqual(refused(script), [], script);
     }
