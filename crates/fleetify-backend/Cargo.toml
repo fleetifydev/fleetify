@@ -53,9 +53,11 @@ glob = "0.3"
 # `crypto-rust` encrypts secrets on the D-Bus wire.
 keyring = { version = "3", features = ["apple-native", "windows-native", "linux-native-sync-persistent", "crypto-rust"] }
 # Loads `.env` (workspace root) into the process environment at server
-# startup so single-source dev config (POSTHOG_API_KEY, POSTHOG_HOST, …)
-# works without a wrapper shell script. No-op when `.env` is absent —
-# real production builds inject env via the shell as before.
+# startup in debug builds, so single-source dev config (POSTHOG_API_KEY,
+# POSTHOG_HOST, …) works without a wrapper shell script. No-op when `.env`
+# is absent. Release builds never read it; CI release builds compile the
+# PostHog key and host in instead (`option_env!`), and a value set in the
+# environment at run time still wins over the compiled-in one.
 dotenvy = "0.15"
 # Pseudo-terminal (ConPTY on Windows, openpty on Unix) for the
 # Antigravity CLI bridge: agy writes its interactive OAuth banner +

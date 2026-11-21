@@ -11,7 +11,7 @@
 //!      `POSTHOG_API_KEY` from the process env (set in the shell, or in
 //!      debug builds loaded from `.env` by `dotenvy` at the top of
 //!      `serve`), else the one compiled in from `POSTHOG_API_KEY` at build
-//!      time, which release builds get from the repository variable.
+//!      time, which CI release builds get from the repository variable.
 //!      Neither → `init` is a no-op, `enqueue_if_enabled` short-circuits.
 //!   2. Runtime: `ENABLED` AtomicBool. Tauri shell flips it via the
 //!      `telemetry_set_posthog_enabled` command after user consent.
@@ -40,7 +40,7 @@ static CLIENT: OnceLock<client::Client> = OnceLock::new();
 static DISTINCT_ID: OnceLock<String> = OnceLock::new();
 
 /// The project key compiled in from `POSTHOG_API_KEY` at build time.
-/// Release builds get it from the repository variable: a public,
+/// CI release builds get it from the repository variable: a public,
 /// write-only `phc_` key, safe to embed in shipped binaries.
 const COMPILED_KEY: Option<&str> = option_env!("POSTHOG_API_KEY");
 

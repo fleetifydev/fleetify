@@ -536,8 +536,10 @@ pub async fn serve(addr: SocketAddr, opts: ServeOptions) -> anyhow::Result<Serve
     } else {
         tokio::spawn(services::telemetry::run_heartbeat_loop());
         // PostHog sink: independent from the Fleetify cloud outbox.
-        // No-op if POSTHOG_API_KEY was unset at build time. The runtime
-        // gate (telemetry.posthog_enabled in fleet.config.json) is
+        // No-op without a project key: POSTHOG_API_KEY from the
+        // environment, else the one compiled in at build time
+        // (`posthog::project_key`). The runtime gate
+        // (telemetry.posthog_enabled in fleet.config.json) is
         // controlled by the Tauri shell via the
         // `telemetry_set_posthog_enabled` command and starts closed.
         if let Err(e) = services::telemetry::posthog::init().await {

@@ -262,12 +262,13 @@ first 8 characters of the raw session id (a random UUID).
      the backend's runtime gate so no new `session_started` /
      `tokens_used` / etc. events get queued. If the flag can't be saved,
      the switch shows why, and the change lasts until Fleetify restarts.
-- **The project key:** release builds carry Fleetify's PostHog project
-  key, a public, write-only `phc_` key compiled in when the release is
-  built; product analytics still stays off until you turn it on. In a
-  build made without the key, the entire backend module is a no-op
-  unless `POSTHOG_API_KEY` is set in its environment, and the frontend
-  wrapper stubs out when the build had no `VITE_POSTHOG_KEY`.
+- **The project key:** CI release builds, the ones Fleetify publishes,
+  carry its PostHog project key, a public, write-only `phc_` key
+  compiled in when they are built; product analytics still stays off
+  until you turn it on. A build you compile yourself has a key only if
+  you set one while building. Without one, the entire backend module is
+  a no-op unless `POSTHOG_API_KEY` is set in its environment, and the
+  frontend wrapper stubs out when the build had no `VITE_POSTHOG_KEY`.
 
 Once disabled, queued events in `~/.fleetify/posthog-outbox.sqlite` stop
 draining (the worker re-checks the gate each tick). You can also wipe
