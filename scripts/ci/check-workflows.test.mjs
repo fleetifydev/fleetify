@@ -1016,14 +1016,20 @@ const scriptVariables = (args) =>
  * one of the script's own, lower-case ones, as read's and local's must. bash
  * reads options before the format alone, until --, and takes -v's name
  * either as the next argument or joined to it (-vname); printf has no other
- * option.
+ * option. bash expands each word before printf reads it, so neither an
+ * option nor the format may hold an expansion, a $ or a backquote: "$o",
+ * with o=-vPATH, would set PATH.
  */
 function printfRule(args) {
-  for (let n = 0; n < args.length && args[n].startsWith("-") && args[n] !== "--"; n += 1) {
+  let n = 0;
+  for (; n < args.length && args[n].startsWith("-") && args[n] !== "--"; n += 1) {
+    if (/[$`]/.test(args[n])) return `takes ${args[n]}, an option an expansion makes`;
     if (!args[n].startsWith("-v")) return `takes ${args[n]}, which isn't an option of printf`;
     const name = args[n] === "-v" ? args[(n += 1)] : args[n].slice(2);
     if (!/^[a-z_][a-z0-9_]*$/.test(name ?? "")) return "sets a variable other than the script's own, lower-case ones";
   }
+  if (args[n] === "--") n += 1;
+  if (/[$`]/.test(args[n] ?? "")) return `takes ${args[n]} for its format, which an expansion makes, and which could be an option`;
   return null;
 }
 
@@ -1474,6 +1480,12 @@ capture() {
       "printf -vNODE_OPTIONS '%s' --require=./evil",
       "printf -v",
       "printf -x '%s' y",
+      // An option an expansion makes: bash expands the word before printf reads it.
+      "o=-vPATH; printf \"$o\" '%s' ./bin",
+      "printf \"$(echo -vNODE_OPTIONS)\" '%s' --require=./evil",
+      "printf `echo -vPATH` '%s' ./bin",
+      "printf \"${o}\" '%s' ./bin",
+      "printf -v\"$name\" '%s' x",
       "read -r x <<EOF",
       // Writes into the binaries a job with the keys bundles.
       'printf x > "target/$TRIPLE/release/fleetify-app"',
@@ -3488,6 +3500,10 @@ describe("release.yml", () => {
       "printf -vGH_TOKEN '%s' x",
       "printf -v GH_REPO '%s' other/repo",
       "printf -x '%s' y",
+      "o=-vGH_REPO; printf \"$o\" '%s' other/repo",
+      "printf \"$(echo -vGH_REPO)\" '%s' other/repo",
+      "printf `echo -vGH_TOKEN` '%s' x",
+      "printf -- \"$o\" '%s' x",
       // Writes into the assembled release, which was attested before it is uploaded.
       'echo x > release/latest.json',
       "printf x >> release/SHA256SUMS",
