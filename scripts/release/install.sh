@@ -37,12 +37,14 @@ NL='
 '
 
 # What a run makes, which cleanup removes or puts back: its temporary
-# folder; the folder a replacement is staged in, beside the install; and an
-# earlier Fleetify.app, moved aside into that folder, and where it goes back.
+# folder; the folder a replacement is staged in, beside the install; an
+# earlier Fleetify.app, moved aside into that folder, and where it goes back;
+# and whether the new app is in its place, after which the earlier one can go.
 tmp=
 stage=
 old=
 target=
+installed=
 
 say() { printf 'fleetify-install: %s\n' "$*"; }
 warn() { printf 'fleetify-install: warning: %s\n' "$*" >&2; }
@@ -113,12 +115,15 @@ desktop_arg() {
   esac
 }
 
-# Put back an earlier Fleetify.app that a failed replacement moved aside, and
-# remove the staging and temporary folders. Each command is guarded: under
-# set -e, one that failed here would turn a finished install into exit 1.
+# Put back an earlier Fleetify.app that an unfinished replacement moved
+# aside, and remove the staging and temporary folders. The earlier copy goes
+# only with a finished install: when it can't go back, because something else
+# is in its place now or the move fails, the staging folder stays, with it.
+# Each command is guarded: under set -e, one that failed here would turn a
+# finished install into exit 1.
 cleanup() {
-  if [ -n "$old" ] && [ -e "$old" ] && [ ! -e "$target" ] && [ ! -L "$target" ]; then
-    if ! mv "$old" "$target"; then
+  if [ -n "$old" ] && [ -z "$installed" ] && { [ -e "$old" ] || [ -L "$old" ]; }; then
+    if [ -e "$target" ] || [ -L "$target" ] || ! mv "$old" "$target"; then
       warn "couldn't put back $target; the earlier copy is $old"
       stage=
     fi
@@ -315,8 +320,18 @@ install_app() {
     old=$stage/Fleetify.app.old
     mv "$target" "$old" || die "can't move the earlier $target aside"
   fi
-  # On failure, cleanup puts the earlier app back.
+  # Until the new app is in place, cleanup puts the earlier one back.
   mv "$stage/Fleetify.app" "$target" || die "can't install $target"
+  # A folder made at $target since the earlier app went aside, by another run
+  # say, takes the new app inside it instead: take it back out, and leave the
+  # folder alone.
+  if [ -e "$target/Fleetify.app" ] || [ -L "$target/Fleetify.app" ]; then
+    if mv "$target/Fleetify.app" "$stage/Fleetify.app" 2>/dev/null; then
+      die "a folder appeared at $target during the install; Fleetify.app wasn't replaced"
+    fi
+    die "a folder appeared at $target during the install, and the new app is inside it: $target/Fleetify.app"
+  fi
+  installed=1
   if [ -n "$old" ] && ! rm -rf "$old" 2>/dev/null; then
     warn "couldn't remove the earlier copy, $old"
   fi

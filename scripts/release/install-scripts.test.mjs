@@ -37,6 +37,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  readlinkSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -361,11 +362,28 @@ for arg in "$@"; do
 done
 exec ${REAL_MV} "$@"`;
 
-/** mv, refusing only the rename that puts the staged Fleetify.app in its place. */
-const FAILING_FINAL_RENAME = `case $1 in
-*/.fleetify.*/Fleetify.app) case $2 in */Fleetify.app) echo "mv: the test refuses this rename" >&2; exit 1 ;; esac ;;
+/** mv, refusing only the rename that puts the staged Fleetify.app in its place, after running `first` (shell) there. */
+const failingFinalRename = (first = ":") => `case $1 in
+*/.fleetify.*/Fleetify.app) case $2 in */Fleetify.app) ${first}; echo "mv: the test refuses this rename" >&2; exit 1 ;; esac ;;
 esac
 exec ${REAL_MV} "$@"`;
+const FAILING_FINAL_RENAME = failingFinalRename();
+
+/** mv, making a folder where the staged Fleetify.app goes just before it moves it there, as a second run could. */
+const FOLDER_BEFORE_FINAL_RENAME = `case $1 in
+*/.fleetify.*/Fleetify.app) case $2 in */Fleetify.app) mkdir "$2" ;; esac ;;
+esac
+exec ${REAL_MV} "$@"`;
+
+/** The earlier copy a warning says couldn't be put back, checked to be the earlier app, in a staging folder in `apps`. */
+function keptEarlierCopy(stderr, target, apps) {
+  const warning = new RegExp(`^fleetify-install: warning: couldn't put back ${escapeRe(target)}; the earlier copy is (.+)$`, "m").exec(stderr);
+  assert.ok(warning, stderr);
+  const [, kept] = warning;
+  assert.match(kept, new RegExp(`^${escapeRe(apps)}/\\.fleetify\\.[A-Za-z0-9]{6}/Fleetify\\.app\\.old$`));
+  assert.equal(readFileSync(join(kept, "Contents", "earlier.txt"), "utf8"), "the earlier version\n", "the earlier copy isn't whole");
+  return kept;
+}
 
 const lines = (file) => (existsSync(file) ? readFileSync(file, "utf8").split("\n").filter(Boolean) : []);
 
@@ -916,6 +934,42 @@ describe("install.sh on macOS, with uname saying Darwin", { skip: SKIP_MAC_STUB 
     assert.match(run.stderr, /^fleetify-install: error: can't install /m);
     assert.deepEqual(contents(apps), before);
     assert.deepEqual(readdirSync(apps), ["Fleetify.app"]);
+    assert.deepEqual(readdirSync(ws.tmp), []);
+  });
+
+  test("when the final rename fails and something else is where the app was: the earlier copy stays, named in a warning, and that is left alone", async () => {
+    for (const [what, first, check] of [
+      ["a file", `echo "someone else's" > "$2"`, (target) => assert.equal(readFileSync(target, "utf8"), "someone else's\n")],
+      ["a dangling link", `ln -s /nonexistent/elsewhere "$2"`, (target) => assert.equal(readlinkSync(target), "/nonexistent/elsewhere")],
+    ]) {
+      const ws = workspace();
+      const apps = join(ws.root, "Applications");
+      const target = join(apps, "Fleetify.app");
+      mkdirSync(join(target, "Contents"), { recursive: true });
+      writeFileSync(join(target, "Contents", "earlier.txt"), "the earlier version\n");
+      const run = await installSh(["--dir", apps], { ws, release: GOOD, platform: PLATFORMS.macArm, stubs: { mv: failingFinalRename(first) } });
+      assert.equal(run.status, 1, `${what}:\n${run.output}`);
+      assert.match(run.stderr, /^fleetify-install: error: can't install /m, what);
+      check(target);
+      const kept = keptEarlierCopy(run.stderr, target, apps);
+      assert.deepEqual(readdirSync(apps).sort(), [kept.split("/").at(-2), "Fleetify.app"].sort(), what);
+      assert.deepEqual(readdirSync(ws.tmp), [], what);
+    }
+  });
+
+  test("a folder that appears where the app goes, before the final rename: exit 1, the new app taken back out, the folder left alone, and the earlier copy kept", async () => {
+    const ws = workspace();
+    const apps = join(ws.root, "Applications");
+    const target = join(apps, "Fleetify.app");
+    mkdirSync(join(target, "Contents"), { recursive: true });
+    writeFileSync(join(target, "Contents", "earlier.txt"), "the earlier version\n");
+    const run = await installSh(["--dir", apps], { ws, release: GOOD, platform: PLATFORMS.macArm, stubs: { mv: FOLDER_BEFORE_FINAL_RENAME } });
+    assert.equal(run.status, 1, run.output);
+    assert.ok(run.stderr.includes(`fleetify-install: error: a folder appeared at ${target} during the install; Fleetify.app wasn't replaced\n`), run.stderr);
+    assert.deepEqual(readdirSync(target), [], "the folder that appeared doesn't hold just what it held");
+    const kept = keptEarlierCopy(run.stderr, target, apps);
+    // The new app is back beside the earlier copy, in the staging folder that stays.
+    assert.equal(archOf(join(kept, "..", "Fleetify.app")), "aarch64");
     assert.deepEqual(readdirSync(ws.tmp), []);
   });
 
