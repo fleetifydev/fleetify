@@ -258,6 +258,11 @@ jobs:
                 $installScript = Invoke-RestMethod -Uri "$env:FLEETIFY_INSTALL_BASE/latest/download/install.ps1"
                 break
               } catch {
+                # An answer with an error status is final; no answer means the
+                # server is still starting.
+                if ($null -ne $_.Exception.Response) {
+                  throw "the release server answered $([int]$_.Exception.Response.StatusCode) for install.ps1"
+                }
                 Start-Sleep -Seconds 1
               }
             }

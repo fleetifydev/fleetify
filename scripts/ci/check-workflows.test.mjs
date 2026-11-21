@@ -29,12 +29,13 @@
  * Tauri CLI, system tools and the repository's scripts, get the release
  * secrets only in release-only steps, and check every artifact they take
  * before using it. A release build gets nothing of a dry run's: no cache,
- * none of the keys a dry run makes, no updater overlay. The dry run assembles with each build's own
- * key and adds the install scripts, and its smoke runs the bundles without the source tree, then
- * installs each platform's bundle with its install script, from the release as a local server
- * serves it. Where a step's
- * script decides something, such as the environment or the arguments the
- * smoke gets, the check runs that script with bash, as the runner does.
+ * none of the keys a dry run makes, no updater overlay. The dry run assembles
+ * with each build's own key and adds the install scripts, and its smoke runs
+ * the bundles without the source tree, then installs each platform's bundle
+ * with its install script, from the release as a local server serves it.
+ * Where a step's script decides something, such as the environment or the
+ * arguments the smoke gets, the check runs that script with bash, as the
+ * runner does.
  *
  * Node has no YAML parser and the repo takes no dependency for a test, so the
  * workflows are parsed by Python's PyYAML, as in check-github-config.test.mjs.
@@ -2551,6 +2552,9 @@ describe("smoke.yml's install via script", () => {
       "Set-Content -LiteralPath (Join-Path $downloads 'notes.txt')",
       "'tools/scripts/release/launch-smoke.mjs', 'serve-release', '--dir', 'release', '--version', $env:VERSION, '--port', '18081'",
       '"$env:FLEETIFY_INSTALL_BASE/latest/download/install.ps1"',
+      // An answer with an error status ends the wait; only no answer is retried.
+      "if ($null -ne $_.Exception.Response) {",
+      "Start-Sleep -Seconds 1",
       "Remove-Item -LiteralPath $env:APP_EXE",
       ")) -Silent",
       "Test-Path -LiteralPath $env:APP_EXE",
