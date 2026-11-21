@@ -14,7 +14,7 @@ import { after, before, describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { request as httpRequest } from "node:http";
+import { Agent, request as httpRequest } from "node:http";
 import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, parse, posix, resolve, win32 } from "node:path";
@@ -124,9 +124,9 @@ const takePort = () => {
 // ── Helpers ──
 
 /** An HTTP request that follows no redirect: { status, headers, body (Buffer) }. */
-function request(url, { method = "GET", headers = {} } = {}) {
+function request(url, { method = "GET", headers = {}, agent = false } = {}) {
   return new Promise((done, fail) => {
-    const req = httpRequest(url, { method, headers, agent: false }, (res) => {
+    const req = httpRequest(url, { method, headers, agent }, (res) => {
       const chunks = [];
       res.on("data", (chunk) => chunks.push(chunk));
       res.on("end", () => done({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks) }));
@@ -726,20 +726,32 @@ describe("createUpdateServer", () => {
   test("/artifacts/<asset> sends the file in full, and the download is recorded as complete", async () => {
     const server = createUpdateServer({ releaseDir: RELEASE });
     const base = await listen(server);
+    // A client that keeps the connection open, as the updater's does. One
+    // that hangs up as soon as it has the body can close the connection
+    // before the server's file stream reaches its end; the response then
+    // closes without finishing, and the download isn't complete.
+    const agent = new Agent({ keepAlive: true });
+    let timer;
     try {
       const asset = "Fleetify_0.2.0_amd64.AppImage";
       // The server finishes once the last bytes are handed to the system,
-      // which in one process may come after the client has read them, and
-      // later still on a busy machine: wait for the event itself. Its
+      // which may come after the client has read them, and later still on a
+      // busy machine: wait for the event itself, for 30 s at most. Its
       // listeners all run before this promise's continuation does.
-      const finished = new Promise((done) => server.once("request", (req, res) => res.once("finish", done)));
-      const answer = await request(`${base}/artifacts/${asset}`);
+      const finished = new Promise((done, fail) => {
+        timer = setTimeout(() => fail(new Error("the server didn't finish the response within 30 s")), 30_000);
+        server.once("request", (req, res) => res.once("finish", done));
+      });
+      finished.catch(() => {});
+      const answer = await request(`${base}/artifacts/${asset}`, { agent });
       assert.equal(answer.status, 200);
       assert.equal(answer.headers["content-length"], String(ARTIFACT_BYTES.get(asset).length));
       assert.ok(answer.body.equals(ARTIFACT_BYTES.get(asset)));
       await finished;
       assert.deepEqual(server.downloads, [{ asset, size: ARTIFACT_BYTES.get(asset).length, bytes: ARTIFACT_BYTES.get(asset).length, complete: true }]);
     } finally {
+      clearTimeout(timer);
+      agent.destroy();
       await close(server);
     }
   });
