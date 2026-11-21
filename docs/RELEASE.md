@@ -28,11 +28,11 @@ Releases come from release-please. It keeps a release pull request open, titled 
 
 `release.yml` runs on every push to `main`, one run at a time: its runs share the concurrency group `release` and never cancel one another. Its jobs:
 
-1. **release-please** gets a token for the Fleetify Release Bot, a GitHub App, and runs release-please with it. After an ordinary push, it opens or updates the release pull request, if anything merged since the last release calls for one. After the push that merges it, it creates the release instead, as a draft, whose `v<version>` tag doesn't exist yet. Events made with the App's token start workflows, unlike those made with the default token, so the release pull request gets its checks like any other.
+1. **release-please**, in the `release-bot` environment, gets a token for the Fleetify Release Bot, a GitHub App, and runs release-please with it. After an ordinary push, it opens or updates the release pull request, if anything merged since the last release calls for one. After the push that merges it, it creates the release instead, as a draft, whose `v<version>` tag doesn't exist yet. Events made with the App's token start workflows, unlike those made with the default token, so the release pull request gets its checks like any other.
 2. **build** runs build.yml on the merge commit in the `release` environment, when a release was created.
-3. **assemble** puts the release's 20 files together with `assemble.mjs`, which checks every updater signature against the key in [`src-tauri/tauri.conf.json`](../src-tauri/tauri.conf.json) and requires its key id to be `44C694713A20D751`. It attests the files' build provenance, uploads them to the draft, and checks that the draft holds exactly the assets that `expectedAssets()` in [`release-assets.mjs`](../scripts/release/release-assets.mjs) names.
+3. **assemble**, in the `release-bot` environment, puts the release's 20 files together with `assemble.mjs`, which checks every updater signature against the key in [`src-tauri/tauri.conf.json`](../src-tauri/tauri.conf.json) and requires its key id to be `44C694713A20D751`. It attests the files' build provenance, uploads them to the draft, and checks that the draft holds exactly the assets that `expectedAssets()` in [`release-assets.mjs`](../scripts/release/release-assets.mjs) names.
 4. **smoke** runs smoke.yml on those files. The macOS app's designated requirement must equal the one pinned in `scripts/release/macos-designated-requirement.txt`.
-5. **publish**, once assemble and smoke have passed, publishes the draft and marks it as the latest release. Publishing creates the tag, as the Release Bot. The job then checks that the release is no longer a draft, that the tag exists, and that GitHub's `latest.json` for the latest release names the new version.
+5. **publish**, in the `release-bot` environment, once assemble and smoke have passed, publishes the draft and marks it as the latest release. Publishing creates the tag, as the Release Bot. The job then checks that the release is no longer a draft, that the tag exists, and that GitHub's `latest.json` for the latest release names the new version.
 
 Two rulesets guard the tags: only the organisation's admins and the Release Bot may create a `v*` tag, and no one may move or delete one. A tag created before the checks passed would be permanent, which is why the tag only comes into being at publish. Don't create a `v*` tag by hand.
 
@@ -80,9 +80,10 @@ The hand-off artifacts between the jobs are kept for seven days, so approve a re
 ### The environments
 
 - **`release`** holds the signing keys. Its deployments wait until a required reviewer, one of the project owners, approves them, and they may come only from `main` and from `v*` tags. One approval covers the jobs of a run that wait for it together, as sign and bundle-macos do.
+- **`release-bot`** holds the Release Bot's private key. Its deployments need no approval, and they may come only from `main`.
 - **`dry-run`** has no protection rules, secrets or variables.
 
-Never call build.yml with `secrets: inherit`. It would hand the repository's secrets, the Release Bot's key among them, to every job in build.yml, the compile job included. The signing keys reach a job only through the environment its caller names.
+Never call build.yml with `secrets: inherit`. It would hand the repository's secrets to every job in build.yml, the compile job included. The signing keys reach a job only through the environment its caller names.
 
 ## Keys and secrets
 
@@ -93,14 +94,14 @@ Never call build.yml with `secrets: inherit`. It would hand the repository's sec
 | `APPLE_CERTIFICATE` | secret | `release` environment | the macOS code-signing identity, a self-signed certificate with its private key, as a base64 `.p12` |
 | `APPLE_CERTIFICATE_PASSWORD` | secret | `release` environment | the `.p12`'s password |
 | `APPLE_SIGNING_IDENTITY` | variable | `release` environment | the identity's name, `Fleetify Self-Signed Code Signing` |
-| `RELEASE_BOT_PRIVATE_KEY` | secret | repository | the private key of the Fleetify Release Bot, a GitHub App |
+| `RELEASE_BOT_PRIVATE_KEY` | secret | `release-bot` environment | the private key of the Fleetify Release Bot, a GitHub App |
 | `RELEASE_BOT_CLIENT_ID` | variable | repository | the App's client ID |
 | `POSTHOG_API_KEY`, `POSTHOG_HOST`, `VITE_POSTHOG_KEY`, `VITE_POSTHOG_HOST` | variables | repository | the public, write-only PostHog project key and its host, which release builds compile in |
 
 - The updater key's public half is `plugins.updater.pubkey` in tauri.conf.json. Every build embeds it, and an installed copy installs only an update whose signature it verifies.
 - Of all the jobs, only build.yml's sign and bundle-macos reach the `release` environment's keys, and only bundle-macos the macOS identity.
 - The macOS identity is self-signed, and the app is signed with the hardened runtime and isn't notarized. macOS ties the microphone permission and Fleetify's keychain items to the app's designated requirement, which is pinned in `scripts/release/macos-designated-requirement.txt`, so they carry over an update only while it stays the same.
-- The Release Bot's key is a repository secret rather than an environment one, as the release-please job runs on every push to `main` and an environment would ask for an approval each time. Only release.yml reads it, and pull requests from forks never get it. The token it makes can write contents, pull requests and issues.
+- The Release Bot's key is in the `release-bot` environment, which only `main` may deploy to and which asks for no approval, as the release-please job runs on every push to `main`. A workflow on any other branch or pull request can't reach it. Only release.yml's release-please, assemble and publish jobs use it. The token it makes can write contents, pull requests and issues.
 - No workflow gives a build a private API key, such as a model provider's, and `scan-secrets.mjs` checks the built UI and binaries for one before they're bundled.
 
 **Custody.** The project owners ([CONTRIBUTING.md](../CONTRIBUTING.md#maintainers)) hold the keys. Each private key and password is kept in the project's shared password vault and in an offline copy. The public halves are in the repository. Set a secret only through standard input, never as an argument, and never print, paste or log a key or a password:
@@ -195,9 +196,16 @@ git push origin "HEAD:$branch"
 
 Then make the same changes to the notes in the pull request's description. Its CI passes now.
 
-### 5. Dry-run the release pull request
+### 5. Check the release pull request's dry run
 
-The release commit skips the dry run on `main`, so run one on the release pull request's branch, at the head you are about to merge, and wait for it to pass:
+The release commit skips the dry run on `main`, so the release pull request's own dry run stands in for it. The pull request changes paths the dry run watches, and the Release Bot's events start workflows, so every update of it, your preparation commit included, starts one. Before you merge, check that the **Release dry run** run passed on the head you are about to merge:
+
+```bash
+head=$(gh pr view <number> --json headRefOid --jq .headRefOid)
+gh run list --workflow release-dry-run.yml --commit "$head" --event pull_request
+```
+
+If no run passed on that head, dispatch one on the branch and wait for it:
 
 ```bash
 branch=$(gh pr view <number> --json headRefName --jq .headRefName)
@@ -256,7 +264,7 @@ Tags are immutable: a ruleset forbids moving or deleting a `v*` tag, with no exc
 
 ## Pausing updates
 
-An installed copy asks fleetify.dev for updates first and GitHub second, in the order of `plugins.updater.endpoints` in tauri.conf.json. While its pause flag is set, fleetify.dev answers with an error status, and the updater then asks GitHub, which serves the `latest.json` of the release marked as latest. To stop offering a bad release, do both:
+An installed copy asks fleetify.dev for updates first and GitHub second, in the order of `plugins.updater.endpoints` in tauri.conf.json. While its pause flag is set, fleetify.dev answers `204 No Content`, which the updater takes as "no update" without asking GitHub. A copy that can't reach fleetify.dev still asks GitHub, which serves the `latest.json` of the release marked as latest. To stop offering a bad release, do both:
 
 1. Set the front door's pause flag, in the fleetify.dev service's configuration, outside this repository.
 2. Mark the previous release as the latest:
@@ -305,7 +313,7 @@ A copy older than the rotation release trusts only the old key, so it can't inst
 Generate a new private key in the App's settings (the organisation's **Settings → Developer settings → GitHub Apps**) and set it:
 
 ```bash
-gh secret set RELEASE_BOT_PRIVATE_KEY -R fleetifydev/fleetify < new-private-key.pem
+gh secret set RELEASE_BOT_PRIVATE_KEY --env release-bot -R fleetifydev/fleetify < new-private-key.pem
 ```
 
 Once the release-please job of release.yml's next run passes, delete the old key in the App's settings, and replace it in the vault.
@@ -336,10 +344,10 @@ The answer comes from the `latest.json` of the release marked as latest on GitHu
 | Status | When | Body |
 |---|---|---|
 | `200` | resolveUpdate returns an update | its result, as JSON with `Content-Type: application/json`: `version`, `url`, `signature`, `notes` and `pub_date`, Tauri's format for a dynamic update server |
-| `204` | resolveUpdate returns nothing: the copy is current, or `latest.json` has no entry for it | none |
-| any non-2xx, such as `503` | the pause flag is set; `latest.json` can't be fetched or read; or resolveUpdate throws, on a `current_version` that isn't `MAJOR.MINOR.PATCH` or an entry without a `url` or a `signature` | anything |
+| `204` | the pause flag is set, or resolveUpdate returns nothing: the copy is current, or `latest.json` has no entry for it | none |
+| any non-2xx, such as `503` | `latest.json` can't be fetched or read, or resolveUpdate throws, on a `current_version` that isn't `MAJOR.MINOR.PATCH` or an entry without a `url` or a `signature` | anything |
 
-Never answer with a 2xx whose body isn't JSON, such as an HTML error page: the updater ends the whole check on it, without asking GitHub. After a non-2xx answer, or none within 20 seconds, the updater asks GitHub.
+A `204` ends the check: the updater reports no update and doesn't ask GitHub, which is what makes the pause flag work. Never answer with a 2xx whose body isn't JSON, such as an HTML error page: the updater ends the whole check on it too, but as a failure. After a non-2xx answer, or none within 20 seconds, the updater asks GitHub.
 
 ### Download links
 
