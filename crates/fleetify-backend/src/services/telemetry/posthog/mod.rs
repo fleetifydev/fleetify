@@ -7,10 +7,12 @@
 //!     interferes with the Fleetify outbox.
 //!
 //! Three-tier gating, fail-closed:
-//!   1. Environment: `POSTHOG_API_KEY` present in the process env when
-//!      `init()` runs (loaded from `.env` by `dotenvy` at the top of
-//!      `serve`, or set in the shell). Unset →
-//!      `init` is a no-op, `enqueue_if_enabled` short-circuits.
+//!   1. Key: a project key when `init()` runs ([`project_key`]):
+//!      `POSTHOG_API_KEY` from the process env (set in the shell, or in
+//!      debug builds loaded from `.env` by `dotenvy` at the top of
+//!      `serve`), else the one compiled in from `POSTHOG_API_KEY` at build
+//!      time, which release builds get from the repository variable.
+//!      Neither → `init` is a no-op, `enqueue_if_enabled` short-circuits.
 //!   2. Runtime: `ENABLED` AtomicBool. Tauri shell flips it via the
 //!      `telemetry_set_posthog_enabled` command after user consent.
 //!   3. Live opt-out: the worker also re-checks `is_enabled()` each
@@ -37,15 +39,32 @@ static ENABLED: AtomicBool = AtomicBool::new(false);
 static CLIENT: OnceLock<client::Client> = OnceLock::new();
 static DISTINCT_ID: OnceLock<String> = OnceLock::new();
 
+/// The project key compiled in from `POSTHOG_API_KEY` at build time.
+/// Release builds get it from the repository variable: a public,
+/// write-only `phc_` key, safe to embed in shipped binaries.
+const COMPILED_KEY: Option<&str> = option_env!("POSTHOG_API_KEY");
+
+/// The host compiled in from `POSTHOG_HOST` at build time.
+const COMPILED_HOST: Option<&str> = option_env!("POSTHOG_HOST");
+
+/// The runtime value when set and non-empty, else the compiled-in one when
+/// non-empty.
+pub(crate) fn first_non_empty(runtime: Option<String>, compiled: Option<&str>) -> Option<String> {
+    runtime.filter(|value| !value.is_empty()).or_else(|| {
+        compiled
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    })
+}
+
 /// PostHog project key (write-only / public, safe to embed in shipped
-/// binaries) read from `POSTHOG_API_KEY` in the process environment at
-/// call time. `None` → entire module is a no-op. `dotenvy` populates
-/// the env from `.env` at server startup, so a single workspace-root
-/// `.env` covers dev without a wrapper shell script.
+/// binaries): `POSTHOG_API_KEY` from the process environment at call
+/// time, else the one compiled in (`COMPILED_KEY`). `None` → entire
+/// module is a no-op. In debug builds `dotenvy` populates the env from
+/// `.env` at server startup, so a single workspace-root `.env` covers dev
+/// without a wrapper shell script.
 pub fn project_key() -> Option<String> {
-    std::env::var("POSTHOG_API_KEY")
-        .ok()
-        .filter(|s| !s.is_empty())
+    first_non_empty(std::env::var("POSTHOG_API_KEY").ok(), COMPILED_KEY)
 }
 
 /// The default PostHog host: PostHog Cloud's EU region. The renderer
@@ -53,13 +72,12 @@ pub fn project_key() -> Option<String> {
 pub const DEFAULT_HOST: &str = "https://eu.i.posthog.com";
 
 /// PostHog host: `POSTHOG_HOST` from the process environment at call
-/// time, or [`DEFAULT_HOST`] when it is unset or empty. A project in
+/// time, else the one compiled in (`COMPILED_HOST`), else
+/// [`DEFAULT_HOST`]; an empty value counts as unset. A project in
 /// PostHog's US region, or a self-hosted instance, sets `POSTHOG_HOST`
 /// to its own URL.
 pub fn host() -> String {
-    std::env::var("POSTHOG_HOST")
-        .ok()
-        .filter(|s| !s.is_empty())
+    first_non_empty(std::env::var("POSTHOG_HOST").ok(), COMPILED_HOST)
         .unwrap_or_else(|| DEFAULT_HOST.to_string())
 }
 
@@ -91,13 +109,14 @@ pub(crate) fn client_handle() -> Option<&'static client::Client> {
     CLIENT.get()
 }
 
-/// Initialise the outbox + spawn the worker. No-op when
-/// `POSTHOG_API_KEY` is unset in the process env at this call.
+/// Initialise the outbox + spawn the worker. No-op without a project
+/// key ([`project_key`]): `POSTHOG_API_KEY` unset in the process env at
+/// this call, and at build time.
 pub async fn init() -> anyhow::Result<()> {
     let Some(key) = project_key() else {
         tracing::info!(
             target: "fleetify.posthog",
-            "POSTHOG_API_KEY not set in env; posthog sink disabled"
+            "POSTHOG_API_KEY set neither in env nor at build time; posthog sink disabled"
         );
         return Ok(());
     };
@@ -115,8 +134,8 @@ pub async fn init() -> anyhow::Result<()> {
 }
 
 /// Convert a Fleetify telemetry payload to a PostHog event and enqueue.
-/// Returns silently when the runtime gate is closed or the build had
-/// no `POSTHOG_API_KEY`.
+/// Returns silently when the runtime gate is closed or there is no
+/// project key ([`project_key`]).
 pub async fn enqueue_if_enabled(fleetify_payload: &Value) {
     if !is_enabled() || project_key().is_none() {
         return;
@@ -137,6 +156,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn runtime_value_wins_then_the_compiled_one() {
+        let s = |v: &str| Some(v.to_string());
+        assert_eq!(first_non_empty(s("a"), Some("b")), s("a"));
+        assert_eq!(first_non_empty(s("a"), None), s("a"));
+        // A release build started without the variable: the compiled value.
+        assert_eq!(first_non_empty(None, Some("b")), s("b"));
+        // Empty counts as unset, at run time and at build time.
+        assert_eq!(first_non_empty(s(""), Some("b")), s("b"));
+        assert_eq!(first_non_empty(s(""), Some("")), None);
+        assert_eq!(first_non_empty(None, Some("")), None);
+        assert_eq!(first_non_empty(None, None), None);
+    }
+
+    #[test]
     fn host_defaults_to_eu() {
         // POSTHOG_HOST is process-wide: change it only under the crate's
         // env lock, and put back whatever was there before asserting.
@@ -152,8 +185,12 @@ mod tests {
             Some(v) => std::env::set_var("POSTHOG_HOST", v),
             None => std::env::remove_var("POSTHOG_HOST"),
         }
-        assert_eq!(unset, "https://eu.i.posthog.com");
-        assert_eq!(empty, "https://eu.i.posthog.com");
+        // A build made with POSTHOG_HOST set falls back to that host.
+        let want = COMPILED_HOST
+            .filter(|h| !h.is_empty())
+            .unwrap_or(DEFAULT_HOST);
+        assert_eq!(unset, want);
+        assert_eq!(empty, want);
     }
 
     #[test]
