@@ -323,8 +323,10 @@ jobs:
       #   be found in the keychain". So the certificate is trusted for code
       #   signing in the System keychain, and the step checks that
       #   `security find-identity -v` lists the identity before Tauri runs.
-      # The keychain doesn't lock on its own while the job runs. The trust
-      # setting and the keychain go at the end of the job, whatever happened.
+      # The keychain doesn't lock on its own while the job runs, and goes at
+      # the end of the job, whatever happened. The trust setting stays: GitHub
+      # discards a hosted runner's VM after the job, and removing the setting
+      # waits for an authorization dialog no one can answer.
       #
       # A dry run makes an identity of its own, shaped like the release one:
       # self-signed, for code signing only.
@@ -364,7 +366,6 @@ jobs:
             < <(security list-keychains -d user | sed -e 's/^[[:space:]]*"//' -e 's/"$//')
           security list-keychains -d user -s "$keychain" "${searched[@]}"
           sudo security add-trusted-cert -d -r trustRoot -p codeSign -k /Library/Keychains/System.keychain "$cert"
-          echo "CODESIGN_CERT=$cert" >> "$GITHUB_ENV"
           valid=$(security find-identity -v -p codesigning "$keychain")
           echo "$valid"
           if ! grep -qF "\"$IDENTITY\"" <<< "$valid"; then
@@ -403,7 +404,6 @@ jobs:
             < <(security list-keychains -d user | sed -e 's/^[[:space:]]*"//' -e 's/"$//')
           security list-keychains -d user -s "$keychain" "${searched[@]}"
           sudo security add-trusted-cert -d -r trustRoot -p codeSign -k /Library/Keychains/System.keychain "$cert"
-          echo "CODESIGN_CERT=$cert" >> "$GITHUB_ENV"
           valid=$(security find-identity -v -p codesigning "$keychain")
           echo "$valid"
           if ! grep -qF "\"$IDENTITY\"" <<< "$valid"; then
@@ -540,12 +540,13 @@ jobs:
       - name: Delete the run's updater key (dry run)
         if: always() && inputs.environment == 'dry-run'
         run: rm -f "$RUNNER_TEMP/dry-run/updater.key" "$RUNNER_TEMP/dry-run/updater.key.pub" "$RUNNER_TEMP/dry-run/dry-run.json"
-      - name: Delete the signing keychain and its trust setting (macOS)
+      # The trust setting isn't removed: GitHub-hosted runners are single-use
+      # VMs, discarded after the job, setting and all, and removing it waits
+      # for an authorization dialog the runner can't answer (the second dry
+      # run's cleanup hung there for 40 minutes).
+      - name: Delete the signing keychain (macOS)
         if: always() && runner.os == 'macOS'
         run: |
-          if [ -n "${CODESIGN_CERT:-}" ]; then
-            sudo security remove-trusted-cert -d "$CODESIGN_CERT" || true
-          fi
           if [ -n "${CODESIGN_KEYCHAIN:-}" ]; then
             security delete-keychain "$CODESIGN_KEYCHAIN" || true
           fi

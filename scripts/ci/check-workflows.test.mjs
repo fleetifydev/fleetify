@@ -913,7 +913,16 @@ describe("build.yml", () => {
     assert.match(scriptOf(forEnvironment(RELEASE_ONLY)[0]), /openssl pkcs12 [^\n]*-nokeys/, "the release certificate isn't read out of the p12 without its key");
     const cleanup = steps.find((step) => /security delete-keychain/.test(scriptOf(step)));
     assert.ok(cleanup && requires(cleanup.if, "always()") && requires(cleanup.if, macOS), "the keychain isn't deleted whatever happened");
-    assert.match(scriptOf(cleanup), /sudo security remove-trusted-cert -d "\$CODESIGN_CERT"/, "the trust setting isn't removed at the end");
+  });
+
+  yamlTest("no step removes the macOS trust setting, which waits for a dialog no one can answer", () => {
+    // GitHub discards a hosted runner's VM after the job, trust setting and
+    // all, while removing it waits for an authorization dialog: the second
+    // dry run's cleanup hung there for 40 minutes.
+    const found = Object.entries(workflow(BUILD).jobs ?? {}).flatMap(([id, job]) =>
+      (job.steps ?? []).flatMap((step, i) => (/remove-trusted-cert/.test(scriptOf(step)) ? [`job ${id}, ${stepLabel(step, i)}`] : [])),
+    );
+    assert.deepEqual(found, [], `these steps remove a trust setting:\n${found.join("\n")}`);
   });
 
   yamlTest("scan-secrets.mjs scans the UI and the binaries after the bundling", () => {
