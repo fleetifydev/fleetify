@@ -31,6 +31,8 @@
  *                        the one offered and logs "update ready", as the real
  *                        updater does once a download has verified.
  *   FAKE_BUNDLE_TYPE     the bundle type it reports (default appimage)
+ *   FAKE_HEALTH_VERSION  the version /healthz reports, when it isn't the one
+ *                        the updater reports
  *   FAKE_DOWNLOAD_ASSET  a release asset it downloads from the update
  *                        server's /artifacts/ instead of the one offered
  *   FAKE_POSTHOG         "initialised": it logs that the PostHog sink started,
@@ -105,7 +107,8 @@ function serve(port, mode, onListening) {
       return;
     }
     if (pathname === "/healthz") {
-      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ status: "ok", version: VERSION }));
+      const version = process.env.FAKE_HEALTH_VERSION || VERSION;
+      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ status: "ok", version }));
       return;
     }
     if (pathname.startsWith("/api/")) {

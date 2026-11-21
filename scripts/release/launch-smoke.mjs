@@ -40,7 +40,9 @@
  *                 expects. Within 180 s the app asks it for
  *                 /update/<os>/<arch>/<version>?bundle_type=<--bundle-type>,
  *                 where <version> is the release's, downloads that bundle type's
- *                 artifact in full and logs "update ready" 99.0.0.
+ *                 artifact in full and logs "update ready" 99.0.0. The version
+ *                 /healthz reports, the one the backend was built as, must be
+ *                 the release's too.
  *   log           --settle-s after the healthz, or after the rehearsal: the
  *                 log folder holds JSON log lines from this run (lines there
  *                 before the launch are not read), and neither they nor the
@@ -1076,9 +1078,11 @@ async function waitForHealth({ port, timeoutS, app }) {
   for (;;) {
     const answer = await probe(port, "/healthz");
     if (answer.error === undefined) {
-      if (answer.status === 200 && parseJsonLine(answer.body)?.status === "ok") {
+      const body = answer.status === 200 ? parseJsonLine(answer.body) : null;
+      if (body?.status === "ok") {
         const seconds = ((Date.now() - started) / 1000).toFixed(1);
-        return { ok: true, check: check("healthz", "PASS", `200 ${clip(answer.body, 200)} after ${seconds} s`) };
+        const version = typeof body.version === "string" ? body.version : null;
+        return { ok: true, version, check: check("healthz", "PASS", `200 ${clip(answer.body, 200)} after ${seconds} s`) };
       }
       last = `${answer.status} ${clip(answer.body, 200)}`;
     } else {
@@ -1173,7 +1177,7 @@ function expectedUpdate(manifest, bundleType) {
   return { path: updateRequestPath({ platform, arch, version: manifest.version, bundleType }), asset };
 }
 
-async function rehearsalCheck({ updates, expected, logs, app, updatePort, deadline }) {
+async function rehearsalCheck({ updates, expected, logs, app, updatePort, deadline, appVersion }) {
   let ready = null;
   let failure = null;
   for (;;) {
@@ -1185,6 +1189,9 @@ async function rehearsalCheck({ updates, expected, logs, app, updatePort, deadli
     await sleep(POLL_MS);
   }
   const problems = [];
+  if (appVersion !== updates.manifest.version) {
+    problems.push(`/healthz reports version ${appVersion ?? "(none)"}, but the release's ${MANIFEST} is ${updates.manifest.version}`);
+  }
   const asked = updates.requests.filter((path) => path.startsWith("/update/"));
   if (asked.length === 0) problems.push(`the app never asked http://127.0.0.1:${updatePort} for an update`);
   for (const path of asked) {
@@ -1326,7 +1333,7 @@ async function runSmoke(options, write) {
     if (updates !== null) {
       checks.push(
         health.ok
-          ? await rehearsalCheck({ updates, expected, logs, app, updatePort, deadline: healthyAt + REHEARSAL_TIMEOUT_S * 1000 })
+          ? await rehearsalCheck({ updates, expected, logs, app, updatePort, deadline: healthyAt + REHEARSAL_TIMEOUT_S * 1000, appVersion: health.version })
           : check("rehearsal", "SKIP", "skipped: /healthz never answered"),
       );
     }

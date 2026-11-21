@@ -76,7 +76,7 @@ async fn sessions_api_round_trip_with_auth() {
     // Every request carries the API token; the bearer is per request.
     let client = server.client();
 
-    // /healthz shape (parity {"status":"ok","version":"0.1.0"}).
+    // /healthz shape: {"status":"ok","version":<the crate's version>}.
     let hz: serde_json::Value = client
         .get(format!("{base}/healthz"))
         .send()
@@ -86,7 +86,7 @@ async fn sessions_api_round_trip_with_auth() {
         .await
         .unwrap();
     assert_eq!(hz["status"], "ok");
-    assert_eq!(hz["version"], "0.1.0");
+    assert_eq!(hz["version"], env!("CARGO_PKG_VERSION"));
 
     // No bearer → 401.
     let unauth = client

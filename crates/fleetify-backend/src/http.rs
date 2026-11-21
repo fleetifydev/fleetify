@@ -17,8 +17,9 @@ use crate::routers::{
 };
 use crate::ui::{self, UiAssets, UiFiles};
 
-/// The health route. It answers `{"status":"ok","version":…}`, and the
-/// shell polls it at startup before its warm-up talks to the backend.
+/// The health route. It answers `{"status":"ok","version":…}`, with the
+/// version the backend was built as, and the shell polls it at startup
+/// before its warm-up talks to the backend.
 pub const HEALTH_PATH: &str = "/healthz";
 
 /// Build the axum app. Single origin: `/healthz`, `/api/*` (auth'd),
@@ -90,6 +91,8 @@ pub fn app(state: AppState, ui: Option<UiAssets>, policy: AccessPolicy) -> Route
     routed.layer(from_fn_with_state(policy, access::guard))
 }
 
+/// The crate's version is the workspace's, which each release bumps along
+/// with the app's other version files.
 async fn healthz() -> Json<Value> {
-    Json(json!({ "status": "ok", "version": "0.1.0" }))
+    Json(json!({ "status": "ok", "version": env!("CARGO_PKG_VERSION") }))
 }

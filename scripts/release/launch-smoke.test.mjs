@@ -879,7 +879,7 @@ describe("the app still writes what the smoke reads", () => {
 
   test("the policy, its report target and the health route (ui.rs, http.rs)", () => {
     has("crates/fleetify-backend/src/ui.rs", `"default-src 'self'"`, 'target: "fleetify.csp"');
-    has("crates/fleetify-backend/src/http.rs", 'HEALTH_PATH: &str = "/healthz"', '"status": "ok"');
+    has("crates/fleetify-backend/src/http.rs", 'HEALTH_PATH: &str = "/healthz"', '"status": "ok"', '"version": env!("CARGO_PKG_VERSION")');
   });
 
   test("the DB under the home's .fleetify, found through USERPROFILE or HOME", () => {
@@ -1095,6 +1095,20 @@ describe("run against the fake app", { concurrency: 8, timeout: 120_000 }, () =>
     assert.equal(result.status, 1, result.output);
     assert.match(result.stdout, row("FAIL", "rehearsal"));
     assert.ok(result.stdout.includes(`the app asked for /update/${OS}/${ARCH}/0.2.0?bundle_type=deb, not `), result.stdout);
+  });
+
+  test("rehearsal fails when /healthz reports another version than the release's", { skip: !RELEASED_HERE && "no release platform for this machine" }, async () => {
+    const updatePort = takePort();
+    const result = await smokeFake({
+      args: ["--rehearse", RELEASE, "--bundle-type", "appimage", "--update-port", String(updatePort)],
+      env: {
+        FAKE_UPDATE_URL: `http://127.0.0.1:${updatePort}/update/{{target}}/{{arch}}/{{current_version}}?bundle_type={{bundle_type}}`,
+        FAKE_HEALTH_VERSION: "0.1.0",
+      },
+    });
+    assert.equal(result.status, 1, result.output);
+    assert.match(result.stdout, row("FAIL", "rehearsal"));
+    assert.match(result.stdout, /\/healthz reports version 0\.1\.0, but the release's latest\.json is 0\.2\.0/);
   });
 
   test("rehearsal fails when the app downloads another artifact than the one offered", { skip: !RELEASED_HERE && "no release platform for this machine" }, async () => {
