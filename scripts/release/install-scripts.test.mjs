@@ -739,12 +739,12 @@ describe("install.sh on Linux: --deb and --rpm", { skip: SKIP_LINUX }, () => {
     const both = await installSh(["--rpm"], { ws: workspace(), release: GOOD, managers: ["dnf", "zypper"] });
     assert.equal(both.status, 0, both.output);
     assert.equal(both.calls.length, 1, both.calls.join("\n"));
-    assert.match(both.calls[0], new RegExp(`^sudo dnf install -y /\\S+/${ASSETS.rpm.replace(/\./g, "\\.")}$`));
+    assert.match(both.calls[0], new RegExp(`^sudo dnf install -y /\\S+/${escapeRe(ASSETS.rpm)}$`));
 
     const zypper = await installSh(["--rpm"], { ws: workspace(), release: GOOD, managers: ["zypper"] });
     assert.equal(zypper.status, 0, zypper.output);
     assert.equal(zypper.calls.length, 1, zypper.calls.join("\n"));
-    assert.match(zypper.calls[0], new RegExp(`^sudo zypper --non-interactive install --allow-unsigned-rpm /\\S+/${ASSETS.rpm.replace(/\./g, "\\.")}$`));
+    assert.match(zypper.calls[0], new RegExp(`^sudo zypper --non-interactive install --allow-unsigned-rpm /\\S+/${escapeRe(ASSETS.rpm)}$`));
     assert.deepEqual(readFileSync(join(zypper.seen, ASSETS.rpm)), readFileSync(join(GOOD.dir, ASSETS.rpm)));
 
     const neither = await installSh(["--rpm"], { ws: workspace(), release: GOOD, managers: [] });

@@ -250,7 +250,8 @@ describe("release-please", () => {
     if (compareVersions(current, FIRST_RELEASE) < 0) {
       assert.equal(text, "", "CHANGELOG.md must be empty until the first release PR writes it");
     } else {
-      const version = current.replace(/\./g, "\\.");
+      // Every character that means something in a regular expression, backslash included.
+      const version = current.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       assert.match(
         text,
         new RegExp(`^# Changelog\\n\\n#{2,3} \\[?${version}\\]?[ (]`),
