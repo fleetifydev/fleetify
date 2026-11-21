@@ -247,12 +247,19 @@ pub async fn updater_restart(
     // macOS it may wait for the user to authenticate. A failed install hands
     // the update back.
     tracing::info!(target: LOG_TARGET, version = %version, "installing update");
-    let installed = tauri::async_runtime::spawn_blocking(move || match update.install(&bytes) {
-        Ok(()) => Installed::Done,
-        Err(error) => Installed::Failed {
-            error: error.to_string(),
-            update: (update, bytes),
-        },
+    let installed = tauri::async_runtime::spawn_blocking(move || {
+        // On Windows a successful install starts the installer and exits the
+        // process itself, so record the clean shutdown first. A failed
+        // install returns, and the app records it again when it exits.
+        #[cfg(windows)]
+        crate::shell::logging::mark_clean_shutdown();
+        match update.install(&bytes) {
+            Ok(()) => Installed::Done,
+            Err(error) => Installed::Failed {
+                error: error.to_string(),
+                update: (update, bytes),
+            },
+        }
     })
     .await
     .unwrap_or_else(|error| Installed::Lost {
@@ -262,6 +269,10 @@ pub async fn updater_restart(
     match settled {
         Ok(()) => {
             tracing::info!(target: LOG_TARGET, version = %version, "update installed, restarting");
+            // The restart exits without the window's Destroyed event, which
+            // records a clean shutdown (lib.rs), so record it here, or the
+            // next launch reports a crash.
+            crate::shell::logging::mark_clean_shutdown();
             // Exits through the event loop, as quitting does, and starts the
             // new version. `restart()` would do the same here, then park
             // this runtime thread until the process ends.
@@ -876,6 +887,57 @@ mod tests {
                 "DOWNLOAD_IDLE_TIMEOUT"
             )),
             "find_update must give the plugin's client the download idle timeout"
+        );
+    }
+
+    #[test]
+    fn restart_records_a_clean_shutdown_before_the_app_exits() {
+        // An update restart exits without lib.rs's WindowEvent::Destroyed,
+        // which records a clean shutdown, so the next launch would report a
+        // crash. Read from this file above its tests, with each run of
+        // whitespace made one space.
+        let source = include_str!("updater.rs").replace("\r\n", "\n");
+        let tests = source
+            .find(&format!("#[cfg(test)]\nmod {} {{", "tests"))
+            .expect("updater.rs has this test module");
+        let code = source[..tests]
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let start = code
+            .find("pub async fn updater_restart(")
+            .expect("updater.rs has updater_restart");
+        let end = start
+            + code[start..]
+                .find(" enum Installed<R>")
+                .expect("updater.rs has Installed after updater_restart");
+        let body = &code[start..end];
+        let at = |needle: &str| {
+            body.find(needle)
+                .unwrap_or_else(|| panic!("updater_restart has no {needle}"))
+        };
+        let mark = "crate::shell::logging::mark_clean_shutdown();";
+        // Windows: a successful install exits the process itself, so the
+        // mark comes first, in the install's task.
+        let spawn = at("spawn_blocking");
+        let windows = at(&format!("#[cfg(windows)] {mark}"));
+        let install = at("update.install(&bytes)");
+        assert!(
+            spawn < windows && windows < install,
+            "on Windows, record the clean shutdown right before the install"
+        );
+        // Everywhere else: once it has installed, right before the restart.
+        let restart = at("app.request_restart();");
+        let restarting = body[..restart]
+            .rfind(mark)
+            .expect("updater_restart records a clean shutdown before it restarts");
+        assert!(
+            install < restarting,
+            "record the clean shutdown once the update has installed"
+        );
+        assert!(
+            !body[restarting + mark.len()..restart].contains(';'),
+            "record the clean shutdown right before the restart"
         );
     }
 
