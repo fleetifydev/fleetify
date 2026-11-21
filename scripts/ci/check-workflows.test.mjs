@@ -44,12 +44,12 @@
  * the bot's token, which every gh command gets in place of the workflow's own
  * token, and they run nothing but the actions, gh, git, curl and release
  * scripts they need. release-please runs twice, the release alone, then the
- * release pull request alone, which waits while a draft is pending. It
- * builds the commit release-please's draft points at, in the release
- * environment, attests the assembled files in a job of its own and uploads
- * them only to a draft. publish, once assemble and smoke have passed, checks
- * that the draft's commit is the one built and that its tag doesn't exist
- * yet before it publishes.
+ * release pull request alone, which waits while a draft is pending. The
+ * release builds and smoke-tests the commit release-please's draft points
+ * at. assemble attests the assembled files in a job of release.yml itself
+ * and uploads them only to a draft. publish, once assemble and smoke have
+ * passed, checks that the draft's commit is the one built and that its tag
+ * doesn't exist yet before it publishes.
  * Candidate and release builds compare the macOS designated
  * requirement with the pinned one.
  *
@@ -2290,13 +2290,15 @@ function launches() {
 const bundleTypeOf = ({ runs }) => argValue(runs[1].calls[0]?.args ?? [], "--bundle-type");
 
 describe("smoke.yml", () => {
-  yamlTest("it takes the version, whether to rehearse an update, and a pinned designated requirement", () => {
+  yamlTest("it takes the version, whether to rehearse an update, a pinned designated requirement, and the commit to take the release scripts from", () => {
     const inputs = triggersOf(workflow(SMOKE)).workflow_call?.inputs ?? {};
-    assert.deepEqual(Object.keys(inputs).sort(), ["expected-dr", "rehearse", "version"]);
+    assert.deepEqual(Object.keys(inputs).sort(), ["expected-dr", "ref", "rehearse", "version"]);
     const shape = ({ type, required, default: fallback }) => ({ type, required, default: fallback });
     assert.deepEqual(shape(inputs.version), { type: "string", required: true, default: undefined });
     assert.deepEqual(shape(inputs.rehearse), { type: "boolean", required: true, default: undefined });
     assert.deepEqual(shape(inputs["expected-dr"]), { type: "string", required: false, default: "" });
+    // Empty, actions/checkout takes the commit the run is on.
+    assert.deepEqual(shape(inputs.ref), { type: "string", required: false, default: "" });
     assert.deepEqual(
       Object.fromEntries(["VERSION", "REHEARSE", "EXPECTED_DR", "CSP_ORIGIN", "EXPECT_POSTHOG_SINK"].map((name) => [name, workflow(SMOKE).env?.[name]])),
       {
@@ -2309,7 +2311,7 @@ describe("smoke.yml", () => {
     );
   });
 
-  yamlTest("each job checks out only scripts/release, into tools/, and runs the scripts from there", () => {
+  yamlTest("each job checks out only scripts/release, at the commit the ref input names, into tools/, and runs the scripts from there", () => {
     // Without the source tree at the workspace's root, nothing the bundles
     // do can lean on it, as nothing a user runs can.
     const nvmrc = read(".nvmrc").trim();
@@ -2317,7 +2319,11 @@ describe("smoke.yml", () => {
       const steps = job.steps ?? [];
       const checkouts = steps.filter((step) => usesAction(step, "actions/checkout"));
       assert.equal(checkouts.length, 1, `job ${id} must check out once`);
-      assert.deepEqual(checkouts[0].with, { path: "tools", "sparse-checkout": "scripts/release", "sparse-checkout-cone-mode": false, "persist-credentials": false }, `job ${id}'s checkout`);
+      assert.deepEqual(
+        checkouts[0].with,
+        { ref: "${{ inputs.ref }}", path: "tools", "sparse-checkout": "scripts/release", "sparse-checkout-cone-mode": false, "persist-credentials": false },
+        `job ${id}'s checkout`,
+      );
       const node = steps.find((step) => usesAction(step, "actions/setup-node"));
       assert.equal(String(node?.with?.["node-version"]), nvmrc, `job ${id} must set up Node ${nvmrc}, as .nvmrc says (it isn't checked out)`);
       const download = steps.find((step) => usesAction(step, "actions/download-artifact"));
@@ -3120,12 +3126,15 @@ describe("release.yml", () => {
     }
   });
 
-  yamlTest("smoke runs smoke.yml on the assembled release, with no update to rehearse, against the pinned designated requirement", () => {
-    // A release build's updater asks only the shipped endpoints.
+  yamlTest("smoke runs smoke.yml on the assembled release, with no update to rehearse, against the pinned designated requirement, with the draft's commit's release scripts", () => {
+    // A release build's updater asks only the shipped endpoints. The draft's
+    // commit, which the build checked out, needn't be the commit the run is
+    // on: a later push's run makes the release of a release pull request
+    // whose own run didn't.
     const smoke = jobOf(RELEASE, "smoke");
     assert.equal(smoke.uses, "./.github/workflows/smoke.yml");
     assert.deepEqual([smoke.needs].flat().sort(), ["assemble", "release-please"]);
-    assert.deepEqual(smoke.with, { version: fromReleasePlease("version"), rehearse: false, "expected-dr": DR_FILE });
+    assert.deepEqual(smoke.with, { version: fromReleasePlease("version"), rehearse: false, "expected-dr": DR_FILE, ref: fromReleasePlease("sha") });
     assert.ok(existsSync(join(ROOT, DR_FILE)), `${DR_FILE} is missing`);
   });
 

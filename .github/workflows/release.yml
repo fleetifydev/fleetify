@@ -18,8 +18,8 @@
 #   updater signature against the key that src-tauri/tauri.conf.json ships.
 #   It attests the files' build provenance, uploads them to the draft and
 #   checks that the draft holds exactly the release's assets.
-# - smoke runs smoke.yml on those files, against the pinned macOS designated
-#   requirement.
+# - smoke runs smoke.yml on those files, with the release scripts of the
+#   draft's commit, against the pinned macOS designated requirement.
 # - publish, once assemble and smoke have passed, checks that the draft points
 #   at the commit that was built and that its tag doesn't exist yet, then
 #   publishes the draft as the latest release. That creates its tag, as the
@@ -247,7 +247,9 @@ jobs:
           retention-days: 7
 
   # A release build's updater asks only the shipped endpoints, so there is no
-  # update to rehearse.
+  # update to rehearse. The release scripts and the pinned designated
+  # requirement come from the draft's commit, as the build did, which needn't
+  # be the commit this run is on.
   smoke:
     needs: [release-please, assemble]
     uses: ./.github/workflows/smoke.yml
@@ -255,6 +257,7 @@ jobs:
       version: ${{ needs.release-please.outputs.version }}
       rehearse: false
       expected-dr: scripts/release/macos-designated-requirement.txt
+      ref: ${{ needs.release-please.outputs.sha }}
 
   publish:
     name: Publish the release

@@ -6,8 +6,9 @@
 # server, which only a dry-run build asks.
 #
 # Each job checks out only scripts/release, into tools/, so the bundles run
-# without the source tree, as they do on a user's machine. The release
-# comes from the run's release artifact.
+# without the source tree, as they do on a user's machine: from the commit
+# the ref input names, or the run's own. The release comes from the run's
+# release artifact.
 #
 # Each job then installs once more with the release's install script, as a
 # user runs it, from the release served on 127.0.0.1:18081 the way GitHub
@@ -37,6 +38,11 @@ on:
         required: false
         type: string
         default: ""
+      ref:
+        description: The commit whose release scripts and pinned designated requirement the smoke uses; empty for the commit the run is on.
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -61,6 +67,7 @@ jobs:
       - name: Check out the release scripts only
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.ref }}
           path: tools
           sparse-checkout: scripts/release
           sparse-checkout-cone-mode: false
@@ -196,6 +203,7 @@ jobs:
       - name: Check out the release scripts only
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.ref }}
           path: tools
           sparse-checkout: scripts/release
           sparse-checkout-cone-mode: false
@@ -321,6 +329,7 @@ jobs:
       - name: Check out the release scripts only
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.ref }}
           path: tools
           sparse-checkout: scripts/release
           sparse-checkout-cone-mode: false
