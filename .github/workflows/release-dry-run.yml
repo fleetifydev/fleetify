@@ -34,9 +34,13 @@ on:
     paths:
       - src-tauri/tauri*.conf.json
       - src-tauri/Entitlements.plist
+      - src-tauri/Info.plist
       - src-tauri/build.rs
       - src-tauri/capabilities/**
+      - src-tauri/icons/**
       - src-tauri/Cargo.toml
+      - Cargo.toml
+      - package.json
       - config/**
       - scripts/build-sidecars.mjs
       - scripts/release/**

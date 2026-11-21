@@ -524,9 +524,13 @@ const RELEASE_PATH = ["pr-title.yml", "build.yml", "smoke.yml", "release-dry-run
 const DRY_RUN_PATHS = [
   "src-tauri/tauri*.conf.json",
   "src-tauri/Entitlements.plist",
+  "src-tauri/Info.plist",
   "src-tauri/build.rs",
   "src-tauri/capabilities/**",
+  "src-tauri/icons/**",
   "src-tauri/Cargo.toml",
+  "Cargo.toml",
+  "package.json",
   "config/**",
   "scripts/build-sidecars.mjs",
   "scripts/release/**",
