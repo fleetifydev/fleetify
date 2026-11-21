@@ -391,6 +391,17 @@ describe("checkSignature, with a stand-in for codesign", () => {
     assert.deepEqual(result.problems, [`codesign -d -vvv failed (exit 1): ${APP}: code object is not signed at all`]);
   });
 
+  test("a DR printed without a final newline doesn't run into stderr's Executable= line", () => {
+    const good = fakeRun().run;
+    const run = (command, args) =>
+      kindOf(args) === "requirements"
+        ? { status: 0, signal: null, stdout: `designated => ${DR}`, stderr: `Executable=${APP}/Contents/MacOS/fleetify-app\n` }
+        : good(command, args);
+    const result = checkSignature(APP, { run });
+    assert.equal(result.dr, DR);
+    assert.deepEqual(result.problems, []);
+  });
+
   test("codesign can't be run: each command is a problem", () => {
     const error = new Error("spawnSync codesign ENOENT");
     const { run } = fakeRun(Object.fromEntries(Object.keys(GOOD).map((kind) => [kind, { error }])));

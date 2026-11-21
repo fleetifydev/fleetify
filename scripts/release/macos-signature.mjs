@@ -2,8 +2,10 @@
 /**
  * macos-signature.mjs — check the signature of a built Fleetify.app: it
  * verifies, its designated requirement names Fleetify and pins the signing
- * certificate, the hardened runtime is on, and it grants exactly the
- * entitlements in src-tauri/Entitlements.plist.
+ * certificate, the hardened runtime is on, and the entitlements it sets to
+ * true are exactly those set to true in src-tauri/Entitlements.plist. Every
+ * hardened-runtime exception is a boolean, so an added exception shows as an
+ * unexpected key set to true.
  *
  *   node scripts/release/macos-signature.mjs <Fleetify.app> [--expected-dr <file>]
  *
@@ -48,8 +50,9 @@ const USAGE = "usage: node scripts/release/macos-signature.mjs <Fleetify.app> [-
 export const IDENTIFIER = "com.fleetify.app";
 
 /**
- * The entitlements set to true in src-tauri/Entitlements.plist: the
- * signature must grant each of them, and no other.
+ * The entitlements set to true in src-tauri/Entitlements.plist. The
+ * signature must set each of them to true, and no other top-level key: the
+ * check covers keys set to true, which every hardened-runtime exception is.
  */
 export const ENTITLEMENTS = Object.freeze(["com.apple.security.device.audio-input"]);
 
@@ -213,12 +216,17 @@ const runCommand = (command, args) => spawnSync(command, args, { encoding: "utf8
  *   expected: the pinned DR, as its file's text; run: spawnSync, or a stand-in
  *   with its result's shape ({ status, signal, stdout, stderr, error }).
  * @returns {{ dr: string | null, runtime: boolean | null, entitlements: string[] | null, problems: string[] }}
- *   dr: the DR found; runtime and entitlements: what codesign showed, or null
- *   when that command failed.
+ *   dr: the DR found; runtime: whether codesign showed the hardened runtime;
+ *   entitlements: the top-level keys codesign showed set to true. Each is null
+ *   when its command failed.
  */
 export function checkSignature(app, { expected, identifier = IDENTIFIER, run = runCommand } = {}) {
   const problems = [];
-  /** A codesign command's output, both streams; null, with a problem, when it fails. */
+  /**
+   * A codesign command's output, stdout then stderr on lines of their own:
+   * stdout may end without a newline, as a DR can, and must not run into
+   * stderr's Executable= line. null, with a problem, when the command fails.
+   */
   const codesign = (args) => {
     const command = `codesign ${args.join(" ")}`;
     const { status, signal, stdout, stderr, error } = run("codesign", [...args, app]);
@@ -226,7 +234,7 @@ export function checkSignature(app, { expected, identifier = IDENTIFIER, run = r
       problems.push(`could not run ${command}: ${error.message}`);
       return null;
     }
-    const output = `${stdout ?? ""}${stderr ?? ""}`;
+    const output = `${stdout ?? ""}\n${stderr ?? ""}`;
     if (status !== 0) {
       const how = status === null ? `signal ${signal}` : `exit ${status}`;
       problems.push(`${command} failed (${how}): ${output.trim()}`);
