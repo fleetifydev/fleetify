@@ -953,6 +953,14 @@ describe("build.yml", () => {
     }
   });
 
+  yamlTest("both tauri bundle steps run with --verbose, so the log shows each command the bundler runs", () => {
+    const bundles = (jobOf(BUILD, "bundle").steps ?? []).filter(isTauriBundle);
+    assert.equal(bundles.length, 2, "the bundle job runs tauri bundle once per environment");
+    for (const step of bundles) {
+      assert.match(scriptOf(step), /(^|\s)tauri bundle --verbose(\s|$)/, `${step.name ?? "a tauri bundle"} doesn't pass --verbose`);
+    }
+  });
+
   yamlTest("the macOS identity steps and the keychain cleanup give up after five minutes", () => {
     // A security command waiting on a dialog then fails in minutes, and the
     // job keeps its logs; a cancelled always() step needs a force-cancel,

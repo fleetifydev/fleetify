@@ -481,13 +481,17 @@ jobs:
       # The release keys: the updater key signs the updater artifacts, and
       # the identity imported above signs the macOS app. tauri bundle
       # bundles the binaries the compile job built; it doesn't rebuild them.
+      # --verbose logs each command the bundler runs (codesign, hdiutil,
+      # linuxdeploy, makensis). None takes a secret as an argument: the
+      # updater key reaches the CLI through the environment, and the macOS
+      # identity is a certificate's name.
       - name: Bundle (release)
         if: inputs.environment == 'release'
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
-        run: npx tauri bundle --ci --target "$TRIPLE" --bundles "$BUNDLES" --config src-tauri/tauri.release.conf.json
+        run: npx tauri bundle --verbose --ci --target "$TRIPLE" --bundles "$BUNDLES" --config src-tauri/tauri.release.conf.json
       # The run's own keys, and the overlay the app was compiled with; on
       # macOS, APPLE_SIGNING_IDENTITY comes from the identity step above.
       - name: Bundle (dry run)
@@ -496,7 +500,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ runner.temp }}/dry-run/updater.key
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         run: >-
-          npx tauri bundle --ci --target "$TRIPLE" --bundles "$BUNDLES"
+          npx tauri bundle --verbose --ci --target "$TRIPLE" --bundles "$BUNDLES"
           --config src-tauri/tauri.release.conf.json --config "$RUNNER_TEMP/dry-run/dry-run.json"
       # A private key or token that got into the build would ship in the UI
       # bundle or a binary. The bundles themselves are compressed, which a
