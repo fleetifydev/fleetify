@@ -29,6 +29,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   accessSync,
+  chmodSync,
   constants,
   existsSync,
   lstatSync,
@@ -81,7 +82,6 @@ const SKIP_SH = process.platform === "win32" || !existsSync(SH) ? "needs /bin/sh
 const TOOLS = ["awk", "chmod", "cp", "curl", "grep", "gzip", "ln", "ls", "mkdir", "mktemp", "mv", "readlink", "rm", "sed", "sh", "sha256sum", "shasum", "tar"];
 
 const ROOT = mkdtempSync(join(tmpdir(), "install-scripts-"));
-after(() => rmSync(ROOT, { recursive: true, force: true }));
 let count = 0;
 /** A path under ROOT that doesn't exist yet. */
 const fresh = (name) => join(ROOT, `${name}-${(count += 1)}`);
@@ -103,6 +103,8 @@ const SKIP_LINUX = SKIP_SH || (["curl", "sha256sum"].some((name) => MISSING_TOOL
 const SKIP_MAC_STUB = SKIP_SH || (["curl", "shasum", "tar", "gzip"].some((name) => MISSING_TOOLS.has(name)) && "needs curl, shasum, tar and gzip");
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
+/** `text` as a regular expression that matches it literally. */
+const escapeRe = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 // ── The fixture release ─────────────────────────────────────────────────────
 
@@ -146,7 +148,8 @@ const BUILD_MACHINE_ICON = "/nonexistent/build-machine/target/release/bundle/app
  * A stand-in for a release's AppImage: a shell script that logs each run,
  * and answers --appimage-extract as the AppImage runtime does, writing the
  * entry the pattern names under ./squashfs-root, which it makes in any case.
- * With FAKE_APPIMAGE_NO_ICON set, it holds no icon.
+ * With FAKE_APPIMAGE_NO_ICON set, it holds no icon; with FAKE_APPIMAGE_STUCK
+ * set, it also writes a folder its owner can't empty.
  */
 const fakeAppImage = (version) => `#!/bin/sh
 # Fleetify ${version}'s AppImage, as a test fakes it.
@@ -156,6 +159,9 @@ if [ "$1" != --appimage-extract ]; then
   exit 0
 fi
 mkdir -p squashfs-root
+if [ -n "\${FAKE_APPIMAGE_STUCK:-}" ] && [ ! -d squashfs-root/stuck ]; then
+  mkdir squashfs-root/stuck && : > squashfs-root/stuck/file && chmod 555 squashfs-root/stuck
+fi
 if [ -n "\${FAKE_APPIMAGE_NO_ICON:-}" ]; then exit 0; fi
 case $2 in
   .DirIcon) ln -sf ${BUILD_MACHINE_ICON} squashfs-root/.DirIcon ;;
@@ -208,8 +214,23 @@ function makeRelease(version, { sums = (text) => text } = {}) {
 const tamperAll = (text) => text.replace(/^[0-9a-f]{64}/gm, sha256("tampered"));
 
 const SERVERS = [];
-after(() =>
-  Promise.all(
+
+/** Give back write access to `dir` and every folder under it, which some tests take away; links aren't followed. */
+function unlock(dir) {
+  let entries;
+  try {
+    chmodSync(dir, 0o755);
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) if (entry.isDirectory()) unlock(join(dir, entry.name));
+}
+
+// The servers first, so that nothing a failed test left behind keeps the run
+// from ending; then the test folders, as far as they go.
+after(async () => {
+  await Promise.all(
     SERVERS.map(
       (server) =>
         new Promise((done) => {
@@ -217,8 +238,14 @@ after(() =>
           server.closeAllConnections();
         }),
     ),
-  ),
-);
+  );
+  unlock(ROOT);
+  try {
+    rmSync(ROOT, { recursive: true, force: true });
+  } catch {
+    // Left in the system's temporary folder.
+  }
+});
 
 /** A release folder served as GitHub serves a release: { dir, base, server, since() }. */
 async function serve(dir, version) {
@@ -307,15 +334,38 @@ if [ -n "$last" ] && [ -f "$last" ]; then
 fi
 exit "\${STUB_EXIT:-0}"`;
 
-/** A folder of stand-ins: uname for `platform` (none when null), id, sudo, and the package managers in `managers`. */
-function stubFolder({ platform, managers }) {
+/**
+ * A folder of stand-ins: uname for `platform` (none when null), id, sudo, the
+ * package managers in `managers`, and `extra`, { name: script body }.
+ */
+function stubFolder({ platform, managers, extra = {} }) {
   const dir = folder("stubs");
   const write = (name, body) => writeFileSync(join(dir, name), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
   if (platform !== null) write("uname", `case "$1" in -m) echo ${platform.m} ;; *) echo ${platform.s} ;; esac`);
   write("id", 'if [ "$1" = -u ]; then echo "${STUB_UID:-1000}"; else exit 1; fi');
   for (const name of ["sudo", ...managers]) write(name, RECORD);
+  for (const [name, body] of Object.entries(extra)) write(name, body);
   return dir;
 }
+
+/** The system's own mv, which the mv stand-ins hand their work to. */
+const REAL_MV = SKIP_SH ? null : which("mv");
+
+/**
+ * mv, recording: it logs each call to $STUB_LOG.mv, with the `ls -ld` line of
+ * any staging folder (.fleetify.*) an argument is in, then does the move.
+ */
+const RECORDING_MV = `printf 'mv %s\\n' "$*" >> "$STUB_LOG.mv"
+for arg in "$@"; do
+  case $arg in */.fleetify.*/*) stage=\${arg%/*}; ls -ld "$stage" >> "$STUB_LOG.mv" ;; esac
+done
+exec ${REAL_MV} "$@"`;
+
+/** mv, refusing only the rename that puts the staged Fleetify.app in its place. */
+const FAILING_FINAL_RENAME = `case $1 in
+*/.fleetify.*/Fleetify.app) case $2 in */Fleetify.app) echo "mv: the test refuses this rename" >&2; exit 1 ;; esac ;;
+esac
+exec ${REAL_MV} "$@"`;
 
 const lines = (file) => (existsSync(file) ? readFileSync(file, "utf8").split("\n").filter(Boolean) : []);
 
@@ -326,8 +376,8 @@ const lines = (file) => (existsSync(file) ? readFileSync(file, "utf8").split("\n
  * folders of the files they were handed, copied into the folder `seen`;
  * appimageRuns the fake AppImage's argument lists.
  */
-async function installSh(args, { ws, release, platform = PLATFORMS.linux, managers = [], uid, env = {}, cwd = ws.work, noIcon = false, command = [INSTALL_SH, ...args] }) {
-  const stubs = stubFolder({ platform, managers });
+async function installSh(args, { ws, release, platform = PLATFORMS.linux, managers = [], stubs: extra = {}, uid, env = {}, cwd = ws.work, noIcon = false, stuck = false, command = [INSTALL_SH, ...args] }) {
+  const stubs = stubFolder({ platform, managers, extra });
   const log = fresh("stub-log");
   const seen = folder("seen");
   const appimageLog = fresh("appimage-log");
@@ -344,10 +394,11 @@ async function installSh(args, { ws, release, platform = PLATFORMS.linux, manage
       STUB_UID: uid === undefined ? undefined : String(uid),
       FAKE_APPIMAGE_LOG: appimageLog,
       FAKE_APPIMAGE_NO_ICON: noIcon ? "1" : undefined,
+      FAKE_APPIMAGE_STUCK: stuck ? "1" : undefined,
       ...env,
     },
   });
-  return { ...result, calls: lines(log), dirs: lines(`${log}.dirs`), appimageRuns: lines(appimageLog), seen };
+  return { ...result, calls: lines(log), dirs: lines(`${log}.dirs`), moves: lines(`${log}.mv`), appimageRuns: lines(appimageLog), seen };
 }
 
 /** Every file, folder and link under `dir`, with its mode, size, mtime and contents' hash: what a failed run must leave as it was. */
@@ -361,6 +412,21 @@ function snapshot(dir) {
       const kind = stat.isSymbolicLink() ? "link" : stat.isDirectory() ? "dir" : "file";
       return `${name} ${kind} ${stat.mode} ${stat.size} ${stat.mtimeMs} ${kind === "file" ? sha256(readFileSync(path)) : ""}`;
     });
+}
+
+/** The same, without the mtimes, which a rename back can change on a folder. */
+const contents = (dir) => snapshot(dir).map((line) => line.replace(/ [0-9.]+ ([0-9a-f]{64})?$/, " $1"));
+
+/** Assert that the staging folder named in `moves` (RECORDING_MV's log) was a new folder in `parent`, only its owner's, and is gone. */
+function assertStaged(moves, parent, before) {
+  const stages = [...new Set(moves.flatMap((line) => [...line.matchAll(/(\S*\/\.fleetify\.[A-Za-z0-9]{6})\//g)].map(([, stage]) => stage)))];
+  assert.equal(stages.length, 1, `expected one staging folder:\n${moves.join("\n")}`);
+  const [stage] = stages;
+  assert.equal(stage.slice(0, stage.lastIndexOf("/")), parent, `the staging folder isn't beside the install:\n${moves.join("\n")}`);
+  assert.ok(!before.includes(stage.slice(stage.lastIndexOf("/") + 1)), "the staging folder was there before the run");
+  for (const line of moves.filter((entry) => entry.startsWith("d"))) assert.match(line, /^drwx------/, line);
+  assert.ok(moves.some((entry) => entry.startsWith("d")), "the staging folder wasn't looked at");
+  assert.equal(existsSync(stage), false, `${stage} was left behind`);
 }
 
 const desktopFile = (dataHome) => join(dataHome, "applications", "fleetify.desktop");
@@ -487,6 +553,40 @@ describe("install.sh on Linux: the AppImage", { skip: SKIP_LINUX }, () => {
     assert.deepEqual(readdirSync(join(data, "applications")), ["fleetify.desktop"]);
     assert.deepEqual(readdirSync(ws.tmp), []);
   });
+
+  test("the AppImage is staged in a new folder of its own beside the install, which only you can open, and which goes afterwards", async () => {
+    const ws = workspace();
+    const bin = join(ws.root, "bin");
+    mkdirSync(bin);
+    const before = readdirSync(bin);
+    const run = await installSh(["--dir", bin], { ws, release: GOOD, stubs: { mv: RECORDING_MV } });
+    assert.equal(run.status, 0, run.output);
+    assertStaged(run.moves, bin, before);
+    // The final rename, from that folder onto the install.
+    const final = new RegExp(`^mv (-f )?${escapeRe(bin)}/\\.fleetify\\.[A-Za-z0-9]{6}/fleetify ${escapeRe(join(bin, "fleetify"))}$`);
+    assert.ok(run.moves.some((line) => final.test(line)), run.moves.join("\n"));
+    assert.deepEqual(readdirSync(bin), ["fleetify"]);
+  });
+
+  test(
+    "a temporary folder that can't be removed: a warning naming it, and the install still succeeds",
+    { skip: process.getuid?.() === 0 && "root can remove anything" },
+    async () => {
+      const ws = workspace();
+      const bin = join(ws.root, "bin");
+      try {
+        const run = await installSh(["--dir", bin], { ws, release: GOOD, stuck: true });
+        assert.equal(run.status, 0, run.output);
+        assert.deepEqual(readFileSync(join(bin, "fleetify")), readFileSync(join(GOOD.dir, ASSETS.appimage)));
+        const warning = /^fleetify-install: warning: couldn't remove the temporary folder (.+)$/m.exec(run.stderr);
+        assert.ok(warning, run.stderr);
+        assert.match(warning[1], new RegExp(`^${escapeRe(ws.tmp)}/fleetify-install\\.[A-Za-z0-9]{6}$`));
+        assert.ok(existsSync(warning[1]));
+      } finally {
+        unlock(ws.tmp);
+      }
+    },
+  );
 
   test("an AppImage whose icon can't be taken out: a warning, and the rest is installed", async () => {
     const ws = workspace();
@@ -772,6 +872,64 @@ describe("install.sh on macOS, with uname saying Darwin", { skip: SKIP_MAC_STUB 
     assert.equal(archOf(join(apps, "Fleetify.app")), "aarch64");
     assert.deepEqual(readdirSync(apps), ["Fleetify.app"]);
   });
+
+  test("the app is staged in a new folder of its own beside the install, which only you can open, and which goes afterwards", async () => {
+    const ws = workspace();
+    const apps = join(ws.root, "Applications");
+    mkdirSync(join(apps, "Fleetify.app", "Contents"), { recursive: true });
+    const before = readdirSync(apps);
+    const run = await installSh(["--dir", apps], { ws, release: GOOD, platform: PLATFORMS.macArm, stubs: { mv: RECORDING_MV } });
+    assert.equal(run.status, 0, run.output);
+    assertStaged(run.moves, apps, before);
+    // The earlier app went aside into that folder, and the new one came out of it.
+    const target = join(apps, "Fleetify.app");
+    const stage = `${escapeRe(apps)}/\\.fleetify\\.[A-Za-z0-9]{6}`;
+    assert.ok(run.moves.some((line) => new RegExp(`^mv ${escapeRe(target)} ${stage}/Fleetify\\.app\\.old$`).test(line)), run.moves.join("\n"));
+    assert.ok(run.moves.some((line) => new RegExp(`^mv ${stage}/Fleetify\\.app ${escapeRe(target)}$`).test(line)), run.moves.join("\n"));
+    assert.deepEqual(readdirSync(apps), ["Fleetify.app"]);
+  });
+
+  test("when the final rename fails: exit 1, and the earlier Fleetify.app is back, with nothing half installed", async () => {
+    const ws = workspace();
+    const apps = join(ws.root, "Applications");
+    mkdirSync(join(apps, "Fleetify.app", "Contents"), { recursive: true });
+    writeFileSync(join(apps, "Fleetify.app", "Contents", "earlier.txt"), "the earlier version\n");
+    const before = contents(apps);
+    const run = await installSh(["--dir", apps], { ws, release: GOOD, platform: PLATFORMS.macArm, stubs: { mv: FAILING_FINAL_RENAME } });
+    assert.equal(run.status, 1, run.output);
+    assert.match(run.stderr, /^fleetify-install: error: can't install /m);
+    assert.deepEqual(contents(apps), before);
+    assert.deepEqual(readdirSync(apps), ["Fleetify.app"]);
+    assert.deepEqual(readdirSync(ws.tmp), []);
+  });
+
+  test(
+    "an earlier copy that can't be removed: a warning naming it, and the new app is installed all the same",
+    { skip: process.getuid?.() === 0 && "root can remove anything" },
+    async () => {
+      const ws = workspace();
+      const apps = join(ws.root, "Applications");
+      const locked = join(apps, "Fleetify.app", "Contents", "locked");
+      mkdirSync(locked, { recursive: true });
+      writeFileSync(join(locked, "stuck.txt"), "can't be removed\n");
+      chmodSync(locked, 0o555);
+      let leftover;
+      try {
+        const run = await installSh(["--dir", apps], { ws, release: GOOD, platform: PLATFORMS.macArm });
+        assert.equal(run.status, 0, run.output);
+        assert.equal(archOf(join(apps, "Fleetify.app")), "aarch64");
+        const warning = /^fleetify-install: warning: couldn't remove the earlier copy, (.+)$/m.exec(run.stderr);
+        assert.ok(warning, run.stderr);
+        [, leftover] = warning;
+        assert.match(leftover, new RegExp(`^${escapeRe(apps)}/\\.fleetify\\.[A-Za-z0-9]{6}/Fleetify\\.app\\.old$`));
+        assert.ok(existsSync(join(leftover, "Contents", "locked", "stuck.txt")), "the leftover isn't where the warning says");
+        assert.deepEqual(readdirSync(apps).filter((name) => name !== "Fleetify.app"), [leftover.split("/").at(-2)], "something else was left");
+        assert.deepEqual(readdirSync(ws.tmp), []);
+      } finally {
+        unlock(apps);
+      }
+    },
+  );
 
   test("a tampered SHA256SUMS: exit 1, and an earlier Fleetify.app is left as it was", async () => {
     const ws = workspace();

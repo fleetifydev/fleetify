@@ -36,9 +36,11 @@ DEFAULT_BASE=https://github.com/fleetifydev/fleetify/releases
 NL='
 '
 
-# The folders and files a run makes, which cleanup removes or puts back.
+# What a run makes, which cleanup removes or puts back: its temporary
+# folder; the folder a replacement is staged in, beside the install; and an
+# earlier Fleetify.app, moved aside into that folder, and where it goes back.
 tmp=
-staged=
+stage=
 old=
 target=
 
@@ -111,11 +113,25 @@ desktop_arg() {
   esac
 }
 
-# Remove what a run leaves half done, and put back an app it moved aside.
+# Put back an earlier Fleetify.app that a failed replacement moved aside, and
+# remove the staging and temporary folders. Each command is guarded: under
+# set -e, one that failed here would turn a finished install into exit 1.
 cleanup() {
-  if [ -n "$staged" ]; then rm -rf "$staged"; fi
-  if [ -n "$old" ] && [ -e "$old" ] && [ ! -e "$target" ]; then mv "$old" "$target"; fi
-  if [ -n "$tmp" ]; then rm -rf "$tmp"; fi
+  if [ -n "$old" ] && [ -e "$old" ] && [ ! -e "$target" ] && [ ! -L "$target" ]; then
+    if ! mv "$old" "$target"; then
+      warn "couldn't put back $target; the earlier copy is $old"
+      stage=
+    fi
+  fi
+  if [ -n "$stage" ] && ! rm -rf "$stage" 2>/dev/null; then warn "couldn't remove $stage"; fi
+  if [ -n "$tmp" ] && ! rm -rf "$tmp" 2>/dev/null; then warn "couldn't remove the temporary folder $tmp"; fi
+}
+
+# Make the folder a replacement is staged in, fresh, inside the folder $1 it
+# goes into: the final rename then stays on one file system, so it is atomic,
+# and no name another user can take first decides where a file goes.
+make_stage() {
+  stage=$(mktemp -d "$1/.fleetify.XXXXXX") || die "can't write to $1"
 }
 
 # Download $1 to $2, following redirects, with a progress bar for $3 = progress
@@ -240,11 +256,12 @@ install_appimage() {
   case $bin_dir in *"$NL"*) die "can't put Fleetify in a folder with a line break in its name" ;; esac
   target=$bin_dir/fleetify
   [ ! -d "$target" ] || die "$target is a folder"
-  staged=$bin_dir/.fleetify.install.$$
-  mv "$tmp/$asset" "$staged" || die "can't write to $bin_dir"
-  chmod 755 "$staged"
-  mv -f "$staged" "$target" || die "can't install $target"
-  staged=
+  make_stage "$bin_dir"
+  mv "$tmp/$asset" "$stage/fleetify" || die "can't write to $bin_dir"
+  chmod 755 "$stage/fleetify"
+  mv -f "$stage/fleetify" "$target" || die "can't install $target"
+  rm -rf "$stage" 2>/dev/null || :
+  stage=
   say "installed $target"
 
   case ${XDG_DATA_HOME:-} in
@@ -292,16 +309,20 @@ install_app() {
   tar -xzf "$tmp/$asset" -C "$unpacked" || die "can't unpack $asset"
   [ -f "$unpacked/Fleetify.app/Contents/Info.plist" ] || die "$asset holds no Fleetify.app"
   target=$apps_dir/Fleetify.app
-  staged=$apps_dir/.Fleetify.app.install.$$
-  mv "$unpacked/Fleetify.app" "$staged" || die "can't write to $apps_dir"
+  make_stage "$apps_dir"
+  mv "$unpacked/Fleetify.app" "$stage/Fleetify.app" || die "can't write to $apps_dir"
   if [ -e "$target" ] || [ -L "$target" ]; then
-    old=$apps_dir/.Fleetify.app.old.$$
-    mv "$target" "$old" || die "can't replace $target"
+    old=$stage/Fleetify.app.old
+    mv "$target" "$old" || die "can't move the earlier $target aside"
   fi
-  mv "$staged" "$target" || die "can't install $target"
-  staged=
-  if [ -n "$old" ]; then rm -rf "$old"; fi
+  # On failure, cleanup puts the earlier app back.
+  mv "$stage/Fleetify.app" "$target" || die "can't install $target"
+  if [ -n "$old" ] && ! rm -rf "$old" 2>/dev/null; then
+    warn "couldn't remove the earlier copy, $old"
+  fi
   old=
+  rm -rf "$stage" 2>/dev/null || :
+  stage=
   say "Fleetify $version is installed: $target"
 }
 
