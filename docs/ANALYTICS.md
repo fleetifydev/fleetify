@@ -287,3 +287,33 @@ grep -F fleetify.posthog ~/.local/state/fleetify/logs/fleetify.log.*
 
 PostHog Cloud's **Live events** tab is the simplest end-to-end check —
 events show up there within ~5 seconds of leaving the machine.
+
+---
+
+## Update checks
+
+Separately from both channels, a release build of Fleetify asks whether
+there is a newer version: about 10 seconds after it starts and then every
+6 hours, while **Settings → General → Updates → Automatic updates** is
+on, and whenever you click **Check now** there. Debug builds, such as
+`npm run dev:tauri`, never ask.
+
+Each check is one request to `fleetify.dev`, whose address carries:
+
+- the operating system (`linux`, `darwin` for macOS, or `windows`);
+- the processor architecture (`x86_64` or `aarch64`);
+- the version of Fleetify you run;
+- the package type (`appimage`, `deb`, `rpm`, `app` for macOS, or `nsis`
+  for the Windows installer).
+
+If `fleetify.dev` can't be reached or returns an error, the check asks
+GitHub instead, for the update file of the newest Fleetify release; that
+request carries none of the above. Neither request is signed in or
+carries your device id, and like any connection, each shows the server
+your IP address.
+
+A newer version downloads in the background, from the address in the
+answer, and installs only when you choose **Restart to update**.
+
+To stop the checks, turn **Automatic updates** off. Fleetify then checks
+only when you click **Check now**.
