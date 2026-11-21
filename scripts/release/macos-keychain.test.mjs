@@ -43,8 +43,11 @@ const fresh = (name) => {
 const DRY_RUN_IDENTITY = "Fleetify Dry Run Code Signing";
 const SHA1 = "0123456789ABCDEF0123456789ABCDEF01234567";
 
-/** Each stand-in logs its name and arguments, one call a line. */
-const LOG_CALL = `{ printf '%s' "\${0##*/}"; for a in "$@"; do printf ' %s' "$a"; done; printf '\\n'; } >> "$STUB_LOG"`;
+/**
+ * Each stand-in logs its name and arguments, one call a line, written at
+ * once: the two ends of a pipe log at the same time.
+ */
+const LOG_CALL = `line=\${0##*/}; for a in "$@"; do line="$line $a"; done; printf '%s\\n' "$line" >> "$STUB_LOG"`;
 const STUBS = {
   security: `#!/bin/sh
 ${LOG_CALL}
