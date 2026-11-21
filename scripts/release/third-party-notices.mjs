@@ -20,7 +20,8 @@
  *   - npm packages: the production packages in package-lock.json, and the
  *     build-time packages whose output ships (SHIPPED_BUILD_PACKAGES), each
  *     with the LICENSE*, LICENCE*, COPYING* and NOTICE* files it has in
- *     node_modules.
+ *     node_modules, at its top and below it (outside nested node_modules),
+ *     and the vendored-code headers that VENDORED_HEADER_NOTICES points to.
  *   - Bundled C/C++ source: the C, C++ and assembly source that crates
  *     compile in. whisper.cpp and ggml (from whisper-rs-sys) come under
  *     whisper.cpp's MIT licence; every release crate that builds with cc or
@@ -62,6 +63,12 @@ const USAGE = "usage: node scripts/release/third-party-notices.mjs --out <file>"
 // File names, matched in any letter case.
 /** An npm package's licence or NOTICE file: LICENSE*, LICENCE*, COPYING* or NOTICE*. */
 const PACKAGE_FILE = /^(licen[cs]e|copying|notice)/i;
+/**
+ * The same, below a package's top folder, where it may also follow a dot, as
+ * in bundlers' extracted comments (uuidv7.js.LICENSE.txt). The word must end
+ * there, so a data file such as licenses.json doesn't count.
+ */
+const NESTED_PACKAGE_FILE = /(^|\.)(licen[cs]e|copying|notice)([._-]|$)/i;
 /** A licence file: LICENSE*, LICENCE* or COPYING*. */
 const LICENCE_FILE = /^(licen[cs]e|copying)/i;
 /**
@@ -136,6 +143,28 @@ const HOLDER_PLACEHOLDER = /^Copyright \(c\) <year> <copyright holders>$/m;
  */
 export const SHIPPED_BUILD_PACKAGES = Object.freeze(["tailwindcss", "vite"]);
 
+/**
+ * Notices of code vendored into npm packages that survive only as a comment
+ * in a source file the package installs, with no licence file of their own.
+ * Each entry names the package, the file, and the text of the header's first
+ * and last lines (`from`, `to`). The run copies the lines from `from` to `to`
+ * verbatim from the installed file, and fails when the file or either line is
+ * gone, so a new version can't drop a notice unseen. Add only entries checked
+ * against the installed package.
+ */
+export const VENDORED_HEADER_NOTICES = Object.freeze([
+  // @posthog/core's stack parsers, forked from TraceKit (MIT) by way of
+  // Sentry's JavaScript SDK (MIT). The Sentry line also heads chunk-ids.ts,
+  // types.ts and utils.ts in src/error-tracking/; only this file carries the
+  // TraceKit notice. The built dist/ drops the comment.
+  Object.freeze({
+    package: "@posthog/core",
+    file: "src/error-tracking/parsers/index.ts",
+    from: "// Portions of this file are derived from getsentry/sentry-javascript",
+    to: "// OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.",
+  }),
+]);
+
 const compare = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 /** Orders crates and packages by name, then version. */
 const byNameAndVersion = (a, b) => compare(a.name, b.name) || compare(a.version, b.version);
@@ -155,15 +184,19 @@ const readAll = (dir, files) =>
 
 /**
  * The paths of the files under `dir`, relative to it with "/" separators.
- * Symlinks are not followed.
+ * Symlinks are not followed, and neither are folders whose name `enter`
+ * turns down.
  */
-function walk(dir, prefix = "") {
+function walk(dir, prefix = "", enter = () => true) {
   const found = [];
   for (const name of readdirSync(dir)) {
     const stats = lstatSync(join(dir, name));
     const rel = prefix ? `${prefix}/${name}` : name;
-    if (stats.isDirectory()) found.push(...walk(join(dir, name), rel));
-    else if (stats.isFile()) found.push(rel);
+    if (stats.isDirectory()) {
+      if (enter(name)) found.push(...walk(join(dir, name), rel, enter));
+    } else if (stats.isFile()) {
+      found.push(rel);
+    }
   }
   return found;
 }
@@ -171,16 +204,24 @@ function walk(dir, prefix = "") {
 /**
  * A `readPackageFiles` for npmProductionPackages: the licence and NOTICE
  * files of the package at `path` (a package-lock "packages" key) under
- * `root`. Throws when the package isn't there.
+ * `root`. Those at its top come first, as `{ file, text }`; then those at any
+ * depth below it (NESTED_PACKAGE_FILE), as `{ file, text, nested: true }`
+ * with `file` relative to the package. Nested node_modules folders are
+ * skipped: the packages in them are listed in their own right. Throws when
+ * the package isn't there.
  *
  * @param {string} root
- * @returns {(path: string) => Array<{ file: string, text: string }>}
+ * @returns {(path: string) => Array<{ file: string, text: string, nested?: true }>}
  */
 export function packageFileReader(root) {
   return (path) => {
     const dir = join(root, path);
     if (!existsSync(dir)) throw new Error(`${path} is not installed: run npm ci first`);
-    return readAll(dir, readdirSync(dir).filter((name) => PACKAGE_FILE.test(name) && isFile(join(dir, name))));
+    const top = readdirSync(dir).filter((name) => PACKAGE_FILE.test(name) && isFile(join(dir, name)));
+    const nested = walk(dir, "", (name) => name !== "node_modules").filter(
+      (file) => file.includes("/") && NESTED_PACKAGE_FILE.test(posix.basename(file)),
+    );
+    return [...readAll(dir, top), ...readAll(dir, nested).map((f) => ({ ...f, nested: true }))];
   };
 }
 
@@ -234,7 +275,8 @@ const MODULES = "node_modules/";
 /**
  * @typedef {{ name: string, version: string, license: string, build: boolean,
  *             standard: boolean, holder: string | null, holderSource: string | null,
- *             texts: Array<{ file: string | null, text: string }> }} NpmPackage
+ *             texts: Array<{ file: string | null, text: string, nested?: true,
+ *                            lines?: { first: number, last: number } }> }} NpmPackage
  */
 
 /**
@@ -242,21 +284,29 @@ const MODULES = "node_modules/";
  * root, workspace packages and links, dev-only packages, and optional
  * packages tied to an OS or CPU (native builds for other platforms). Each
  * name and version comes once, sorted, with its licence and NOTICE files from
- * `readPackageFiles(path)`.
+ * `readPackageFiles(path)`: the top-level ones, then the nested ones other
+ * than copies of a top-level one, then the package's `vendoredHeaders`
+ * (VENDORED_HEADER_NOTICES), read with `readPackageText`.
  *
- * A package without a licence file throws, unless `noLicenceFile` lists it
- * with the licence it declares: it then gets that licence's standard text
- * (`file: null`, first) and `standard: true`. A listed `holder` fills in the
- * text's copyright line once `readPackageText(path, source)` shows that the
- * package's own file names it; otherwise that throws too.
+ * A package without a top-level licence file throws, unless `noLicenceFile`
+ * lists it with the licence it declares: it then gets that licence's standard
+ * text (`file: null`, first) and `standard: true`. A listed `holder` fills in
+ * the text's copyright line once `readPackageText(path, source)` shows that
+ * the package's own file names it; otherwise that throws too.
  *
  * @param {{ packages?: Record<string, any> }} lock
- * @param {(path: string) => Array<{ file: string, text: string }>} readPackageFiles
+ * @param {(path: string) => Array<{ file: string, text: string, nested?: true }>} readPackageFiles
  * @param {{ noLicenceFile?: Record<string, { licence: string, holder?: string, source?: string }>,
- *           readPackageText?: (path: string, file: string) => string }} [options]
+ *           readPackageText?: (path: string, file: string) => string,
+ *           vendoredHeaders?: ReadonlyArray<{ package: string, file: string, from: string, to: string }> }} [options]
  * @returns {NpmPackage[]}
  */
-export function npmProductionPackages(lock, readPackageFiles, { noLicenceFile = NO_LICENCE_FILE, readPackageText } = {}) {
+export function npmProductionPackages(
+  lock,
+  readPackageFiles,
+  { noLicenceFile = NO_LICENCE_FILE, readPackageText, vendoredHeaders = VENDORED_HEADER_NOTICES } = {},
+) {
+  const options = { readPackageFiles, noLicenceFile, readPackageText, vendoredHeaders };
   const packages = new Map();
   for (const path of Object.keys(lock.packages ?? {}).sort(compare)) {
     const entry = lock.packages[path];
@@ -266,7 +316,7 @@ export function npmProductionPackages(lock, readPackageFiles, { noLicenceFile = 
     const name = entry.name ?? path.slice(path.lastIndexOf(MODULES) + MODULES.length);
     const key = `${name}@${entry.version}`;
     if (packages.has(key)) continue;
-    packages.set(key, describePackage(name, entry, path, { readPackageFiles, noLicenceFile, readPackageText }));
+    packages.set(key, describePackage(name, entry, path, options));
   }
   return [...packages.values()].sort(byNameAndVersion);
 }
@@ -288,25 +338,42 @@ export function npmProductionPackages(lock, readPackageFiles, { noLicenceFile = 
 export function npmBuildPackages(
   lock,
   readPackageFiles,
-  { names = SHIPPED_BUILD_PACKAGES, noLicenceFile = NO_LICENCE_FILE, readPackageText } = {},
+  {
+    names = SHIPPED_BUILD_PACKAGES,
+    noLicenceFile = NO_LICENCE_FILE,
+    readPackageText,
+    vendoredHeaders = VENDORED_HEADER_NOTICES,
+  } = {},
 ) {
+  const options = { readPackageFiles, noLicenceFile, readPackageText, vendoredHeaders };
   const packages = [];
   for (const name of names) {
     const path = `${MODULES}${name}`;
     const entry = lock.packages?.[path];
     if (!entry) throw new Error(`${name} is a shipped build package, but package-lock.json has no ${path}`);
     if (!entry.dev) continue;
-    packages.push({ ...describePackage(name, entry, path, { readPackageFiles, noLicenceFile, readPackageText }), build: true });
+    packages.push({ ...describePackage(name, entry, path, options), build: true });
   }
   return packages.sort(byNameAndVersion);
 }
 
-/** One package for the notices, from its lock entry and its files. */
-function describePackage(name, entry, path, { readPackageFiles, noLicenceFile, readPackageText }) {
+/**
+ * One package for the notices, from its lock entry and its files: its
+ * top-level licence and NOTICE files; its nested ones, less any copy of a
+ * top-level file; and its VENDORED_HEADER_NOTICES headers, as
+ * `{ file, text, nested: true, lines: { first, last } }`.
+ */
+function describePackage(name, entry, path, { readPackageFiles, noLicenceFile, readPackageText, vendoredHeaders }) {
   const { version } = entry;
   const license = typeof entry.license === "string" ? entry.license : "not declared";
-  const texts = [...readPackageFiles(path)];
-  const standard = !texts.some(({ file }) => LICENCE_FILE.test(file));
+  const files = readPackageFiles(path);
+  const top = files.filter((f) => !f.nested);
+  const nested = files.filter((f) => f.nested && !top.some((t) => t.text === f.text));
+  const headers = vendoredHeaders
+    .filter((notice) => notice.package === name)
+    .map((notice) => vendoredHeader({ name, version, path }, notice, readPackageText));
+  const texts = [...top, ...[...nested, ...headers].sort((a, b) => compare(a.file, b.file))];
+  const standard = !top.some(({ file }) => LICENCE_FILE.test(file));
   let holder = null;
   let holderSource = null;
   if (standard) {
@@ -315,6 +382,46 @@ function describePackage(name, entry, path, { readPackageFiles, noLicenceFile, r
     ({ holder, source: holderSource } = fallback);
   }
   return { name, version, license, build: false, standard, holder, holderSource, texts };
+}
+
+/**
+ * A VENDORED_HEADER_NOTICES header, copied verbatim from the installed file:
+ * the lines from the first one holding `from` to the next one holding `to`.
+ * Throws when the file or either line is missing.
+ */
+function vendoredHeader({ name, version, path }, { file, from, to }, readPackageText) {
+  if (!readPackageText) throw new Error(`${name} ${version}: there is no way to read ${file} for its vendored notice`);
+  let source;
+  try {
+    source = readPackageText(path, file);
+  } catch (err) {
+    throw new Error(`${name} ${version}: can't read ${file}, where VENDORED_HEADER_NOTICES expects a notice (${err.code ?? err.message})`);
+  }
+  const lines = source.split("\n");
+  const first = lines.findIndex((line) => line.includes(from));
+  if (first < 0) throw new Error(`${name} ${version}: ${file} has no line with ${JSON.stringify(from)}`);
+  const length = lines.slice(first).findIndex((line) => line.includes(to));
+  if (length < 0) {
+    throw new Error(`${name} ${version}: ${file} has no line with ${JSON.stringify(to)} after line ${first + 1}`);
+  }
+  const last = first + length;
+  return { file, text: lines.slice(first, last + 1).join("\n"), nested: true, lines: { first: first + 1, last: last + 1 } };
+}
+
+/**
+ * Throws when a VENDORED_HEADER_NOTICES entry names a package that isn't among
+ * the shipped `packages`: its notice would be dropped without a word, or the
+ * entry is stale.
+ *
+ * @param {NpmPackage[]} packages
+ * @param {ReadonlyArray<{ package: string }>} [list]
+ */
+export function checkVendoredHeaders(packages, list = VENDORED_HEADER_NOTICES) {
+  const shipped = new Set(packages.map((pkg) => pkg.name));
+  const unused = list.filter((notice) => !shipped.has(notice.package)).map((notice) => notice.package);
+  if (unused.length > 0) {
+    throw new Error(`VENDORED_HEADER_NOTICES lists ${unused.join(", ")}, which no longer ships: remove or fix the entry`);
+  }
 }
 
 /**
@@ -709,6 +816,36 @@ const sourceTitle = (source) =>
   source.name === source.crate.name ? label(source.crate) : `${source.name}, from ${label(source.crate)}`;
 
 /**
+ * An npm package's texts in the order they print, each with the lines that
+ * label it: the standard text first, then its top-level files, then the
+ * nested files and vendored headers by path. A nested file is labelled
+ * `[<package>/<path>]`, and nested files with the same text share one copy
+ * of it; a header is labelled with the lines it came from.
+ */
+function packageTexts(pkg) {
+  const rank = (t) => (t.file === null ? 0 : t.nested ? 2 : 1);
+  const texts = [...pkg.texts].sort((a, b) => rank(a) - rank(b) || compare(a.file ?? "", b.file ?? ""));
+  const printed = [];
+  const shared = new Map();
+  for (const t of texts) {
+    if (t.file === null) {
+      printed.push({ labels: pkg.holder ? npmHolderNote(pkg.holderSource) : NPM_STANDARD_NOTE, text: t.text });
+    } else if (!t.nested) {
+      printed.push({ labels: [`[${t.file}]`], text: t.text });
+    } else if (t.lines) {
+      printed.push({ labels: [`[${pkg.name}/${t.file}:${t.lines.first}-${t.lines.last}]`], text: t.text });
+    } else if (shared.has(t.text)) {
+      shared.get(t.text).labels.push(`[${pkg.name}/${t.file}]`);
+    } else {
+      const entry = { labels: [`[${pkg.name}/${t.file}]`], text: t.text };
+      shared.set(t.text, entry);
+      printed.push(entry);
+    }
+  }
+  return printed;
+}
+
+/**
  * THIRD-PARTY-NOTICES as text. Deterministic: everything is sorted here,
  * whatever order the input comes in, and nothing depends on the time or the
  * machine. Licence texts go in verbatim.
@@ -745,10 +882,7 @@ export function renderNotices({ version, rust, npm, bundled }) {
   heading(out, "npm packages", NPM_INTRO);
   for (const pkg of [...npm].sort(byNameAndVersion)) {
     out.push("", LINE, label(pkg), `Licence: ${pkg.license}`, ...(pkg.build ? [BUILD_NOTE] : []));
-    for (const { file, text } of [...pkg.texts].sort((a, b) => compare(a.file ?? "", b.file ?? ""))) {
-      const note = pkg.holder ? npmHolderNote(pkg.holderSource) : NPM_STANDARD_NOTE;
-      out.push("", ...(file === null ? note : [`[${file}]`]), "", verbatim(text));
-    }
+    for (const { labels, text } of packageTexts(pkg)) out.push("", ...labels, "", verbatim(text));
   }
 
   const sources = [...bundled].map((source) => ({ ...source, title: sourceTitle(source) }));
@@ -841,17 +975,21 @@ function main(argv) {
     const production = npmProductionPackages(lock, packageFileReader(ROOT), packageOptions);
     const build = npmBuildPackages(lock, packageFileReader(ROOT), packageOptions);
     const npm = [...production, ...build];
+    checkVendoredHeaders(npm);
     const bundled = [whisperCppLicence(metadata), ...compiledSources(about, metadata, { exclude, crateDirs })];
     writeFileSync(args.out, renderNotices({ version, rust, npm, bundled }));
 
     const crates = new Set(rust.flatMap((licence) => licence.crates.map(label))).size;
     const crateFileCount = rust.reduce((n, licence) => n + licence.files.length, 0);
+    const nested = npm.flatMap((pkg) => pkg.texts.filter((t) => t.nested && !t.lines).map(() => pkg));
+    const headers = npm.flatMap((pkg) => pkg.texts.filter((t) => t.lines));
     const sources = bundled.map((source) => `${label(source.crate)} (${source.notices.length} notices)`);
     process.stderr.write(
       `third-party-notices: wrote ${args.out}: ${crates} Rust crates under ${rust.length} licence texts ` +
         `with ${crateFileCount} files from their folders; ${production.length} npm packages and ` +
-        `${build.length} build-time ones (${build.map(label).join(", ")}); ` +
-        `bundled source from ${sources.join(", ")}\n`,
+        `${build.length} build-time ones (${build.map(label).join(", ")}), with ${nested.length} nested ` +
+        `licence files from ${new Set(nested.map(label)).size} packages and ${headers.length} vendored ` +
+        `headers; bundled source from ${sources.join(", ")}\n`,
     );
     return 0;
   } catch (err) {

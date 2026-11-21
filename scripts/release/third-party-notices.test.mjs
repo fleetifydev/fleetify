@@ -22,6 +22,8 @@ import {
   NO_LICENCE_FILE,
   SHIPPED_BUILD_PACKAGES,
   STANDARD_TEXTS,
+  VENDORED_HEADER_NOTICES,
+  checkVendoredHeaders,
   compiledSources,
   crateDirectories,
   crateFiles,
@@ -59,13 +61,35 @@ const TEXT = {
   gamma3: "Fixture ISC-style licence for gamma 3.\n",
   realName: "Fixture MIT-style licence for real-name.\n",
   typesOnly: "Fixture MIT-style licence for types-only.\n",
+  vendoredThing: "/*! thing: fixture code vendored into alpha | @license ISC | (c) 2026 Thing Fixture Authors */\n",
+  vendoredHeader:
+    "// Portions of this file come from fixture-lib.\n//\n// Copyright (c) 2026 The Fixture Lib Authors\n" +
+    "// Permission to use this fixture is granted for tests.\n// End of the fixture-lib notice.",
 };
+/** alpha's src/vendored.js: a vendored header between code; only the header is a notice. */
+const VENDORED_FILE = `"use strict";\n${TEXT.vendoredHeader}\n\nexport const vendored = 1;\n`;
+/** A VENDORED_HEADER_NOTICES list for the fixture: alpha's src/vendored.js header. */
+const VENDORED = [
+  {
+    package: "alpha",
+    file: "src/vendored.js",
+    from: "// Portions of this file come from fixture-lib.",
+    to: "// End of the fixture-lib notice.",
+  },
+];
 
 /** The fixture lock's node_modules tree: path from the project root → content. */
 const TREE = {
   "node_modules/alpha/LICENSE": TEXT.alpha,
   "node_modules/alpha/README.md": "# alpha\n",
   "node_modules/alpha/index.js": "export default 1;\n",
+  // Licence files below alpha's top folder: two copies of a vendored one, a
+  // copy of alpha's own (left out), and a data file that only looks similar.
+  "node_modules/alpha/dist/vendor/thing.js.LICENSE.txt": TEXT.vendoredThing,
+  "node_modules/alpha/dist/vendor/thing.mjs.LICENSE.txt": TEXT.vendoredThing,
+  "node_modules/alpha/dist/LICENSE": TEXT.alpha,
+  "node_modules/alpha/dist/licenses.json": "[]\n",
+  "node_modules/alpha/src/vendored.js": VENDORED_FILE,
   "node_modules/alpha/node_modules/gamma/license.md": TEXT.gamma2,
   "node_modules/gamma/LICENCE.txt": TEXT.gamma3,
   "node_modules/@scope/beta/LICENSE-APACHE": TEXT.betaApache,
@@ -105,14 +129,17 @@ const LISTED = {
   "standard-only": { licence: "MIT" },
   "with-holder": { licence: "MIT", holder: "A. Fixture Holder", source: "readme.md" },
 };
-const npm = (dir = tree(), options = { noLicenceFile: LISTED, readPackageText: packageTextReader(dir) }) =>
-  npmProductionPackages(LOCK, packageFileReader(dir), options);
+const npm = (
+  dir = tree(),
+  options = { noLicenceFile: LISTED, readPackageText: packageTextReader(dir), vendoredHeaders: VENDORED },
+) => npmProductionPackages(LOCK, packageFileReader(dir), options);
 /** npmBuildPackages over the fixture lock, for the dev packages in `names`. */
 const build = (names, dir = tree()) =>
   npmBuildPackages(LOCK, packageFileReader(dir), {
     names,
     noLicenceFile: LISTED,
     readPackageText: packageTextReader(dir),
+    vendoredHeaders: VENDORED,
   });
 /** The standard MIT text with a holder in its copyright line. */
 const MIT_WITH_HOLDER = STANDARD_TEXTS.MIT.replace(
@@ -239,9 +266,74 @@ describe("npmProductionPackages", () => {
       { file: "LICENSE-APACHE", text: TEXT.betaApache },
       { file: "NOTICE", text: TEXT.betaNotice },
     ]);
+    // alpha also has licence files below its top folder, and a vendored header.
     assert.deepEqual(packages.find((p) => p.name === "alpha").texts, [
       { file: "LICENSE", text: TEXT.alpha },
+      { file: "dist/vendor/thing.js.LICENSE.txt", text: TEXT.vendoredThing, nested: true },
+      { file: "dist/vendor/thing.mjs.LICENSE.txt", text: TEXT.vendoredThing, nested: true },
+      { file: "src/vendored.js", text: TEXT.vendoredHeader, nested: true, lines: { first: 2, last: 6 } },
     ]);
+  });
+
+  test("a nested licence file appears under its package, with its path relative to the package", () => {
+    const part = section(notices(), "npm packages");
+    const alpha = part.slice(part.indexOf("\nalpha 1.2.3\n"), part.indexOf("\ndelta 1.0.0\n"));
+    // Two copies with the same text: both paths, the text once.
+    assert.ok(
+      alpha.includes(
+        "[alpha/dist/vendor/thing.js.LICENSE.txt]\n[alpha/dist/vendor/thing.mjs.LICENSE.txt]\n\n" + TEXT.vendoredThing,
+      ),
+    );
+    assert.equal(occurrences(part, TEXT.vendoredThing), 1);
+  });
+
+  test("a nested copy of the package's own licence is left out", () => {
+    const part = section(notices(), "npm packages");
+    assert.ok(!part.includes("[alpha/dist/LICENSE]"));
+    assert.ok(!part.includes("alpha/dist/licenses.json"));
+    assert.equal(occurrences(part, TEXT.alpha), 1);
+  });
+
+  test("nested node_modules folders are skipped: those packages are listed in their own right", () => {
+    const alpha = npm().find((p) => p.name === "alpha");
+    assert.ok(alpha.texts.every(({ file }) => !String(file).includes("node_modules")));
+    const part = section(notices(), "npm packages");
+    assert.equal(occurrences(part, TEXT.gamma2), 1); // only under gamma 2.0.0
+    assert.ok(!part.includes("[alpha/node_modules"));
+  });
+
+  test("a vendored header is copied verbatim from the installed file, with its lines", () => {
+    const part = section(notices(), "npm packages");
+    assert.ok(part.includes(`[alpha/src/vendored.js:2-6]\n\n${TEXT.vendoredHeader}\n`));
+  });
+
+  test("a VENDORED_HEADER_NOTICES entry whose marker or file is missing throws", () => {
+    const without = tree({ "node_modules/alpha/src/vendored.js": '"use strict";\nexport const vendored = 1;\n' });
+    assert.throws(() => npm(without), /alpha 1\.2\.3: src\/vendored\.js has no line with "\/\/ Portions of this file come from fixture-lib\."/);
+    const unended = tree({
+      "node_modules/alpha/src/vendored.js": "// Portions of this file come from fixture-lib.\nexport const vendored = 1;\n",
+    });
+    assert.throws(() => npm(unended), /alpha 1\.2\.3: src\/vendored\.js has no line with "\/\/ End of the fixture-lib notice\." after/);
+    const gone = tree({ "node_modules/alpha/src/vendored.js": null });
+    assert.throws(() => npm(gone), /alpha 1\.2\.3: can't read src\/vendored\.js/);
+  });
+
+  test("a VENDORED_HEADER_NOTICES entry for a package that no longer ships throws", () => {
+    assert.doesNotThrow(() => checkVendoredHeaders(npm(), VENDORED));
+    assert.throws(
+      () => checkVendoredHeaders(npm(), [...VENDORED, { package: "gone-pkg", file: "a.js", from: "x", to: "y" }]),
+      /gone-pkg/,
+    );
+  });
+
+  test("every VENDORED_HEADER_NOTICES entry names a package, a file and both marker lines", () => {
+    assert.ok(VENDORED_HEADER_NOTICES.length > 0);
+    for (const entry of VENDORED_HEADER_NOTICES) {
+      for (const key of ["package", "file", "from", "to"]) {
+        assert.equal(typeof entry[key], "string", `${entry.package}: ${key}`);
+        assert.ok(entry[key].length > 0, `${entry.package}: ${key}`);
+      }
+    }
   });
 
   test("a production package without a licence file throws, naming the package", () => {
@@ -303,6 +395,7 @@ describe("npmProductionPackages", () => {
       npmProductionPackages(reversed, packageFileReader(dir), {
         noLicenceFile: LISTED,
         readPackageText: packageTextReader(dir),
+        vendoredHeaders: VENDORED,
       }),
       npm(dir),
     );
