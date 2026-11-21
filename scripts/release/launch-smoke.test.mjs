@@ -728,13 +728,16 @@ describe("createUpdateServer", () => {
     const base = await listen(server);
     try {
       const asset = "Fleetify_0.2.0_amd64.AppImage";
+      // The server finishes once the last bytes are handed to the system,
+      // which in one process may come after the client has read them, and
+      // later still on a busy machine: wait for the event itself. Its
+      // listeners all run before this promise's continuation does.
+      const finished = new Promise((done) => server.once("request", (req, res) => res.once("finish", done)));
       const answer = await request(`${base}/artifacts/${asset}`);
       assert.equal(answer.status, 200);
       assert.equal(answer.headers["content-length"], String(ARTIFACT_BYTES.get(asset).length));
       assert.ok(answer.body.equals(ARTIFACT_BYTES.get(asset)));
-      // The server finishes once the last bytes are handed to the system,
-      // which in one process may come after the client has read them.
-      for (let i = 0; i < 100 && !server.downloads[0]?.complete; i += 1) await new Promise((done) => setTimeout(done, 10));
+      await finished;
       assert.deepEqual(server.downloads, [{ asset, size: ARTIFACT_BYTES.get(asset).length, bytes: ARTIFACT_BYTES.get(asset).length, complete: true }]);
     } finally {
       await close(server);
