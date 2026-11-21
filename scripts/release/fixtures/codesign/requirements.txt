@@ -1,0 +1,2 @@
+Executable=/Users/runner/work/fleetify/fleetify/target/aarch64-apple-darwin/release/bundle/macos/Fleetify.app/Contents/MacOS/fleetify-app
+designated => identifier "com.fleetify.app" and certificate root = H"4373166b9e2432f53462f06b1440efeef5f812fc"

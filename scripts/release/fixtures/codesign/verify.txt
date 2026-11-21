@@ -1,0 +1,2 @@
+/Users/runner/work/fleetify/fleetify/target/aarch64-apple-darwin/release/bundle/macos/Fleetify.app: valid on disk
+/Users/runner/work/fleetify/fleetify/target/aarch64-apple-darwin/release/bundle/macos/Fleetify.app: satisfies its Designated Requirement

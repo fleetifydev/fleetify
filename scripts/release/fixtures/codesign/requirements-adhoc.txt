@@ -1,0 +1,2 @@
+Executable=/Users/runner/work/fleetify/fleetify/target/aarch64-apple-darwin/release/bundle/macos/Fleetify.app/Contents/MacOS/fleetify-app
+# designated => cdhash H"3c84341d6ef288a40a1910f03bcfc42eb00c2b6e"
