@@ -45,7 +45,7 @@ jobs:
     env:
       CARGO_TERM_COLOR: always
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # The Rust release rust-toolchain.toml pins, with rustfmt and clippy:
       # given no toolchain name, rustup installs the one that file names, so
       # CI builds with the same compiler as a local run. Bash rather than the
@@ -138,7 +138,7 @@ jobs:
     env:
       CARGO_TERM_COLOR: always
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # As in the rust job: the release that rust-toolchain.toml pins.
       - name: Rust toolchain (rust-toolchain.toml)
         shell: bash
@@ -180,7 +180,7 @@ jobs:
     name: Renderer (lint + test + types)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
           node-version: 22
