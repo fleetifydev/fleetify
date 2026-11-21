@@ -14,6 +14,10 @@
  * tauri.conf.json, whose updater settings the shell's Rust tests check
  * (src-tauri/src/shell/updater.rs). Those overlays must leave the updater
  * alone, or a release would ship an updater the tests never saw.
+ *
+ * The Tauri CLI also reads a config in JSON5 (tauri.conf.json5) or TOML
+ * (Tauri.toml), and their platform variants. The release config is JSON
+ * alone, which these checks read, so neither kind may appear in src-tauri.
  */
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
@@ -51,5 +55,12 @@ describe("release config", () => {
       }
     }
     assert.deepEqual(problems, [], problems.join("\n"));
+  });
+
+  test("src-tauri holds no Tauri config in JSON5 or TOML, which the check above doesn't read", () => {
+    const others = readdirSync(new URL("../../src-tauri/", import.meta.url))
+      .filter((name) => /^tauri.*\.conf\.json5$/i.test(name) || /^tauri.*\.toml$/i.test(name))
+      .sort();
+    assert.deepEqual(others, [], `src-tauri holds ${others.join(", ")}`);
   });
 });
