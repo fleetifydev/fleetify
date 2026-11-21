@@ -1074,10 +1074,20 @@ describe("the install scripts' text", () => {
     }
   });
 
-  test("install.sh, cut short anywhere, as a pipe that breaks off delivers it, runs nothing: only its last line calls main", { skip: SKIP_SH }, () => {
+  test("install.sh is sh, and all of it one { } group, which sh reads whole before it runs any of it: past the comments, it opens, and it closes on the last line, after main's call", () => {
     const text = readFileSync(INSTALL_SH, "utf8");
-    assert.equal(text.split("\n")[0], "#!/bin/sh");
-    assert.equal(text.trimEnd().split("\n").at(-1), 'main "$@"');
+    const all = text.split("\n");
+    assert.equal(all[0], "#!/bin/sh");
+    const opening = all.findIndex((line, i) => i > 0 && line.trim() !== "" && !line.startsWith("#"));
+    assert.equal(all[opening], "{", `the first line of code is ${JSON.stringify(all[opening])}, not the group's opening`);
+    assert.ok(text.endsWith('\nmain "$@"\n}\n'), "the group doesn't close on the last line, right after main's call");
+  });
+
+  test("install.sh, cut short anywhere, as a pipe that breaks off delivers it, runs nothing and says nothing but sh's syntax error", { skip: SKIP_SH }, () => {
+    const text = readFileSync(INSTALL_SH, "utf8");
+    const all = text.split("\n");
+    // Where the code starts: the cuts go through every byte of its first lines.
+    const opening = Math.max(1, all.findIndex((line, i) => i > 0 && line.trim() !== "" && !line.startsWith("#")));
     // Every command it could run, as a stand-in that logs its name, and
     // nothing else on PATH; a home, a TMPDIR and a working folder of their own.
     const stand = folder("prefix-stubs");
@@ -1086,21 +1096,39 @@ describe("the install scripts' text", () => {
     for (const name of commands) writeFileSync(join(stand, name), `#!/bin/sh\necho "${name} $*" >> "${log}"\n`, { mode: 0o755 });
     const scratch = workspace();
     const env = { PATH: stand, HOME: scratch.home, TMPDIR: scratch.tmp, XDG_DATA_HOME: join(scratch.home, "data"), LC_ALL: "C", FLEETIFY_INSTALL_BASE: "http://127.0.0.1:9" };
-    const run = (input) => spawnSync(SH, ["-s"], { input, cwd: scratch.work, env, encoding: "utf8" });
-    const all = text.split("\n");
-    const ran = [];
-    // Each prefix that ends at a line's end, short of the whole script.
-    for (let n = 1; n < all.length - 1; n += 1) {
-      run(`${all.slice(0, n).join("\n")}\n`);
+    // With options, as `curl … | sh -s -- --download-only --deb` gives them.
+    const run = (input) => spawnSync(SH, ["-s", "--", "--download-only", "--deb"], { input, cwd: scratch.work, env, encoding: "utf8" });
+    // The cuts: at the end of every line, and at every byte of the group's
+    // first and last lines, where a cut can leave what reads as a whole
+    // command, such as main without its arguments. Not the whole script, with
+    // or without its last line break, which runs.
+    const lineStart = (k) => all.slice(0, k).reduce((sum, line) => sum + line.length + 1, 0);
+    const cuts = new Set();
+    for (let at = text.indexOf("\n"); at !== -1; at = text.indexOf("\n", at + 1)) cuts.add(at + 1);
+    for (let n = lineStart(opening); n < lineStart(opening + 12); n += 1) cuts.add(n);
+    for (let n = lineStart(all.length - 13); n < text.length; n += 1) cuts.add(n);
+    cuts.delete(text.length);
+    cuts.delete(text.length - 1);
+    const problems = [];
+    for (const n of [...cuts].sort((x, y) => x - y)) {
+      const result = run(text.slice(0, n));
+      const where = `cut after byte ${n} (…${JSON.stringify(text.slice(Math.max(0, n - 24), n))})`;
       const calls = lines(log);
       if (calls.length > 0) {
-        ran.push(`after line ${n} (${all[n - 1]}): ${calls.join("; ")}`);
+        problems.push(`${where} ran: ${calls.join("; ")}`);
         rmSync(log);
       }
+      if (result.stdout !== "") problems.push(`${where} printed: ${JSON.stringify(result.stdout)}`);
+      // Nothing on stderr but sh's complaint that the script ends too soon.
+      const said = result.stderr.split("\n").filter(Boolean);
+      if (/not found|fleetify-install:/.test(result.stderr) || said.some((line) => !/syntax error|unexpected (end of file|EOF)|unterminated/i.test(line))) {
+        problems.push(`${where} said: ${JSON.stringify(result.stderr)}`);
+      }
     }
-    assert.deepEqual(ran, [], "a cut-short install.sh ran commands");
+    assert.deepEqual(problems, [], "a cut-short install.sh did something");
     assert.deepEqual([snapshot(scratch.home), snapshot(scratch.tmp), snapshot(scratch.work)], [[], [], []], "a cut-short install.sh wrote files");
-    // The whole script does run: the stand-ins would have seen a prefix that did.
+    assert.ok(cuts.size > all.length, `only ${cuts.size} cuts`);
+    // The whole script does run: the stand-ins would have seen a cut that did.
     run(text);
     assert.ok(lines(log).some((call) => call.startsWith("uname ")), `the whole script didn't reach uname: ${lines(log).join("; ")}`);
   });

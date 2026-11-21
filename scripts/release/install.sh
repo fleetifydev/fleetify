@@ -30,6 +30,11 @@
 #
 # Exit codes: 0 installed (or downloaded); 1 failed, with nothing installed
 # when the download didn't match SHA256SUMS; 2 usage.
+
+# All of it is one { } group, which sh reads whole before it runs any of it:
+# cut short anywhere, as by a pipe that breaks off, it is a syntax error, and
+# nothing runs.
+{
 set -eu
 
 DEFAULT_BASE=https://github.com/fleetifydev/fleetify/releases
@@ -497,3 +502,4 @@ main() {
 }
 
 main "$@"
+}
