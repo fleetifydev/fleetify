@@ -183,6 +183,7 @@ The first release needs one more commit on its release pull request, and it must
 
 - In [`release-please-config.json`](../release-please-config.json), remove `bootstrap-sha` and the package's `release-as`. `release-as` makes this release 0.2.0, and `bootstrap-sha` starts its changelog after the history that came before; left in, `release-as` would ask every later release pull request for 0.2.0 again. A script test requires both while the manifest's version is below 0.2.0 and forbids them from 0.2.0 on, so the release pull request's CI stays red until this commit.
 - In CHANGELOG.md, edit the notes under the heading release-please wrote. Drop the second `**backend:**` line, "load the built-in config and keep fleet.db under ~/.fleetify", which the squash body of pull request #19 adds. Add what a first release needs, such as a short introduction, a pointer to INSTALL.md, and the notes on the unsigned Windows installer and the self-signed macOS build.
+- The heading links to a comparison with `v0.1.0`, a tag that doesn't exist, so the link would lead nowhere. Point it at the release instead: in the heading's link, replace `compare/v0.1.0...v0.2.0` with `releases/tag/v0.2.0`, keeping the version and the date. From the next release on, the comparison links work.
 
 ```bash
 branch=$(gh pr view <number> --json headRefName --jq .headRefName)
