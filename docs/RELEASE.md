@@ -257,7 +257,9 @@ The release is still a draft and its tag doesn't exist, so nothing is public yet
 
 - **A job failed for a reason that a second try can fix**, such as a runner fault or a network error: re-run the failed jobs, with the jobs after them, using `gh run rerun <run-id> --failed`. Approve the `release` environment again if the run asks.
 - **The release itself is wrong**: delete the draft with `gh release delete v<version> --yes`, and fix the cause in a normal pull request. The version is spent, as `main` already names it in `.release-please-manifest.json` and CHANGELOG.md, so the fix ships under the next version. Without a tag for the deleted version, release-please can't find the previous release, so the next release pull request's notes reach further back than they should: cut them down to what's new.
-- **The release-please job failed**, on the Release Bot's credentials for example: fix the cause and re-run the job.
+- **The release-please job failed.** Look for a draft of the version with `gh release list`:
+  - **There is none**: the job failed before it made the draft, on the Release Bot's credentials for example. Fix the cause and re-run the job.
+  - **There is one**: the job failed after it made the draft, in its check of the draft or while release-please labelled the release pull request. Re-running the job won't build it: release-please finds no release pull request left to release, or makes a second draft, and the build never ran. Delete the draft and go on as when the release itself is wrong: the version is spent.
 
 ### After publish
 
