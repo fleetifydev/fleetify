@@ -374,6 +374,78 @@ impl Throttle {
     }
 }
 
+/// CA certificate bundles, in the order they are looked for.
+#[cfg(target_os = "linux")]
+const CA_BUNDLES: &[&str] = &[
+    "/etc/ssl/certs/ca-certificates.crt", // Debian, Ubuntu, Arch
+    "/etc/pki/tls/certs/ca-bundle.crt",   // Fedora, RHEL
+    "/etc/ssl/ca-bundle.pem",             // openSUSE
+    "/etc/pki/tls/cacert.pem",            // OpenELEC
+    "/etc/ssl/cert.pem",                  // Alpine and others
+];
+
+/// CA certificate directories, in the order they are looked for.
+#[cfg(target_os = "linux")]
+const CA_DIRS: &[&str] = &["/etc/ssl/certs", "/etc/pki/tls/certs"];
+
+/// Points `SSL_CERT_FILE` and `SSL_CERT_DIR` at this system's CA
+/// certificates, each only if it is unset ([`cert_env_to_set`]).
+///
+/// When the two are unset, the updater plugin sets them to Debian's paths on
+/// each update check, and every process the app starts after that (agents,
+/// git) inherits them. Fedora, RHEL and openSUSE keep their certificates
+/// elsewhere, so TLS can fail in those processes. Once they hold this
+/// system's paths, the plugin leaves them as they are.
+///
+/// Call it before the app starts any thread: setting a variable while
+/// another thread reads the environment is a data race.
+#[cfg(target_os = "linux")]
+pub fn set_system_cert_env() {
+    let to_set = cert_env_to_set(
+        std::env::var_os("SSL_CERT_FILE").as_deref(),
+        std::env::var_os("SSL_CERT_DIR").as_deref(),
+        |path| std::path::Path::new(path).exists(),
+    );
+    for (name, value) in to_set {
+        // Sound: run() calls this first, while its thread is the only one.
+        std::env::set_var(name, value);
+    }
+}
+
+/// The certificate variables to set, with their values: `SSL_CERT_FILE` to
+/// the first of [`CA_BUNDLES`] that `exists`, and `SSL_CERT_DIR` to the first
+/// of [`CA_DIRS`]. A variable that is set already (`current_file`,
+/// `current_dir`), even to an empty value, stays as it is, and so does one
+/// with no candidate on this system.
+#[cfg(target_os = "linux")]
+fn cert_env_to_set(
+    current_file: Option<&std::ffi::OsStr>,
+    current_dir: Option<&std::ffi::OsStr>,
+    exists: impl Fn(&str) -> bool,
+) -> Vec<(&'static str, &'static str)> {
+    let mut to_set = Vec::new();
+    if current_file.is_none() {
+        if let Some(bundle) = first_existing(CA_BUNDLES, &exists) {
+            to_set.push(("SSL_CERT_FILE", bundle));
+        }
+    }
+    if current_dir.is_none() {
+        if let Some(dir) = first_existing(CA_DIRS, &exists) {
+            to_set.push(("SSL_CERT_DIR", dir));
+        }
+    }
+    to_set
+}
+
+/// The first of `candidates` that `exists`.
+#[cfg(target_os = "linux")]
+fn first_existing<'a>(candidates: &[&'a str], exists: impl Fn(&str) -> bool) -> Option<&'a str> {
+    candidates
+        .iter()
+        .copied()
+        .find(|candidate| exists(candidate))
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
@@ -676,5 +748,85 @@ mod tests {
         // A request to fleetify.dev that hangs gives up after this, and the
         // check moves on to GitHub.
         assert_eq!(REQUEST_TIMEOUT, Duration::from_secs(20));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn certificate_paths_are_looked_for_in_order() {
+        assert_eq!(
+            CA_BUNDLES,
+            [
+                "/etc/ssl/certs/ca-certificates.crt",
+                "/etc/pki/tls/certs/ca-bundle.crt",
+                "/etc/ssl/ca-bundle.pem",
+                "/etc/pki/tls/cacert.pem",
+                "/etc/ssl/cert.pem",
+            ]
+        );
+        assert_eq!(CA_DIRS, ["/etc/ssl/certs", "/etc/pki/tls/certs"]);
+        let candidates = ["/a", "/b", "/c"];
+        assert_eq!(first_existing(&candidates, |_| true), Some("/a"));
+        assert_eq!(first_existing(&candidates, |path| path != "/a"), Some("/b"));
+        assert_eq!(first_existing(&candidates, |path| path == "/c"), Some("/c"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_fedora_system_gets_its_pki_certificate_paths() {
+        // Fedora and RHEL have no /etc/ssl/certs/ca-certificates.crt, the
+        // file the updater plugin would set.
+        let fedora = ["/etc/pki/tls/certs/ca-bundle.crt", "/etc/pki/tls/certs"];
+        assert_eq!(
+            cert_env_to_set(None, None, |path| fedora.contains(&path)),
+            [
+                ("SSL_CERT_FILE", "/etc/pki/tls/certs/ca-bundle.crt"),
+                ("SSL_CERT_DIR", "/etc/pki/tls/certs"),
+            ]
+        );
+        let opensuse = ["/etc/ssl/ca-bundle.pem", "/etc/ssl/certs"];
+        assert_eq!(
+            cert_env_to_set(None, None, |path| opensuse.contains(&path)),
+            [
+                ("SSL_CERT_FILE", "/etc/ssl/ca-bundle.pem"),
+                ("SSL_CERT_DIR", "/etc/ssl/certs"),
+            ]
+        );
+        // Debian and Ubuntu get the paths the plugin would set.
+        let debian = ["/etc/ssl/certs/ca-certificates.crt", "/etc/ssl/certs"];
+        assert_eq!(
+            cert_env_to_set(None, None, |path| debian.contains(&path)),
+            [
+                ("SSL_CERT_FILE", "/etc/ssl/certs/ca-certificates.crt"),
+                ("SSL_CERT_DIR", "/etc/ssl/certs"),
+            ]
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn with_no_certificates_found_nothing_is_set() {
+        assert_eq!(first_existing(CA_BUNDLES, |_| false), None);
+        assert_eq!(first_existing(CA_DIRS, |_| false), None);
+        let to_set = cert_env_to_set(None, None, |_| false);
+        assert!(to_set.is_empty(), "{to_set:?}");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_certificate_variable_already_set_is_never_overwritten() {
+        let everything = |_: &str| true;
+        let mine = std::ffi::OsStr::new("/home/me/company-ca.pem");
+        assert_eq!(
+            cert_env_to_set(Some(mine), None, everything),
+            [("SSL_CERT_DIR", "/etc/ssl/certs")]
+        );
+        assert_eq!(
+            cert_env_to_set(None, Some(mine), everything),
+            [("SSL_CERT_FILE", "/etc/ssl/certs/ca-certificates.crt")]
+        );
+        // An empty value counts as set, as it does for the plugin.
+        let empty = std::ffi::OsStr::new("");
+        let to_set = cert_env_to_set(Some(empty), Some(mine), everything);
+        assert!(to_set.is_empty(), "{to_set:?}");
     }
 }

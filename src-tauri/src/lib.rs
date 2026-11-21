@@ -50,6 +50,13 @@ pub fn run() {
         std::env::set_var("no_proxy", &no_proxy);
     }
 
+    // The updater plugin sets SSL_CERT_FILE and SSL_CERT_DIR to Debian's
+    // paths when they are unset, and the processes the app starts inherit
+    // them. This sets them to this system's paths first. Before the Tauri
+    // builder: while this thread is the only one, setting a variable is sound.
+    #[cfg(target_os = "linux")]
+    shell::updater::set_system_cert_env();
+
     // Tracing init moved into `setup()` so the file appender can use
     // Tauri's resolved `app_log_dir()` (Windows: %LOCALAPPDATA%, macOS:
     // ~/Library/Logs, Linux: ~/.local/state). The WorkerGuard returned
@@ -859,6 +866,24 @@ mod tests {
         assert!(
             before_plugin[gate..].contains("} else {"),
             "the plugin is registered in the release arm, not the debug one"
+        );
+    }
+
+    #[test]
+    fn the_certificate_variables_are_set_before_the_app_starts_a_thread() {
+        // Setting an environment variable while another thread reads the
+        // environment is a data race: run() sets these before the Tauri
+        // builder, and with it the async runtime, exists.
+        let source = app_source();
+        let set = source
+            .find(&format!("shell::updater::{}()", "set_system_cert_env"))
+            .expect("run() sets the certificate variables");
+        let builder = source
+            .find(&format!("tauri::Builder::{}()", "default"))
+            .expect("run() builds the app with tauri::Builder::default()");
+        assert!(
+            set < builder,
+            "run() must set the certificate variables before it builds the app"
         );
     }
 
