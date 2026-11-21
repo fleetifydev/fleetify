@@ -19,6 +19,15 @@
  * title is edited, and the Linux clippy job installs the packages that
  * CONTRIBUTING.md lists.
  *
+ * The workflows that make a release (build.yml, smoke.yml, release-dry-run.yml
+ * and release.yml) pin each action to a commit and grant only `contents:
+ * read` at the top. build.yml builds release-assets.mjs's TARGETS, and a
+ * release build gets nothing of a dry run's: no cache, none of the keys a dry
+ * run makes, no updater overlay. The dry run assembles with each build's own
+ * key, and its smoke runs the bundles without the source tree. Where a step's
+ * script decides something, such as the environment or the arguments the
+ * smoke gets, the check runs that script with bash, as the runner does.
+ *
  * Node has no YAML parser and the repo takes no dependency for a test, so the
  * workflows are parsed by Python's PyYAML, as in check-github-config.test.mjs.
  * Where `python3 -c "import yaml"` fails, the workflow checks skip and say
@@ -29,10 +38,14 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
+
+import { dryRunConfig } from "../release/dry-run-config.mjs";
+import { TARGETS, UPDATER_KEY_ID } from "../release/release-assets.mjs";
 
 const ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const WORKFLOWS = ".github/workflows";
@@ -492,6 +505,461 @@ describe("required checks", () => {
       inCi,
       [],
       `ci.yml's job ${inCi.join(", ")} is named "${PR_TITLE_CHECK}" too, and an edited title doesn't rerun it`,
+    );
+  });
+});
+
+// ── The release workflows ───────────────────────────────────────────────────
+
+const BUILD = `${WORKFLOWS}/build.yml`;
+const DRY_RUN = `${WORKFLOWS}/release-dry-run.yml`;
+
+/**
+ * The workflows a release is made by. Their actions run next to the signing
+ * keys, so each is pinned to a commit: a tag can be moved to other code.
+ */
+const RELEASE_PATH = ["pr-title.yml", "build.yml", "smoke.yml", "release-dry-run.yml", "release.yml"];
+
+/** The pull request paths that run the dry run: what a release build reads. */
+const DRY_RUN_PATHS = [
+  "src-tauri/tauri*.conf.json",
+  "src-tauri/Entitlements.plist",
+  "src-tauri/build.rs",
+  "src-tauri/capabilities/**",
+  "src-tauri/Cargo.toml",
+  "config/**",
+  "scripts/build-sidecars.mjs",
+  "scripts/release/**",
+  ".github/workflows/build.yml",
+  ".github/workflows/smoke.yml",
+  ".github/workflows/release-dry-run.yml",
+  ".github/workflows/release.yml",
+  "Cargo.lock",
+  "package-lock.json",
+  "rust-toolchain.toml",
+  "vendor/**",
+];
+
+/** build.yml's conditions for a step that runs only in a dry run, or only in a release build. */
+const DRY_RUN_ONLY = "inputs.environment == 'dry-run'";
+const RELEASE_ONLY = "inputs.environment == 'release'";
+
+/**
+ * What only a dry run may do in build.yml, each found by a string in the
+ * step: make keys of its own and build with the updater overlay, which
+ * points the updater at the smoke's server over plain http. A release build
+ * that did would ship them; nothing after the build would notice, as a
+ * release build's signatures are made with the release key either way.
+ */
+const DRY_RUN_MARKERS = [
+  { marker: "signer generate", what: "makes the run's own updater key" },
+  { marker: "updater.key", what: "uses the run's updater key" },
+  { marker: "dry-run-config.mjs", what: "writes the updater overlay (dangerousInsecureTransportProtocol)" },
+  { marker: "dry-run.json", what: "builds with the updater overlay" },
+  { marker: "updater-pubkey.txt", what: "adds the run's updater public key to the artifact" },
+  { marker: "openssl req", what: "makes the run's own code-signing identity" },
+];
+
+const BASH_SKIP =
+  spawnSync("bash", ["-c", "true"], { stdio: "ignore" }).status === 0 ? false : "bash is needed to run a step's script";
+
+/** A test that parses YAML and runs a step's script, skipped (with the reason) where either can't run. */
+const scriptTest = (name, fn) => test(name, { skip: YAML_SKIP || BASH_SKIP }, fn);
+
+/** A workflow, parsed, failing clearly when it's missing. */
+function workflow(rel) {
+  const found = workflows().find((entry) => entry.rel === rel);
+  assert.ok(found, `${rel} is missing`);
+  return found.workflow;
+}
+
+/** A job of a workflow, failing clearly when it's missing. */
+function jobOf(rel, id) {
+  const job = workflow(rel).jobs?.[id];
+  assert.ok(job, `${rel} has no job ${id}`);
+  return job;
+}
+
+/** What a step hands on, as one string to search: its script, its env and its action's inputs. */
+const textOf = (step) => JSON.stringify([step.run ?? "", step.env ?? {}, step.with ?? {}]);
+
+/** Whether a step runs `tauri build`. */
+const isTauriBuild = (step) => /(^|\s)tauri build(\s|$)/m.test(scriptOf(step));
+
+/** Whether a step runs the action `name` (owner/repo), at any version. */
+const usesAction = (step, name) => String(step.uses ?? "").startsWith(`${name}@`);
+
+/**
+ * The clauses an `if:` condition joins with `&&`, each with its spaces
+ * collapsed; none for a step without a condition. null when the condition
+ * has `||` or a `!` that negates, where no single clause decides whether the
+ * step runs.
+ */
+function clauses(condition) {
+  if (condition === undefined || condition === null) return [];
+  const text = String(condition)
+    .trim()
+    .replace(/^\$\{\{([\s\S]*)\}\}$/, "$1");
+  if (/\|\||!(?!=)/.test(text)) return null;
+  return text.split("&&").map((part) => part.trim().replace(/\s+/g, " "));
+}
+
+/** Whether a condition runs its step only when `clause` holds: one of its `&&` clauses is `clause`. */
+const requires = (condition, clause) => clauses(condition)?.includes(clause) === true;
+
+/**
+ * Run a step's script as the runner runs a bash step on Linux and macOS
+ * (bash --noprofile --norc -eo pipefail), in `cwd`, with PATH, HOME and `env`.
+ */
+function runScript(script, { cwd, env = {} }) {
+  return spawnSync("bash", ["--noprofile", "--norc", "-eo", "pipefail", "-c", script], {
+    cwd,
+    env: { PATH: process.env.PATH, HOME: process.env.HOME, ...env },
+    encoding: "utf8",
+  });
+}
+
+/** Call fn with a fresh temporary folder, removed afterwards. */
+function inTempDir(fn) {
+  const dir = mkdtempSync(join(tmpdir(), "check-workflows-"));
+  try {
+    return fn(dir);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+describe("release workflows", () => {
+  yamlTest("the release workflows pin each action to a commit, with its release beside it", () => {
+    const problems = [];
+    let pinned = 0;
+    for (const { rel, workflow: flow } of workflows().filter(({ rel }) => RELEASE_PATH.includes(basename(rel)))) {
+      const jobs = Object.values(flow.jobs ?? {});
+      const refs = [...jobs.map((job) => job.uses), ...jobs.flatMap((job) => (job.steps ?? []).map((step) => step.uses))];
+      for (const ref of refs.filter((uses) => typeof uses === "string" && !uses.startsWith("./"))) {
+        pinned += 1;
+        if (!/^[\w.-]+\/[\w./-]+@[0-9a-f]{40}$/.test(ref)) problems.push(`${rel}: ${ref} is not pinned to a full commit SHA`);
+      }
+      // The comment says which release the SHA is; YAML drops comments, so the text is read.
+      for (const [i, line] of read(rel).split(/\r?\n/).entries()) {
+        const uses = line.match(/^\s*(?:-\s+)?uses:\s*["']?([^\s"'#]+)["']?\s*(#.*)?$/);
+        if (!uses || uses[1].startsWith("./")) continue;
+        if (!/^#\s*v\d+\.\d+\.\d+\s*$/.test(uses[2] ?? "")) {
+          problems.push(`${rel}:${i + 1}: ${uses[1]} has no "# vX.Y.Z" comment naming its release`);
+        }
+      }
+    }
+    assert.ok(pinned > 0, "no release workflow uses an action, so there was nothing to check");
+    assert.deepEqual(problems, [], problems.join("\n"));
+  });
+
+  yamlTest("no workflow runs on pull_request_target", () => {
+    // It would run with the base repository's token and secrets on a fork's code.
+    const found = workflows()
+      .filter(({ workflow: flow }) => Object.hasOwn(triggersOf(flow), "pull_request_target"))
+      .map(({ rel }) => rel);
+    assert.deepEqual(found, [], `these workflows run on pull_request_target; use pull_request: ${found.join(", ")}`);
+  });
+
+  yamlTest("the release workflows grant only contents: read at the top, and more per job only", () => {
+    const problems = workflows()
+      .filter(({ rel }) => RELEASE_PATH.includes(basename(rel)))
+      .filter(({ workflow: flow }) => !isDeepStrictEqual(flow.permissions, { contents: "read" }))
+      .map(({ rel, workflow: flow }) => `${rel}: ${JSON.stringify(flow.permissions ?? "(none: the repository default)")}`);
+    assert.deepEqual(problems, [], `top-level permissions must be exactly { contents: read }:\n${problems.join("\n")}`);
+  });
+
+  test("no workflow mentions NOTDIAMOND", () => {
+    // A workflow never sets that key, nor any other key that isn't public.
+    const found = readdirSync(join(ROOT, WORKFLOWS))
+      .filter((name) => /\.ya?ml$/.test(name))
+      .filter((name) => /notdiamond/i.test(read(`${WORKFLOWS}/${name}`)));
+    assert.deepEqual(found, [], `these workflows mention NOTDIAMOND: ${found.join(", ")}`);
+  });
+});
+
+describe("build.yml", () => {
+  yamlTest("it takes a ref, an environment and a version, and bundles in that environment", () => {
+    const call = triggersOf(workflow(BUILD)).workflow_call;
+    assert.deepEqual(Object.keys(call?.inputs ?? {}).sort(), ["environment", "ref", "version"]);
+    for (const [name, input] of Object.entries(call.inputs)) {
+      assert.deepEqual([input.type, input.required], ["string", true], `input ${name} must be a required string`);
+    }
+    const bundle = jobOf(BUILD, "bundle");
+    assert.equal(bundle.environment, "${{ inputs.environment }}");
+    assert.deepEqual([bundle.needs].flat(), ["notices"]);
+    assert.equal(bundle["timeout-minutes"], 120);
+  });
+
+  yamlTest("its matrix is release-assets.mjs's TARGETS", () => {
+    const targets = TARGETS.map(({ triple, runner, bundles }) => ({ triple, runner, bundles: [...bundles] }));
+    assert.deepEqual(jobOf(BUILD, "bundle").strategy?.matrix, { include: targets });
+  });
+
+  yamlTest("a release build uses no cache", () => {
+    // Release artifacts come from a clean target folder, with no cache to trust.
+    const problems = [];
+    for (const [id, job] of Object.entries(workflow(BUILD).jobs ?? {})) {
+      for (const [i, step] of (job.steps ?? []).entries()) {
+        const where = `${BUILD}, job ${id}, ${stepLabel(step, i)}`;
+        if (usesAction(step, "Swatinem/rust-cache") && !requires(step.if, "inputs.environment != 'release'")) {
+          problems.push(`${where} restores the Rust cache without "if: inputs.environment != 'release'"`);
+        }
+        if (/^actions\/cache(@|\/)/.test(String(step.uses ?? ""))) problems.push(`${where} uses actions/cache`);
+        if (usesAction(step, "actions/setup-node") && (step.with?.cache !== undefined || step.with?.["package-manager-cache"] !== false)) {
+          problems.push(`${where} lets setup-node cache npm's downloads; give it package-manager-cache: false and no cache`);
+        }
+      }
+    }
+    assert.deepEqual(problems, [], problems.join("\n"));
+  });
+
+  yamlTest("only a dry run makes keys of its own, writes the updater overlay or adds updater-pubkey.txt", () => {
+    const problems = [];
+    const found = new Set();
+    for (const [id, job] of Object.entries(workflow(BUILD).jobs ?? {})) {
+      for (const [i, step] of (job.steps ?? []).entries()) {
+        for (const { marker, what } of DRY_RUN_MARKERS.filter(({ marker }) => textOf(step).includes(marker))) {
+          found.add(marker);
+          if (!requires(step.if, DRY_RUN_ONLY)) {
+            problems.push(`${BUILD}, job ${id}, ${stepLabel(step, i)} ${what}, but its condition isn't "${DRY_RUN_ONLY}" (and more): ${step.if ?? "none"}`);
+          }
+        }
+      }
+    }
+    const missing = DRY_RUN_MARKERS.filter(({ marker }) => !found.has(marker)).map(({ marker }) => marker);
+    assert.deepEqual(missing, [], `no step of ${BUILD} mentions these, so the dry run lacks them`);
+    assert.deepEqual(problems, [], problems.join("\n"));
+  });
+
+  yamlTest("a release build signs with the release keys, and builds without the overlay", () => {
+    const builds = (jobOf(BUILD, "bundle").steps ?? []).filter(isTauriBuild);
+    const release = builds.filter((step) => requires(step.if, RELEASE_ONLY));
+    const dryRun = builds.filter((step) => requires(step.if, DRY_RUN_ONLY));
+    assert.deepEqual(
+      [builds.length, release.length, dryRun.length],
+      [2, 1, 1],
+      `the bundle job must run tauri build twice: once if "${RELEASE_ONLY}", once if "${DRY_RUN_ONLY}"`,
+    );
+    const [build] = release;
+    assert.doesNotMatch(textOf(build), /dry-run/, "the release build mentions the dry run");
+    assert.deepEqual(
+      Object.fromEntries(["TAURI_SIGNING_PRIVATE_KEY", "TAURI_SIGNING_PRIVATE_KEY_PASSWORD", "APPLE_SIGNING_IDENTITY"].map((name) => [name, build.env?.[name]])),
+      {
+        TAURI_SIGNING_PRIVATE_KEY: "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}",
+        TAURI_SIGNING_PRIVATE_KEY_PASSWORD: "${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}",
+        APPLE_SIGNING_IDENTITY: "${{ vars.APPLE_SIGNING_IDENTITY }}",
+      },
+    );
+    assert.match(scriptOf(dryRun[0]), /--config "\$RUNNER_TEMP\/dry-run\.json"/, "the dry-run build doesn't apply the overlay");
+  });
+
+  yamlTest("every tauri build adds src-tauri/tauri.release.conf.json", () => {
+    const builds = (jobOf(BUILD, "bundle").steps ?? []).filter(isTauriBuild);
+    assert.ok(builds.length > 0, "the bundle job runs no tauri build");
+    for (const step of builds) {
+      assert.match(scriptOf(step), /--config src-tauri\/tauri\.release\.conf\.json(\s|$)/, `${step.name ?? "a tauri build"} misses the release config`);
+    }
+  });
+
+  yamlTest("Tauri signs the macOS app with APPLE_SIGNING_IDENTITY alone, from a keychain the job makes", () => {
+    // tauri-macos-sign's own import (APPLE_CERTIFICATE) finds only identities
+    // named like Apple's, never a self-signed one, and fails the build.
+    const steps = jobOf(BUILD, "bundle").steps ?? [];
+    const problems = steps
+      .filter((step) => Object.keys(step.env ?? {}).some((name) => name.startsWith("APPLE_CERTIFICATE")) && isTauriBuild(step))
+      .map((step) => `${step.name ?? "a tauri build"} gets APPLE_CERTIFICATE`);
+    problems.push(...steps.filter((step) => /APPLE_CERTIFICATE[A-Z_]*=/.test(scriptOf(step))).map((step) => `${step.name ?? "a step"} sets APPLE_CERTIFICATE for later steps`));
+    assert.deepEqual(problems, [], problems.join("\n"));
+    const keychains = steps.filter((step) => /security create-keychain/.test(scriptOf(step)));
+    assert.deepEqual(
+      keychains.map((step) => [requires(step.if, "runner.os == 'macOS'"), requires(step.if, RELEASE_ONLY) || requires(step.if, DRY_RUN_ONLY)]),
+      [
+        [true, true],
+        [true, true],
+      ],
+      "a macOS keychain is made once in each environment, on macOS only",
+    );
+    const cleanup = steps.find((step) => /security delete-keychain/.test(scriptOf(step)));
+    assert.ok(cleanup && requires(cleanup.if, "always()"), "the keychain isn't deleted whatever happened");
+  });
+
+  yamlTest("scan-secrets.mjs scans the UI and the binaries after every tauri build", () => {
+    const steps = jobOf(BUILD, "bundle").steps ?? [];
+    const scan = steps.findIndex((step) => scriptOf(step).includes("scan-secrets.mjs"));
+    assert.ok(scan !== -1, "the bundle job doesn't run scan-secrets.mjs");
+    assert.ok(scan > steps.findLastIndex(isTauriBuild), "scan-secrets.mjs runs before a tauri build");
+    assert.equal(steps[scan].if, undefined, "the secret scan must run in every build");
+    const script = scriptOf(steps[scan]);
+    for (const path of [/\sdist\s/, /release\/fleetify-app/, /release\/fleet-\*-mcp/]) {
+      assert.match(script, path, `the secret scan misses ${path}`);
+    }
+  });
+
+  scriptTest("the updater check fails a release build with the dry run's overlay, and a dry run without it", () => {
+    const steps = jobOf(BUILD, "bundle").steps ?? [];
+    const step = steps.find((candidate) => scriptOf(candidate).includes("127.0.0.1:18080/update"));
+    assert.ok(step, "the bundle job doesn't check the updater settings compiled into the app");
+    assert.equal(step.if, undefined, "the check must run in release builds and dry runs alike");
+    assert.ok(steps.indexOf(step) > steps.findLastIndex(isTauriBuild), "the check runs before a tauri build");
+    const shipped = JSON.parse(read("src-tauri/tauri.conf.json")).plugins.updater;
+    const [overlay] = dryRunConfig({ pubkey: shipped.pubkey }).plugins.updater.endpoints;
+    const triple = "x86_64-unknown-linux-gnu";
+    inTempDir((dir) => {
+      mkdirSync(join(dir, "src-tauri"));
+      copyFileSync(join(ROOT, "src-tauri/tauri.conf.json"), join(dir, "src-tauri/tauri.conf.json"));
+      mkdirSync(join(dir, "target", triple, "release"), { recursive: true });
+      const check = (environment, strings) => {
+        // A stand-in binary: the strings among bytes that aren't text.
+        const bytes = [Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0x02, 0x00]), ...strings.map((s) => Buffer.from(`${s}\0\x01`))];
+        writeFileSync(join(dir, "target", triple, "release", "fleetify-app"), Buffer.concat(bytes));
+        const result = runScript(step.run, { cwd: dir, env: { ENVIRONMENT: environment, TRIPLE: triple, RUNNER_OS: "Linux" } });
+        return { status: result.status, output: `${result.stdout}${result.stderr}` };
+      };
+      const shippedStrings = [shipped.pubkey, ...shipped.endpoints];
+      const cases = [
+        { why: "a release build with the shipped settings", environment: "release", strings: shippedStrings, status: 0 },
+        { why: "a release build with the overlay's endpoint", environment: "release", strings: [...shippedStrings, overlay], status: 1 },
+        { why: "a release build without a shipped endpoint", environment: "release", strings: shippedStrings.slice(0, -1), status: 1 },
+        { why: "a release build without the shipped key", environment: "release", strings: shipped.endpoints, status: 1 },
+        { why: "a dry run with the overlay", environment: "dry-run", strings: [overlay], status: 0 },
+        { why: "a dry run without the overlay", environment: "dry-run", strings: shippedStrings, status: 1 },
+      ];
+      for (const { why, environment, strings, status } of cases) {
+        const result = check(environment, strings);
+        assert.equal(result.status, status, `${why}: exit ${result.status}, expected ${status}\n${result.output}`);
+      }
+    });
+  });
+
+  yamlTest("collect-bundles.mjs fills an empty folder before anything else goes in", () => {
+    // collect refuses a folder that holds anything, so the artifact holds only this build's files.
+    const steps = jobOf(BUILD, "bundle").steps ?? [];
+    const collect = steps.findIndex((step) => scriptOf(step).includes("collect-bundles.mjs"));
+    assert.ok(collect !== -1, "the bundle job doesn't run collect-bundles.mjs");
+    assert.match(scriptOf(steps[collect]), /--out "\$RUNNER_TEMP\/bundles"/);
+    const earlier = steps
+      .slice(0, collect)
+      .filter((step) => /RUNNER_TEMP\/bundles|runner\.temp \}\}\/bundles/.test(textOf(step)))
+      .map(stepLabel);
+    assert.deepEqual(earlier, [], "these steps use the bundles folder before collect-bundles.mjs fills it");
+    const upload = steps.findIndex((step) => usesAction(step, "actions/upload-artifact") && step.with?.name === "bundles-${{ matrix.triple }}");
+    assert.ok(upload !== -1, "the bundle job doesn't upload bundles-<triple>");
+    assert.deepEqual([steps[upload].with?.path, steps[upload].with?.["if-no-files-found"], steps[upload].with?.["retention-days"]], ["${{ runner.temp }}/bundles", "error", 7]);
+    for (const file of ["updater-pubkey.txt", "LINUX-APPIMAGE-LIBRARIES.txt"]) {
+      const at = steps.findIndex((step) => textOf(step).includes(file));
+      assert.ok(at > collect && at < upload, `${file} isn't added after collect-bundles.mjs and before the upload`);
+    }
+  });
+
+  yamlTest("the Linux bundle installs CONTRIBUTING's Linux packages", () => {
+    const documented = aptPackages(codeBlockUnder("CONTRIBUTING.md", "### Linux"));
+    const installed = new Set((jobOf(BUILD, "bundle").steps ?? []).flatMap((step) => aptPackages(scriptOf(step))));
+    assert.deepEqual(documented.filter((name) => !installed.has(name)), [], "the bundle job misses these packages that CONTRIBUTING.md lists");
+  });
+
+  yamlTest("a macOS dry run keeps codesign's own output, whatever the checks say", () => {
+    // So the codesign fixtures of macos-signature.test.mjs can be replaced with real output.
+    const steps = jobOf(BUILD, "bundle").steps ?? [];
+    const when = ["always()", DRY_RUN_ONLY, "runner.os == 'macOS'"];
+    const capture = steps.find((step) => /\bcodesign\b/.test(scriptOf(step)) && ["--verify", "-r-", "-vvv", "--entitlements"].every((arg) => scriptOf(step).includes(arg)) && !scriptOf(step).includes("macos-signature.mjs"));
+    assert.ok(capture, "no step keeps the output of the four codesign commands");
+    assert.deepEqual(when.filter((clause) => !requires(capture.if, clause)), [], `the capture's condition must hold ${when.join(" && ")}`);
+    const upload = steps.find((step) => usesAction(step, "actions/upload-artifact") && String(step.with?.name).startsWith("codesign-output-"));
+    assert.ok(upload, "codesign's output isn't uploaded");
+    assert.deepEqual([upload.with.name, upload.with["retention-days"]], ["codesign-output-${{ matrix.triple }}", 7]);
+    assert.deepEqual(when.filter((clause) => !requires(upload.if, clause)), [], `the upload's condition must hold ${when.join(" && ")}`);
+  });
+});
+
+describe("release-dry-run.yml", () => {
+  yamlTest("it runs on dispatch, on pushes to main, on Mondays and on pull requests that touch a release path", () => {
+    const flow = workflow(DRY_RUN);
+    const on = triggersOf(flow);
+    assert.deepEqual(Object.keys(on).sort(), ["pull_request", "push", "schedule", "workflow_dispatch"]);
+    assert.deepEqual(on.push, { branches: ["main"] });
+    assert.deepEqual(on.schedule, [{ cron: "0 5 * * 1" }]);
+    assert.deepEqual(Object.keys(on.pull_request ?? {}), ["paths"], "pull requests are filtered by paths alone");
+    assert.deepEqual([...on.pull_request.paths].sort(), [...DRY_RUN_PATHS].sort());
+    assert.deepEqual(Object.keys(on.workflow_dispatch?.inputs ?? {}), ["signing"], "dispatch takes one input, signing");
+    const { description, ...signing } = on.workflow_dispatch.inputs.signing;
+    assert.ok(typeof description === "string" && description !== "", "signing has no description");
+    assert.deepEqual(signing, { required: true, type: "choice", options: ["ephemeral", "release"], default: "ephemeral" });
+    assert.deepEqual(flow.concurrency, {
+      group: "release-dry-run-${{ github.event_name }}-${{ github.ref }}-${{ inputs.signing }}",
+      "cancel-in-progress": "${{ github.event_name != 'workflow_dispatch' }}",
+    });
+  });
+
+  scriptTest("meta skips release commits, picks the environment and signs with the release keys only from main", () => {
+    const meta = jobOf(DRY_RUN, "meta");
+    assert.equal(
+      String(meta.if).replace(/\s+/g, " ").trim(),
+      "github.event_name != 'push' || !startsWith(github.event.head_commit.message, 'chore(main): release')",
+    );
+    const step = (meta.steps ?? []).find((candidate) => candidate.id === "meta");
+    assert.ok(step, "meta has no step with id meta");
+    assert.equal(step.env?.SIGNING, "${{ inputs.signing }}");
+    assert.deepEqual(meta.outputs, { version: "${{ steps.meta.outputs.version }}", environment: "${{ steps.meta.outputs.environment }}" });
+    inTempDir((dir) => {
+      writeFileSync(join(dir, "package.json"), `${JSON.stringify({ version: "1.2.3" })}\n`);
+      const run = (signing, ref) => {
+        const output = join(dir, "github-output");
+        writeFileSync(output, "");
+        const result = runScript(step.run, { cwd: dir, env: { SIGNING: signing, GITHUB_REF: ref, GITHUB_OUTPUT: output } });
+        return { status: result.status, output: readFileSync(output, "utf8"), log: `${result.stdout}${result.stderr}` };
+      };
+      for (const [signing, ref, environment] of [
+        ["", "refs/heads/main", "dry-run"],
+        ["ephemeral", "refs/pull/7/merge", "dry-run"],
+        ["release", "refs/heads/main", "release"],
+      ]) {
+        const result = run(signing, ref);
+        assert.equal(result.status, 0, `signing "${signing}" on ${ref}:\n${result.log}`);
+        assert.equal(result.output, `version=1.2.3\nenvironment=${environment}\n`, `signing "${signing}" on ${ref}`);
+      }
+      const offMain = run("release", "refs/heads/feature");
+      assert.notEqual(offMain.status, 0, "signing: release off main must fail");
+      assert.equal(offMain.output, "", "signing: release off main wrote outputs");
+    });
+  });
+
+  yamlTest("it builds the commit it runs on, in the environment meta picks", () => {
+    const build = jobOf(DRY_RUN, "build");
+    assert.equal(build.uses, "./.github/workflows/build.yml");
+    assert.deepEqual([build.needs].flat(), ["meta"]);
+    assert.deepEqual(build.with, {
+      ref: "${{ github.sha }}",
+      environment: "${{ needs.meta.outputs.environment }}",
+      version: "${{ needs.meta.outputs.version }}",
+    });
+  });
+
+  yamlTest("assemble checks a dry run against each build's own key, and release signing against the shipped one", () => {
+    const runs = (jobOf(DRY_RUN, "assemble").steps ?? []).filter((step) => scriptOf(step).includes("assemble.mjs"));
+    const dryRun = runs.filter((step) => requires(step.if, "needs.meta.outputs.environment == 'dry-run'"));
+    const release = runs.filter((step) => requires(step.if, "needs.meta.outputs.environment == 'release'"));
+    assert.deepEqual([runs.length, dryRun.length, release.length], [2, 1, 1], "assemble must run once per environment");
+    assert.match(scriptOf(dryRun[0]), /\s--per-target-pubkeys(\s|$)/);
+    assert.doesNotMatch(scriptOf(dryRun[0]), /--pubkey-config|--expect-key-id/);
+    assert.match(scriptOf(release[0]), new RegExp(`\\s--pubkey-config src-tauri/tauri\\.conf\\.json --expect-key-id ${UPDATER_KEY_ID}(\\s|$)`));
+    assert.doesNotMatch(scriptOf(release[0]), /--per-target-pubkeys/);
+  });
+
+  yamlTest("assemble downloads only the bundles and the notices", () => {
+    // assemble.mjs refuses any other folder in --in.
+    const steps = jobOf(DRY_RUN, "assemble").steps ?? [];
+    const downloads = steps
+      .filter((step) => usesAction(step, "actions/download-artifact"))
+      .map((step) => ({ what: step.with?.name ?? step.with?.pattern ?? "every artifact", path: step.with?.path, merge: step.with?.["merge-multiple"] ?? false }));
+    assert.deepEqual(downloads.sort((a, b) => (a.what < b.what ? -1 : 1)), [
+      { what: "bundles-*", path: "artifacts", merge: false },
+      { what: "third-party-notices", path: "artifacts/third-party-notices", merge: false },
+    ]);
+    const upload = steps.find((step) => usesAction(step, "actions/upload-artifact"));
+    assert.deepEqual(
+      [upload?.with?.name, upload?.with?.path, upload?.with?.["if-no-files-found"], upload?.with?.["retention-days"]],
+      ["release", "release", "error", 14],
     );
   });
 });

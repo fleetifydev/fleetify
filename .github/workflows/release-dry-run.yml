@@ -1,0 +1,159 @@
+# The release dry run: builds the bundles on every platform (build.yml) and
+# assembles them into a release, checking every signature, without
+# publishing anything. It doesn't block a merge.
+#
+# It runs on pull requests that change what a release build reads, on
+# pushes to main (a release commit gets its own build from the release
+# workflow), weekly, and on demand.
+#
+# Dispatched with signing: release, it builds with the release keys instead:
+# a release candidate, from main only, once the owner approves the release
+# environment. Its artifacts are the candidate; nothing is tagged.
+name: Release dry run
+
+on:
+  workflow_dispatch:
+    inputs:
+      signing:
+        description: "ephemeral: keys made for the run. release: the release keys, from main only (a release candidate)."
+        required: true
+        type: choice
+        options:
+          - ephemeral
+          - release
+        default: ephemeral
+  push:
+    branches: [main]
+  schedule:
+    # Mondays, 05:00 UTC.
+    - cron: "0 5 * * 1"
+  pull_request:
+    # What a release build reads. Path filters have no brace expansion, so
+    # each workflow is listed.
+    paths:
+      - src-tauri/tauri*.conf.json
+      - src-tauri/Entitlements.plist
+      - src-tauri/build.rs
+      - src-tauri/capabilities/**
+      - src-tauri/Cargo.toml
+      - config/**
+      - scripts/build-sidecars.mjs
+      - scripts/release/**
+      - .github/workflows/build.yml
+      - .github/workflows/smoke.yml
+      - .github/workflows/release-dry-run.yml
+      - .github/workflows/release.yml
+      - Cargo.lock
+      - package-lock.json
+      - rust-toolchain.toml
+      - vendor/**
+
+# A newer push or pull request update cancels the run it replaces; a
+# dispatched run, a release candidate maybe, always runs to the end.
+concurrency:
+  group: release-dry-run-${{ github.event_name }}-${{ github.ref }}-${{ inputs.signing }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
+
+permissions:
+  contents: read
+
+jobs:
+  meta:
+    name: Version and environment
+    if: "github.event_name != 'push' || !startsWith(github.event.head_commit.message, 'chore(main): release')"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      environment: ${{ steps.meta.outputs.environment }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: package.json
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      # The release keys sign only what main holds.
+      - id: meta
+        name: Version and environment
+        env:
+          SIGNING: ${{ inputs.signing }}
+        run: |
+          version=$(node -p 'require("./package.json").version')
+          if ! [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::package.json's version is '$version', not MAJOR.MINOR.PATCH"
+            exit 1
+          fi
+          if [ "$SIGNING" = release ]; then
+            if [ "$GITHUB_REF" != refs/heads/main ]; then
+              echo "::error::signing: release builds from main only, not from $GITHUB_REF"
+              exit 1
+            fi
+            environment=release
+          else
+            environment=dry-run
+          fi
+          echo "version $version, environment $environment"
+          {
+            echo "version=$version"
+            echo "environment=$environment"
+          } >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: meta
+    uses: ./.github/workflows/build.yml
+    with:
+      ref: ${{ github.sha }}
+      environment: ${{ needs.meta.outputs.environment }}
+      version: ${{ needs.meta.outputs.version }}
+
+  assemble:
+    name: Assemble the release
+    needs: [meta, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      VERSION: ${{ needs.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: |
+            .nvmrc
+            scripts/release
+            src-tauri/tauri.conf.json
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      # The bundles and the notices only: assemble.mjs refuses any other
+      # folder it finds in --in.
+      - name: Download the bundles
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: bundles-*
+          path: artifacts
+      - name: Download the notices
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: third-party-notices
+          path: artifacts/third-party-notices
+      # Each dry-run build signs with a key made for it, whose public half
+      # its artifact carries.
+      - name: Assemble (each build's own key, dry run)
+        if: needs.meta.outputs.environment == 'dry-run'
+        run: node scripts/release/assemble.mjs --in artifacts --out release --version "$VERSION" --per-target-pubkeys
+      # A release candidate's signatures must verify against the key every
+      # build ships, which must be the release key.
+      - name: Assemble (the shipped key, release signing)
+        if: needs.meta.outputs.environment == 'release'
+        run: >-
+          node scripts/release/assemble.mjs --in artifacts --out release --version "$VERSION"
+          --pubkey-config src-tauri/tauri.conf.json --expect-key-id 44C694713A20D751
+      - name: Upload the release
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release
+          path: release
+          if-no-files-found: error
+          retention-days: 14
