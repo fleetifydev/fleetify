@@ -38,8 +38,21 @@
  * writes are refused although the updater would read past them: a carriage
  * return, a line after the global signature, a first line without
  * "untrusted comment: ".
+ *
+ * The CLI checks files against their .sig files, as the job that signs the
+ * updater artifacts does before it hands them on:
+ *
+ *   node scripts/release/minisign.mjs verify --pubkey-file <file> <file>...
+ *   node scripts/release/minisign.mjs verify --pubkey-config <tauri.conf.json> --expect-key-id <16 hex digits> <file>...
+ *
+ * Each <file> is checked against <file>.sig, with the key in the public key
+ * file, or with plugins.updater.pubkey in the config, whose key id must be
+ * the one expected. Exit codes: 0 every signature verifies; 1 one doesn't,
+ * each named on stderr; 2 usage.
  */
 import { createHash, createPublicKey, verify as verifyEd25519 } from "node:crypto";
+import { readFileSync, realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 /** The DER prefix that makes 32 raw bytes an Ed25519 SubjectPublicKeyInfo. */
 const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
@@ -228,3 +241,106 @@ export function verifySignature({ data, tauriSignature, publicKey, version }) {
   if (signed !== null && !namesVersion(signed, version)) return fail(`signed for version ${JSON.stringify(signed)}, not ${version}`);
   return { ok: true };
 }
+
+const USAGE = `usage: node scripts/release/minisign.mjs verify --pubkey-file <file> <file>...
+       node scripts/release/minisign.mjs verify --pubkey-config <tauri.conf.json> --expect-key-id <16 hex digits> <file>...`;
+
+/** The verify command line. Throws a usage error. */
+function parseArgs(argv) {
+  const [command, ...rest] = argv;
+  if (command !== "verify") throw new Error(command === undefined ? "missing command: verify" : `unknown command: ${command}`);
+  const values = new Map();
+  const files = [];
+  for (let i = 0; i < rest.length; i += 1) {
+    const arg = rest[i];
+    if (["--pubkey-file", "--pubkey-config", "--expect-key-id"].includes(arg)) {
+      const value = rest[i + 1];
+      if (value === undefined || value === "" || value.startsWith("-")) throw new Error(`${arg} needs a value`);
+      if (values.has(arg)) throw new Error(`${arg} is given twice`);
+      values.set(arg, value);
+      i += 1;
+    } else if (arg.startsWith("-")) {
+      throw new Error(`unexpected argument: ${arg}`);
+    } else {
+      files.push(arg);
+    }
+  }
+  const file = values.get("--pubkey-file");
+  const config = values.get("--pubkey-config");
+  const expectKeyId = values.get("--expect-key-id");
+  if ((file === undefined) === (config === undefined)) throw new Error("give --pubkey-file, or --pubkey-config with --expect-key-id");
+  if (config !== undefined && expectKeyId === undefined) throw new Error("--pubkey-config needs --expect-key-id");
+  if (file !== undefined && expectKeyId !== undefined) throw new Error("--expect-key-id goes with --pubkey-config");
+  if (expectKeyId !== undefined && !/^[0-9A-Fa-f]{16}$/.test(expectKeyId)) throw new Error(`--expect-key-id must be 16 hex digits, not ${expectKeyId}`);
+  if (files.length === 0) throw new Error("name the files to check");
+  return { file, config, expectKeyId, files };
+}
+
+/** The public key the command line names; throws an Error naming what is wrong. */
+function keyFor({ file, config, expectKeyId }) {
+  if (file !== undefined) return parsePublicKey(readFileSync(file, "utf8").trim());
+  const pubkey = JSON.parse(readFileSync(config, "utf8"))?.plugins?.updater?.pubkey;
+  if (typeof pubkey !== "string") throw new Error(`${config} has no plugins.updater.pubkey`);
+  const key = parsePublicKey(pubkey);
+  if (key.keyId !== expectKeyId.toUpperCase()) throw new Error(`the updater key in ${config} has key id ${key.keyId}, expected ${expectKeyId}`);
+  return key;
+}
+
+function main(argv) {
+  let args;
+  try {
+    args = parseArgs(argv);
+  } catch (err) {
+    process.stderr.write(`minisign: ${err.message}\n${USAGE}\n`);
+    return 2;
+  }
+  let key;
+  try {
+    key = keyFor(args);
+  } catch (err) {
+    process.stderr.write(`minisign: ${err.message}\n`);
+    return 1;
+  }
+  let failed = 0;
+  for (const file of args.files) {
+    let data;
+    let signature;
+    try {
+      data = readFileSync(file);
+    } catch (err) {
+      process.stderr.write(`minisign: can't read ${file}: ${err.code ?? err.message}\n`);
+      failed += 1;
+      continue;
+    }
+    try {
+      signature = readFileSync(`${file}.sig`, "utf8").trim();
+    } catch (err) {
+      process.stderr.write(`minisign: can't read ${file}.sig: ${err.code ?? err.message}\n`);
+      failed += 1;
+      continue;
+    }
+    const result = verifySignature({ data, tauriSignature: signature, publicKey: key });
+    if (result.ok) {
+      process.stdout.write(`minisign: signature ok, key ${key.keyId}: ${file}\n`);
+    } else {
+      process.stderr.write(`minisign: ${file}: ${result.reason}\n`);
+      failed += 1;
+    }
+  }
+  if (failed > 0) {
+    process.stderr.write(`minisign: ${failed} of ${args.files.length} file(s) failed\n`);
+    return 1;
+  }
+  return 0;
+}
+
+function invokedDirectly() {
+  try {
+    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+// exitCode instead of process.exit(), so buffered output is written first.
+if (invokedDirectly()) process.exitCode = main(process.argv.slice(2));

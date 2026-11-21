@@ -14,9 +14,13 @@
  * were deleted. The other cases sign with a key made in memory for the run
  * (fixtures/test-signer.mjs), and with minisign's own test vectors.
  */
-import { describe, test } from "node:test";
+import { after, describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { makeTestKey, signLikeTauri } from "./fixtures/test-signer.mjs";
 import { parsePublicKey, verifySignature } from "./minisign.mjs";
@@ -435,5 +439,65 @@ describe("signatures made with a key from the test run", () => {
     const impostor = makeTestKey();
     impostor.keynum = key.keynum;
     assertFails(check(signLikeTauri(impostor, data)), /signature does not match the data/);
+  });
+});
+
+describe("the verify CLI", () => {
+  const SCRIPT = fileURLToPath(new URL("./minisign.mjs", import.meta.url));
+  const FIXTURES = fileURLToPath(new URL("./fixtures/minisign/", import.meta.url));
+  const dir = mkdtempSync(join(tmpdir(), "minisign-cli-"));
+  after(() => rmSync(dir, { recursive: true, force: true }));
+  const cli = (...args) => spawnSync(process.execPath, [SCRIPT, "verify", ...args], { encoding: "utf8" });
+  const hello = join(FIXTURES, "hello.txt");
+  const fixtureId = parsePublicKey(FIXTURE_PUB.trim()).keyId;
+  /** A Tauri config whose updater key is the fixture's. */
+  const config = join(dir, "tauri.conf.json");
+  writeFileSync(config, JSON.stringify({ plugins: { updater: { pubkey: FIXTURE_PUB.trim() } } }));
+
+  test("each file's .sig against a public key file: exit 0, one line per file", () => {
+    const result = cli("--pubkey-file", join(FIXTURES, "fixture.pub"), hello);
+    assert.equal(result.status, 0, result.stderr);
+    assert.ok(result.stdout.includes(`signature ok, key ${fixtureId}: ${hello}`), result.stdout);
+  });
+
+  test("against the key in a Tauri config, whose key id must be the one expected", () => {
+    const ok = cli("--pubkey-config", config, "--expect-key-id", fixtureId, hello);
+    assert.equal(ok.status, 0, ok.stderr);
+    const other = cli("--pubkey-config", config, "--expect-key-id", "0000000000000000", hello);
+    assert.equal(other.status, 1);
+    assert.ok(other.stderr.includes(`has key id ${fixtureId}, expected 0000000000000000`), other.stderr);
+  });
+
+  test("another key, changed data or a missing .sig: exit 1, naming the file", () => {
+    const wrongKey = cli("--pubkey-file", join(FIXTURES, "other.pub"), hello);
+    assert.equal(wrongKey.status, 1);
+    assert.ok(wrongKey.stderr.includes(`${hello}: key id mismatch`), wrongKey.stderr);
+    const changed = join(dir, "hello.txt");
+    writeFileSync(changed, "hello, changed\n");
+    copyFileSync(join(FIXTURES, "hello.txt.sig"), `${changed}.sig`);
+    const tampered = cli("--pubkey-file", join(FIXTURES, "fixture.pub"), changed);
+    assert.equal(tampered.status, 1);
+    assert.ok(tampered.stderr.includes(`${changed}: signature does not match the data`), tampered.stderr);
+    const unsigned = join(dir, "unsigned.txt");
+    writeFileSync(unsigned, "no signature\n");
+    const missing = cli("--pubkey-file", join(FIXTURES, "fixture.pub"), unsigned);
+    assert.equal(missing.status, 1);
+    assert.ok(missing.stderr.includes(`can't read ${unsigned}.sig`), missing.stderr);
+  });
+
+  test("usage errors exit 2", () => {
+    for (const args of [
+      [],
+      ["--pubkey-file", join(FIXTURES, "fixture.pub")],
+      ["--pubkey-config", config, hello],
+      ["--pubkey-file", join(FIXTURES, "fixture.pub"), "--pubkey-config", config, "--expect-key-id", fixtureId, hello],
+      ["--expect-key-id", "XYZ", "--pubkey-config", config, hello],
+    ]) {
+      const result = cli(...args);
+      assert.equal(result.status, 2, `${args.join(" ")}: ${result.stderr}`);
+      assert.match(result.stderr, /usage:/);
+    }
+    const bare = spawnSync(process.execPath, [SCRIPT], { encoding: "utf8" });
+    assert.equal(bare.status, 2);
   });
 });
