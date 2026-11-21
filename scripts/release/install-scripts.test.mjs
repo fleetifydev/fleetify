@@ -778,6 +778,8 @@ describe("install.sh's options", { skip: SKIP_LINUX }, () => {
       ["--dir"],
       ["--dir", ""],
       ["--dir", "--deb"],
+      ["--dir", "-x"],
+      ["--dir=-x"],
       ["--deb", "--dir", "pkgs"],
     ]) {
       const ws = workspace();

@@ -345,7 +345,6 @@ main() {
       ;;
     --dir)
       if [ $# -lt 2 ] || [ -z "$2" ]; then usage_error "--dir needs a value"; fi
-      case $2 in -*) usage_error "--dir needs a value" ;; esac
       dir=$2
       shift 2
       ;;
@@ -374,7 +373,10 @@ main() {
   if [ -n "$version" ] && ! is_version "$version"; then
     usage_error "--version takes a release's version, MAJOR.MINOR.PATCH, such as 0.2.0"
   fi
-  case $dir in *"$NL"*) usage_error "--dir can't hold a line break" ;; esac
+  case $dir in
+  -*) usage_error "--dir takes a folder, and $dir looks like an option: for a folder of that name, write ./$dir" ;;
+  *"$NL"*) usage_error "--dir can't hold a line break" ;;
+  esac
   if [ -n "$dir" ] && [ -z "$download_only" ] && { [ "$kind" = deb ] || [ "$kind" = rpm ]; }; then
     usage_error "--dir goes with the AppImage, Fleetify.app or --download-only, not with --$kind"
   fi
