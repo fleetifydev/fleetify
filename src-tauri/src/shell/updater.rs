@@ -29,6 +29,9 @@ pub const CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 /// How long a request to an update endpoint may take. A request that hangs
 /// then fails, and the check asks the next endpoint.
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
+/// How long a download may go without receiving data before it fails. Each
+/// read starts the wait again, so a slow download still finishes.
+pub const DOWNLOAD_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Download progress goes out at most this often: four times a second.
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(250);
@@ -337,9 +340,12 @@ async fn check_and_download(app: &AppHandle, state: &UpdaterState) -> UpdateStat
 }
 
 /// Asks the update endpoints, in order, for a version newer than this one.
+/// The update it returns downloads with the same client settings: no
+/// overall time limit, but [`DOWNLOAD_IDLE_TIMEOUT`] between reads.
 async fn find_update(app: &AppHandle) -> tauri_plugin_updater::Result<Option<Update>> {
     app.updater_builder()
         .timeout(REQUEST_TIMEOUT)
+        .configure_client(|client| client.read_timeout(DOWNLOAD_IDLE_TIMEOUT))
         .build()?
         .check()
         .await
@@ -748,6 +754,32 @@ mod tests {
         // A request to fleetify.dev that hangs gives up after this, and the
         // check moves on to GitHub.
         assert_eq!(REQUEST_TIMEOUT, Duration::from_secs(20));
+    }
+
+    #[test]
+    fn a_stalled_download_gives_up_after_a_minute_of_silence() {
+        // Each read may wait this long. The wait starts again after every
+        // read, so a slow download still finishes.
+        assert_eq!(DOWNLOAD_IDLE_TIMEOUT, Duration::from_secs(60));
+        // find_update gives it to the plugin's client before the check, and
+        // the update the check returns keeps it for the download. Read from
+        // this file above its tests, with whitespace removed.
+        let source = include_str!("updater.rs").replace("\r\n", "\n");
+        let tests = source
+            .find(&format!("#[cfg(test)]\nmod {} {{", "tests"))
+            .expect("updater.rs has this test module");
+        let code: String = source[..tests].split_whitespace().collect();
+        let start = code
+            .find(&format!("asyncfn{}(", "find_update"))
+            .expect("updater.rs has find_update");
+        let check = start + code[start..].find(".check()").expect("find_update checks");
+        assert!(
+            code[start..check].contains(&format!(
+                ".configure_client(|client|client.read_timeout({}))",
+                "DOWNLOAD_IDLE_TIMEOUT"
+            )),
+            "find_update must give the plugin's client the download idle timeout"
+        );
     }
 
     #[cfg(target_os = "linux")]
