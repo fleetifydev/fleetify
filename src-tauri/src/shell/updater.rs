@@ -246,6 +246,7 @@ pub async fn updater_restart(
     // Off the async runtime: the install writes files, and on Linux and
     // macOS it may wait for the user to authenticate. A failed install hands
     // the update back.
+    tracing::info!(target: LOG_TARGET, version = %version, "installing update");
     let installed = tauri::async_runtime::spawn_blocking(move || match update.install(&bytes) {
         Ok(()) => Installed::Done,
         Err(error) => Installed::Failed {
@@ -257,9 +258,10 @@ pub async fn updater_restart(
     .unwrap_or_else(|error| Installed::Lost {
         error: error.to_string(),
     });
-    let settled = settle_install(&mut lock(&state.ready), installed, version);
+    let settled = settle_install(&mut lock(&state.ready), installed, version.clone());
     match settled {
         Ok(()) => {
+            tracing::info!(target: LOG_TARGET, version = %version, "update installed, restarting");
             // Exits through the event loop, as quitting does, and starts the
             // new version. `restart()` would do the same here, then park
             // this runtime thread until the process ends.
@@ -875,6 +877,47 @@ mod tests {
             )),
             "find_update must give the plugin's client the download idle timeout"
         );
+    }
+
+    #[test]
+    fn restart_logs_the_install_and_the_restart() {
+        // The update rehearsal looks for these lines in the app's log. Read
+        // from this file above its tests, with each run of whitespace made
+        // one space.
+        let source = include_str!("updater.rs").replace("\r\n", "\n");
+        let tests = source
+            .find(&format!("#[cfg(test)]\nmod {} {{", "tests"))
+            .expect("updater.rs has this test module");
+        let code = source[..tests]
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let start = code
+            .find("pub async fn updater_restart(")
+            .expect("updater.rs has updater_restart");
+        let end = start
+            + code[start..]
+                .find(" enum Installed<R>")
+                .expect("updater.rs has Installed after updater_restart");
+        let body = &code[start..end];
+        let at = |needle: &str| {
+            body.find(needle)
+                .unwrap_or_else(|| panic!("updater_restart has no {needle}"))
+        };
+        let installing =
+            at(r#"tracing::info!(target: LOG_TARGET, version = %version, "installing update");"#);
+        let install = at("spawn_blocking");
+        let installed = at(
+            r#"tracing::info!(target: LOG_TARGET, version = %version, "update installed, restarting");"#,
+        );
+        let restart = at("app.request_restart();");
+        assert!(installing < install, "log the install before it starts");
+        assert!(install < installed, "log the restart once it has installed");
+        assert!(installed < restart, "log the restart before it happens");
+        // A failed install still logs its warning.
+        assert!(code.contains(
+            r#"tracing::warn!(target: LOG_TARGET, error = %error, "update install failed");"#
+        ));
     }
 
     #[cfg(target_os = "linux")]
