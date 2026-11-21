@@ -119,8 +119,8 @@ function assertProblem(problems, ...patterns) {
   );
 }
 
-/** A literal string as a RegExp. */
-const literal = (text) => new RegExp(text.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&"));
+/** A pattern for assertProblem that matches `text` as it is, without becoming a RegExp. */
+const literal = (text) => ({ test: (value) => value.includes(text), toString: () => JSON.stringify(text) });
 
 describe("assemble, with a stub for the signature check", () => {
   test("a complete input: no problems, and the release's 18 assets", () => {
@@ -470,8 +470,8 @@ describe("the CLI", () => {
     const outDir = fresh("out");
     const result = cli("--in", inDir, "--out", outDir, "--version", V, "--per-target-pubkeys");
     assert.equal(result.status, 0, result.stderr);
-    for (const asset of expectedAssets(V)) assert.match(result.stdout, literal(asset));
-    for (const key of Object.values(keys)) assert.match(result.stdout, literal(key.keyId));
+    for (const asset of expectedAssets(V)) assert.ok(result.stdout.includes(asset), result.stdout);
+    for (const key of Object.values(keys)) assert.ok(result.stdout.includes(key.keyId), result.stdout);
     assert.deepEqual(readdirSync(outDir).sort(), expectedAssets(V));
   });
 
@@ -488,7 +488,7 @@ describe("the CLI", () => {
     );
     assert.equal(result.status, 1);
     assert.match(result.stderr, /key id/);
-    assert.match(result.stderr, literal(key.keyId));
+    assert.ok(result.stderr.includes(key.keyId), result.stderr);
     assert.equal(existsSync(outDir), false);
   });
 

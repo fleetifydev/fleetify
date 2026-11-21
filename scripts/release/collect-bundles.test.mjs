@@ -187,7 +187,8 @@ describe("the CLI", () => {
     const result = cli(["--target", ARM_MAC, "--version", V, "--out", outDir, "--target-dir", targetDir]);
     assert.equal(result.status, 0, result.stderr);
     assert.deepEqual(sorted(readdirSync(outDir)), sorted(NAMES[ARM_MAC]));
-    for (const name of NAMES[ARM_MAC]) assert.match(result.stdout, new RegExp(`^  ${name.replace(/\./g, "\\.")}$`, "m"));
+    const listed = result.stdout.split(/\r?\n/);
+    for (const name of NAMES[ARM_MAC]) assert.ok(listed.includes(`  ${name}`), result.stdout);
   });
 
   test("--target-dir defaults to target, under the working directory", () => {

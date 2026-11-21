@@ -932,7 +932,7 @@ describe("run against the fake app", { concurrency: 8, timeout: 120_000 }, () =>
     for (const name of ["healthz", "ui", "access token", "access host", "db", "log", "running", "stop"]) {
       assert.match(result.stdout, row("PASS", name), `${name}\n${result.output}`);
     }
-    assert.match(result.stdout, new RegExp(`working directory ${ROOT_DIR.replaceAll("\\", "\\\\")};`));
+    assert.ok(result.stdout.includes(`working directory ${ROOT_DIR};`), result.output);
     assert.match(result.stdout, /all 8 checks passed/);
     assert.ok(existsSync(join(result.home, ".fleetify", "fleet.db")));
     assert.ok(result.pid, "the fake app ran");

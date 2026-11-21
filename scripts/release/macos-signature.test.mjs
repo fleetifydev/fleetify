@@ -275,10 +275,32 @@ describe("entitlementKeys", () => {
     assert.deepEqual(entitlementKeys(plist("<key>a</key><false/><key>a</key><true/>")), ["a"]);
   });
 
-  test("comments, CDATA and a binary blob header around the XML are ignored", () => {
+  test("a binary blob header before the XML is skipped", () => {
     const blob = "úÞqq\u0000\u0000\u0001\u0010";
-    assert.deepEqual(entitlementKeys(`${blob}${plist("<!-- <key>x</key><true/> --><key>a</key><true/>")}`), ["a"]);
+    assert.deepEqual(entitlementKeys(`${blob}${plist("<key>a</key><true/>")}`), ["a"]);
+  });
+
+  test("a plist with a comment or a CDATA section gives no keys, as codesign writes neither", () => {
+    // Fails closed, so the exact match with ENTITLEMENTS fails, rather than
+    // read around markup that codesign's re-serialized dictionary never has.
+    assert.deepEqual(entitlementKeys(plist("<!-- <key>x</key><true/> --><key>a</key><true/>")), []);
     assert.deepEqual(entitlementKeys(plist("<key>s</key><string><![CDATA[</string><key>y</key><true/>]]></string>")), []);
+    assert.deepEqual(entitlementKeys(plist("<key>a</key><true/><!-<!-- -->- x -->")), []);
+  });
+
+  test("codesign's XML, with its declaration and DOCTYPE, gives its key", () => {
+    assert.deepEqual(entitlementKeys(sample("entitlements.txt")), [AUDIO]);
+    const pretty = [
+      '<?xml version="1.0" encoding="UTF-8"?>',
+      '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+      '<plist version="1.0">',
+      "<dict>",
+      `\t<key>${AUDIO}</key>`,
+      "\t<true/>",
+      "</dict>",
+      "</plist>",
+    ].join("\n");
+    assert.deepEqual(entitlementKeys(pretty), [AUDIO]);
   });
 
   test("entity references in a key are decoded, and an empty key is a key", () => {
@@ -479,7 +501,7 @@ describe("the CLI, with fake-codesign.mjs as codesign", { skip: process.platform
       ["-d", "--entitlements", "-", "--xml", app],
     ]);
     assert.match(result.stdout, /hardened runtime: on/);
-    assert.match(result.stdout, new RegExp(`entitlements: ${AUDIO.replace(/\./g, "\\.")}`));
+    assert.ok(result.stdout.includes(`entitlements: ${AUDIO}`), result.stdout);
     assert.match(result.stdout, /shape only/);
   });
 

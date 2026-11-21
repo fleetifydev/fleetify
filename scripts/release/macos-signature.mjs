@@ -71,10 +71,11 @@ const COMMANDS = {
 const DESIGNATED = /^[ \t]*(?:#[ \t]*)?designated[ \t]*=>[ \t]*(\S(?:.*\S)?)[ \t\r]*$/m;
 const CERTIFICATE_PIN = /\bcertificate[ \t]+(?:root|leaf)[ \t]*=[ \t]*H"[0-9a-f]{40}"/;
 const CDHASH = /\bcdhash\b/i;
+/** Each `identifier "<name>"` clause of a DR; its name is compared as text. */
+const IDENTIFIER_CLAUSE = /\bidentifier[ \t]+"([^"]*)"/g;
 /** The CodeDirectory flag for the hardened runtime (CS_RUNTIME). */
 const RUNTIME_FLAG = 0x10000n;
 
-const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const codeDirectoryLines = (text) => text.split(/\r?\n/).filter((line) => /^[ \t]*CodeDirectory\b/.test(line));
 
 /**
@@ -102,7 +103,7 @@ export function parseDesignatedRequirement(text) {
 export function drProblems(dr, { identifier = IDENTIFIER, expected } = {}) {
   if (typeof dr !== "string" || dr.trim() === "") return ["no designated requirement"];
   const problems = [];
-  if (!new RegExp(`\\bidentifier[ \\t]+"${escapeRegExp(identifier)}"`).test(dr)) {
+  if (![...dr.matchAll(IDENTIFIER_CLAUSE)].some(([, name]) => name === identifier)) {
     problems.push(`the designated requirement does not name identifier "${identifier}"`);
   }
   if (!CERTIFICATE_PIN.test(dr)) {
@@ -162,23 +163,24 @@ const PLIST_TOKEN = /<key\s*(?:\/>|>([^<]*)<\/key\s*>)|<(\/?)([A-Za-z]+)\b[^>]*?
 /**
  * The top-level keys of an XML plist whose value is <true/>, in the order
  * they first appear. A key given twice has its last value, as macOS reads
- * it. Comments, CDATA and anything before <plist> (codesign's Executable=
- * line, an old binary blob header) are skipped; anything but a plist whose
- * root is a dict gives none.
+ * it. Anything before <plist> (codesign's Executable= line, an old binary
+ * blob header) is skipped, the XML declaration and DOCTYPE included. A plist
+ * with a comment or a CDATA section gives none, rather than be read around
+ * them: codesign writes neither, as it re-serializes the dictionary. Nor
+ * does anything but a plist whose root is a dict give any.
  *
  * @param {string} plistXml
  * @returns {string[]}
  */
 export function entitlementKeys(plistXml) {
-  if (typeof plistXml !== "string") return [];
-  const xml = plistXml.replace(/<!--[\s\S]*?-->/g, "").replace(/<!\[CDATA\[[\s\S]*?\]\]>/g, "");
-  const start = xml.search(/<plist\b/);
+  if (typeof plistXml !== "string" || plistXml.includes("<!--") || plistXml.includes("<![CDATA[")) return [];
+  const start = plistXml.search(/<plist\b/);
   if (start < 0) return [];
   /** key → whether its value is true */
   const values = new Map();
   let depth = 0; // dict and array elements open; 1 inside the root dict
   let key = null; // a top-level key whose value comes next
-  for (const [, keyText, endTag, name, empty] of xml.slice(start).matchAll(PLIST_TOKEN)) {
+  for (const [, keyText, endTag, name, empty] of plistXml.slice(start).matchAll(PLIST_TOKEN)) {
     if (name === undefined) {
       // A <key> element.
       if (depth === 1) key = decodeEntities(keyText ?? "");
