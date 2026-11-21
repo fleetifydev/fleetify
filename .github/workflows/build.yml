@@ -309,6 +309,9 @@ jobs:
         with:
           name: updater-key-${{ matrix.triple }}
           path: ${{ runner.temp }}/dry-run
+      # Each macOS keychain step gives up after five minutes, so a security
+      # command waiting on a dialog fails the job with its logs kept.
+      #
       # The macOS signing identity goes into a keychain the job makes, and
       # Tauri signs with APPLE_SIGNING_IDENTITY alone, which codesign looks
       # up in the keychain search list:
@@ -332,6 +335,7 @@ jobs:
       # self-signed, for code signing only.
       - name: Code-signing identity for this run (macOS dry run)
         if: inputs.environment == 'dry-run' && runner.os == 'macOS'
+        timeout-minutes: 5
         env:
           IDENTITY: Fleetify Dry Run Code Signing
         run: |
@@ -379,6 +383,7 @@ jobs:
       # nowhere but into the keychain.
       - name: Release code-signing identity (macOS release)
         if: inputs.environment == 'release' && runner.os == 'macOS'
+        timeout-minutes: 5
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -546,6 +551,7 @@ jobs:
       # run's cleanup hung there for 40 minutes).
       - name: Delete the signing keychain (macOS)
         if: always() && runner.os == 'macOS'
+        timeout-minutes: 5
         run: |
           if [ -n "${CODESIGN_KEYCHAIN:-}" ]; then
             security delete-keychain "$CODESIGN_KEYCHAIN" || true

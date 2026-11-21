@@ -915,6 +915,18 @@ describe("build.yml", () => {
     assert.ok(cleanup && requires(cleanup.if, "always()") && requires(cleanup.if, macOS), "the keychain isn't deleted whatever happened");
   });
 
+  yamlTest("the macOS identity steps and the keychain cleanup give up after five minutes", () => {
+    // A security command waiting on a dialog then fails in minutes, and the
+    // job keeps its logs; a cancelled always() step needs a force-cancel,
+    // which loses them.
+    const steps = jobOf(BUILD, "bundle").steps ?? [];
+    const keychainSteps = steps.filter((step) => /security (create|delete)-keychain/.test(scriptOf(step)));
+    assert.equal(keychainSteps.length, 3, "two identity steps and one cleanup make or delete a keychain");
+    for (const [i, step] of keychainSteps.entries()) {
+      assert.equal(step["timeout-minutes"], 5, `${stepLabel(step, i)} must have timeout-minutes: 5`);
+    }
+  });
+
   yamlTest("no step removes the macOS trust setting, which waits for a dialog no one can answer", () => {
     // GitHub discards a hosted runner's VM after the job, trust setting and
     // all, while removing it waits for an authorization dialog: the second
