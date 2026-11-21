@@ -142,4 +142,7 @@ permissions = [
   "allow-logs-export",
   "allow-logs-open-folder",
   "allow-feedback-send",
+  "allow-updater-status",
+  "allow-updater-check",
+  "allow-updater-restart",
 ]

@@ -24,6 +24,11 @@ tauri-plugin-dialog = "2"
 # starting a second copy (release builds only, see lib.rs). Cargo.lock holds
 # 2.4.5, the newest release that works with tauri 2.11: 2.5 needs tauri 2.12.
 tauri-plugin-single-instance = "2"
+# In-app updates (shell::updater). 2.12 is the newest release for tauri 2.11:
+# 2.13 needs tauri 2.12, which would drop the vendored tauri-runtime-wry patch
+# (root Cargo.toml). No default features: `zip` serves only v1-format updates
+# and would bring zip 4 back.
+tauri-plugin-updater = { version = "~2.12", default-features = false, features = ["rustls-tls", "system-proxy"] }
 tokio.workspace = true
 tracing.workspace = true
 # Workspace already pins tracing-subscriber@0.3 with env-filter + json

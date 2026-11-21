@@ -154,6 +154,9 @@ pub const APP_COMMANDS: &[&str] = &[
     "logs_export",
     "logs_open_folder",
     "feedback_send",
+    "updater_status",
+    "updater_check",
+    "updater_restart",
 ];
 
 /// The commands `lib_rs`, the text of `lib.rs`, registers in its one

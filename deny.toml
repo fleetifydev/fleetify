@@ -83,6 +83,10 @@ exceptions = [
   # rustls (reqwest, tokio-tungstenite). CDLA-Permissive-2.0 is a permissive
   # licence for data.
   { allow = ["CDLA-Permissive-2.0"], crate = "webpki-roots" },
+  # webpki-root-certs is the same list as DER certificates. It comes with
+  # rustls-platform-verifier (reqwest 0.13's TLS for tauri-plugin-updater),
+  # which uses it on wasm32 only: no Fleetify build compiles it.
+  { allow = ["CDLA-Permissive-2.0"], crate = "webpki-root-certs" },
   # whisper-rs and whisper-rs-sys bind whisper.cpp for on-device voice
   # dictation (src-tauri's default local-whisper feature). The Unlicense puts
   # them in the public domain.
