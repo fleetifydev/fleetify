@@ -72,11 +72,12 @@ pub enum UpdateStatus {
         total: Option<u64>,
     },
     /// `version` has downloaded and its signature checks out. It installs on
-    /// Restart to update.
+    /// Restart to update, and stays ready when an install fails.
     Ready { version: String },
     /// `version` is installing, and the app restarts once it has.
     Installing { version: String },
-    /// The last check, download or install failed; `message` says which.
+    /// A check or a download failed, or an install failed and lost the
+    /// update; `message` says which.
     Failed { message: String },
 }
 
@@ -226,43 +227,88 @@ pub async fn updater_check(
 /// Installs the update that is ready, then restarts the app into it (Restart
 /// to update). On Windows the plugin starts the installer and exits, and the
 /// installer starts the new version. Without a ready update it's an error,
-/// and the status stays as it is.
+/// and the status stays as it is. A failed install is an error too, but the
+/// update stays ready ([`settle_install`]).
 #[tauri::command]
 pub async fn updater_restart(
     app: AppHandle,
     state: tauri::State<'_, UpdaterState>,
 ) -> Result<(), String> {
     let (update, bytes) = state.take_ready()?;
+    let version = update.version.clone();
     publish(
         &app,
         &state,
         UpdateStatus::Installing {
-            version: update.version.clone(),
+            version: version.clone(),
         },
     );
     // Off the async runtime: the install writes files, and on Linux and
-    // macOS it may wait for the user to authenticate.
-    let installed = tauri::async_runtime::spawn_blocking(move || update.install(bytes)).await;
-    let error = match installed {
-        Ok(Ok(())) => {
+    // macOS it may wait for the user to authenticate. A failed install hands
+    // the update back.
+    let installed = tauri::async_runtime::spawn_blocking(move || match update.install(&bytes) {
+        Ok(()) => Installed::Done,
+        Err(error) => Installed::Failed {
+            error: error.to_string(),
+            update: (update, bytes),
+        },
+    })
+    .await
+    .unwrap_or_else(|error| Installed::Lost {
+        error: error.to_string(),
+    });
+    let settled = settle_install(&mut lock(&state.ready), installed, version);
+    match settled {
+        Ok(()) => {
             // Exits through the event loop, as quitting does, and starts the
             // new version. `restart()` would do the same here, then park
             // this runtime thread until the process ends.
             app.request_restart();
-            return Ok(());
+            Ok(())
         }
-        Ok(Err(error)) => error.to_string(),
-        Err(error) => error.to_string(),
-    };
-    tracing::warn!(target: LOG_TARGET, error = %error, "update install failed");
-    publish(
-        &app,
-        &state,
-        UpdateStatus::Failed {
-            message: INSTALL_FAILED.into(),
-        },
-    );
-    Err(INSTALL_FAILED.into())
+        Err(status) => {
+            publish(&app, &state, status);
+            Err(INSTALL_FAILED.into())
+        }
+    }
+}
+
+/// How an install ended, as `updater_restart` sees it.
+enum Installed<R> {
+    /// The new version is in place, and the app restarts into it.
+    Done,
+    /// The install failed and handed back `update`, with its verified bytes,
+    /// so it can run again.
+    Failed { error: String, update: R },
+    /// The install's task itself failed, and the update went with it.
+    Lost { error: String },
+}
+
+/// Settles an install of `version` that has ended (`installed`): Ok when the
+/// app should restart into the new version. Otherwise it returns the status
+/// to report. After a failed install that's Ready again: the update goes
+/// back into `ready`, so Restart to update can install it without a new
+/// download, as after a dismissed password or admin prompt. When the update
+/// is gone, it's Failed.
+fn settle_install<R>(
+    ready: &mut Option<R>,
+    installed: Installed<R>,
+    version: String,
+) -> Result<(), UpdateStatus> {
+    match installed {
+        Installed::Done => Ok(()),
+        Installed::Failed { error, update } => {
+            tracing::warn!(target: LOG_TARGET, error = %error, "update install failed");
+            *ready = Some(update);
+            Err(UpdateStatus::Ready { version })
+        }
+        Installed::Lost { error } => {
+            tracing::warn!(target: LOG_TARGET, error = %error, "update install failed");
+            Err(UpdateStatus::Failed {
+                message: INSTALL_FAILED.into(),
+            })
+        }
+    }
 }
 
 /// Runs one check: asks the update endpoints for a newer version and, when
@@ -653,6 +699,54 @@ mod tests {
             Some("no update is ready")
         );
         assert_eq!(state.status(), UpdateStatus::Idle);
+    }
+
+    #[test]
+    fn an_install_error_keeps_the_update_ready() {
+        // A dismissed password or admin prompt, say: the update goes back,
+        // the status is Ready again, and Restart can install it again
+        // without a new download.
+        let mut ready = None;
+        let failed = Installed::Failed {
+            error: "dismissed".into(),
+            update: ("0.2.1", vec![1u8, 2, 3]),
+        };
+        let status = settle_install(&mut ready, failed, "0.2.1".into());
+        assert_eq!(
+            status,
+            Err(UpdateStatus::Ready {
+                version: "0.2.1".into()
+            })
+        );
+        assert_eq!(ready_update(&mut ready), Ok(("0.2.1", vec![1, 2, 3])));
+        // While it is ready again, no check starts a new download.
+        let state = UpdaterState::new(true);
+        state.set(UpdateStatus::Installing {
+            version: "0.2.1".into(),
+        });
+        state.set(status.unwrap_err());
+        assert!(!state.try_begin_check());
+
+        // The install's task itself failed: the update went with it, and
+        // the next check downloads it again.
+        let mut ready: Option<(&str, Vec<u8>)> = None;
+        let lost = Installed::Lost {
+            error: "panicked".into(),
+        };
+        assert_eq!(
+            settle_install(&mut ready, lost, "0.2.1".into()),
+            Err(UpdateStatus::Failed {
+                message: INSTALL_FAILED.into()
+            })
+        );
+        assert_eq!(ready, None);
+
+        // It installed: the app restarts, and nothing is kept.
+        assert_eq!(
+            settle_install(&mut ready, Installed::Done, "0.2.1".into()),
+            Ok(())
+        );
+        assert_eq!(ready, None);
     }
 
     #[test]
