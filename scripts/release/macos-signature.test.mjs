@@ -5,13 +5,15 @@
  *
  *   node --test scripts/release/macos-signature.test.mjs
  *
- * The codesign outputs in fixtures/codesign/ follow the formats Apple's
- * codesign prints, both streams together as a terminal shows them. They were
- * written by hand, not captured on a Mac: one set from an app signed with a
- * self-signed certificate and the hardened runtime, and one from an app with
- * only the linker's ad-hoc signature. The CLI tests put
- * fixtures/fake-codesign.mjs first on PATH as `codesign`, so they run without
- * macOS.
+ * fixtures/codesign/captured/<triple>/ holds codesign's own output, each
+ * stream in a file of its own, for the four commands the check runs, from the
+ * fifth release dry run: Fleetify.app built for each Mac, signed with the
+ * dry run's throwaway identity and the hardened runtime, and checked on
+ * macOS 15.8.2 (Apple Silicon) and 15.7.9 (Intel). The ad-hoc outputs in
+ * fixtures/codesign/ were written by hand in codesign's format, both streams
+ * together as a terminal shows them: an app with only the linker's ad-hoc
+ * signature. The CLI tests put fixtures/fake-codesign.mjs first on PATH as
+ * `codesign`, so they run without macOS.
  */
 import { after, describe, test } from "node:test";
 import assert from "node:assert/strict";
@@ -35,18 +37,29 @@ import {
 const SCRIPT = fileURLToPath(new URL("./macos-signature.mjs", import.meta.url));
 const FAKE_CODESIGN = fileURLToPath(new URL("./fixtures/fake-codesign.mjs", import.meta.url));
 const sample = (name) => readFileSync(new URL(`./fixtures/codesign/${name}`, import.meta.url), "utf8");
+/** codesign's two streams for one of the four commands, as a dry run captured them for `triple`. */
+const captured = (triple, kind) => ({
+  stdout: sample(`captured/${triple}/${kind}.stdout.txt`),
+  stderr: sample(`captured/${triple}/${kind}.stderr.txt`),
+});
+/** A command's output as checkSignature reads it: stdout, then stderr on lines of their own. */
+const joined = ({ stdout, stderr }) => `${stdout}\n${stderr}`;
+const MACS = ["aarch64-apple-darwin", "x86_64-apple-darwin"];
+/** codesign's answers for an app a dry run built and signed for `triple`, by command kind. */
+const capturedApp = (triple) => Object.freeze(Object.fromEntries(["verify", "requirements", "display", "entitlements"].map((kind) => [kind, captured(triple, kind)])));
 const repoFile = (path) => readFileSync(new URL(`../../${path}`, import.meta.url), "utf8");
 
-const REQUIREMENTS = sample("requirements.txt");
+const REQUIREMENTS = joined(captured("aarch64-apple-darwin", "requirements"));
 const REQUIREMENTS_ADHOC = sample("requirements-adhoc.txt");
-const DISPLAY = sample("display.txt");
+const DISPLAY = joined(captured("aarch64-apple-darwin", "display"));
 const DISPLAY_ADHOC = sample("display-adhoc.txt");
-const ENTITLEMENTS_XML = sample("entitlements.txt");
-const VERIFY = sample("verify.txt");
+const ENTITLEMENTS_XML = joined(captured("aarch64-apple-darwin", "entitlements"));
 
-const HASH = "4373166b9e2432f53462f06b1440efeef5f812fc";
+/** The root certificates of the identities the dry run made for each Mac. */
+const HASHES = { "aarch64-apple-darwin": "f719be7e54184a1e18913335fb51f155691ec10e", "x86_64-apple-darwin": "20591e88bea709fca1770d114656d79ecdf9c661" };
+const HASH = HASHES["aarch64-apple-darwin"];
 const OTHER_HASH = "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c";
-/** The designated requirement in requirements.txt. */
+/** The designated requirement in the Apple Silicon capture. */
 const DR = `identifier "com.fleetify.app" and certificate root = H"${HASH}"`;
 const LEAF_DR = `identifier "com.fleetify.app" and certificate leaf = H"${HASH}"`;
 /** The (implicit) designated requirement in requirements-adhoc.txt. */
@@ -289,7 +302,7 @@ describe("entitlementKeys", () => {
   });
 
   test("codesign's XML, with its declaration and DOCTYPE, gives its key", () => {
-    assert.deepEqual(entitlementKeys(sample("entitlements.txt")), [AUDIO]);
+    assert.deepEqual(entitlementKeys(captured("x86_64-apple-darwin", "entitlements").stdout), [AUDIO]);
     const pretty = [
       '<?xml version="1.0" encoding="UTF-8"?>',
       '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
@@ -325,13 +338,8 @@ describe("entitlementKeys", () => {
 
 const APP = "/Users/runner/work/_temp/dmg/Fleetify.app";
 
-/** codesign's answers for a good, self-signed app, by command kind. */
-const GOOD = Object.freeze({
-  verify: { output: VERIFY },
-  requirements: { output: REQUIREMENTS },
-  display: { output: DISPLAY },
-  entitlements: { output: ENTITLEMENTS_XML },
-});
+/** codesign's answers for a good, self-signed app, by command kind: the Apple Silicon capture. */
+const GOOD = capturedApp("aarch64-apple-darwin");
 
 /**
  * A stand-in for spawnSync that answers each codesign command from
@@ -344,14 +352,24 @@ function fakeRun(changes = {}) {
   const run = (command, args) => {
     calls.push([command, args]);
     const kind = kindOf(args);
-    const { status = 0, output = "", error } = scenario[kind];
+    const answer = scenario[kind];
+    const { status = 0, output = "", error } = answer;
     if (error) return { status: null, signal: null, stdout: "", stderr: "", error };
-    return { status, signal: null, ...codesignStreams(kind, output) };
+    const streams = "stdout" in answer || "stderr" in answer ? { stdout: answer.stdout ?? "", stderr: answer.stderr ?? "" } : codesignStreams(kind, output);
+    return { status, signal: null, ...streams };
   };
   return { run, calls };
 }
 
 describe("checkSignature, with a stand-in for codesign", () => {
+  for (const triple of MACS) {
+    test(`codesign's own output for the app a dry run signed for ${triple} has no problems`, () => {
+      const { run } = fakeRun(capturedApp(triple));
+      const dr = `identifier "com.fleetify.app" and certificate root = H"${HASHES[triple]}"`;
+      assert.deepEqual(checkSignature(APP, { run }), { dr, runtime: true, entitlements: [AUDIO], problems: [] });
+    });
+  }
+
   test("runs the four codesign commands on the app; a good app has no problems", () => {
     const { run, calls } = fakeRun();
     assert.deepEqual(checkSignature(APP, { run }), { dr: DR, runtime: true, entitlements: [AUDIO], problems: [] });

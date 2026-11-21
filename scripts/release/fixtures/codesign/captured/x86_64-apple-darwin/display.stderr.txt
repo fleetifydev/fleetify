@@ -1,0 +1,19 @@
+Executable=/Users/runner/work/fleetify/fleetify/target/x86_64-apple-darwin/release/bundle/macos/Fleetify.app/Contents/MacOS/fleetify-app
+Identifier=com.fleetify.app
+Format=app bundle with Mach-O thin (x86_64)
+CodeDirectory v=20500 size=233425 flags=0x10000(runtime) hashes=7284+7 location=embedded
+Hash type=sha256 size=32
+CandidateCDHash sha256=1157ddc607855921628fb827821c1f0a689c90e8
+CandidateCDHashFull sha256=1157ddc607855921628fb827821c1f0a689c90e81b15590fe035c97f8eaf64e5
+Hash choices=sha256
+CMSDigest=1157ddc607855921628fb827821c1f0a689c90e81b15590fe035c97f8eaf64e5
+CMSDigestType=2
+CDHash=1157ddc607855921628fb827821c1f0a689c90e8
+Signature size=1852
+Authority=Fleetify Dry Run Code Signing
+Signed Time=Nov 21, 2026 at 2:54:13 PM
+Info.plist entries=17
+TeamIdentifier=not set
+Runtime Version=15.5.0
+Sealed Resources version=2 rules=13 files=8
+Internal requirements count=1 size=92

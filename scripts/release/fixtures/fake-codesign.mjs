@@ -6,8 +6,9 @@
  * Run as codesign (the tests put a wrapper of that name first on PATH), it
  * answers the four commands macos-signature.mjs runs from a scenario: the
  * JSON file named by FAKE_CODESIGN_SCENARIO, which maps each command's kind
- * (kindOf) to { status, output }. output is the text a terminal shows, both
- * streams together; codesignStreams splits it the way codesign does. Each
+ * (kindOf) to { status, stdout, stderr }, codesign's own streams as a capture
+ * holds them, or to { status, output }: the text a terminal shows, both
+ * streams together, which codesignStreams splits the way codesign does. Each
  * call's arguments are appended, as a JSON array, to a line of the file named
  * by FAKE_CODESIGN_LOG.
  */
@@ -56,8 +57,9 @@ function main(args) {
     process.stderr.write(`fake codesign: no answer for ${JSON.stringify(args)}\n`);
     return 64;
   }
-  const { status = 0, output = "" } = scenario[kind];
-  const { stdout, stderr } = codesignStreams(kind, output);
+  const answer = scenario[kind];
+  const { status = 0, output = "" } = answer;
+  const { stdout, stderr } = "stdout" in answer || "stderr" in answer ? { stdout: answer.stdout ?? "", stderr: answer.stderr ?? "" } : codesignStreams(kind, output);
   process.stdout.write(stdout);
   process.stderr.write(stderr);
   return status;

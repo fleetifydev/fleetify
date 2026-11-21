@@ -655,8 +655,8 @@ jobs:
       - name: Check the macOS signature
         run: node scripts/release/macos-signature.mjs "target/$TRIPLE/release/bundle/macos/Fleetify.app"
       # A dry run keeps codesign's own answers to macos-signature.mjs's four
-      # commands, whether its checks pass or not, so the test fixtures in
-      # scripts/release/fixtures/codesign can be replaced with real output.
+      # commands, whether its checks pass or not: the test fixtures in
+      # scripts/release/fixtures/codesign/captured are such output.
       # It keeps the app's extended attributes too: Tauri clears them
       # (xattr -crs) between making the app and signing it.
       - name: Keep codesign's output (dry run)

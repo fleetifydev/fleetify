@@ -1,0 +1,10 @@
+--prepared:/Users/runner/work/fleetify/fleetify/target/aarch64-apple-darwin/release/bundle/macos/Fleetify.app/Contents/MacOS/fleet-reveng-mcp
+--validated:/Users/runner/work/fleetify/fleetify/target/aarch64-apple-darwin/release/bundle/macos/Fleetify.app/Contents/MacOS/fleet-reveng-mcp
+--prepared:/Users/runner/work/fleetify/fleetify/target/aarch64-apple-darwin/release/bundle/macos/Fleetify.app/Contents/MacOS/fleet-memory-mcp
+--validated:/Users/runner/work/fleetify/fleetify/target/aarch64-apple-darwin/release/bundle/macos/Fleetify.app/Contents/MacOS/fleet-memory-mcp
+--prepared:/Users/runner/work/fleetify/fleetify/target/aarch64-apple-darwin/release/bundle/macos/Fleetify.app/Contents/MacOS/fleet-dispatch-mcp
+--validated:/Users/runner/work/fleetify/fleetify/target/aarch64-apple-darwin/release/bundle/macos/Fleetify.app/Contents/MacOS/fleet-dispatch-mcp
+--prepared:/Users/runner/work/fleetify/fleetify/target/aarch64-apple-darwin/release/bundle/macos/Fleetify.app/Contents/MacOS/fleet-browser-mcp
+--validated:/Users/runner/work/fleetify/fleetify/target/aarch64-apple-darwin/release/bundle/macos/Fleetify.app/Contents/MacOS/fleet-browser-mcp
+target/aarch64-apple-darwin/release/bundle/macos/Fleetify.app: valid on disk
+target/aarch64-apple-darwin/release/bundle/macos/Fleetify.app: satisfies its Designated Requirement

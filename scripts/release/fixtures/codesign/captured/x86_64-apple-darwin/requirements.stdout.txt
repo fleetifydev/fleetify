@@ -1,0 +1,1 @@
+designated => identifier "com.fleetify.app" and certificate root = H"20591e88bea709fca1770d114656d79ecdf9c661"

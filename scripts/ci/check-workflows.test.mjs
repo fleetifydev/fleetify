@@ -1731,7 +1731,7 @@ capture() {
   });
 
   yamlTest("a macOS dry run keeps codesign's own output and the app's extended attributes, whatever the checks say", () => {
-    // So the codesign fixtures of macos-signature.test.mjs can be replaced with real output.
+    // The codesign fixtures of macos-signature.test.mjs are such output.
     const steps = stepsOf("bundle-macos");
     const when = ["always()", DRY_RUN_ONLY];
     const capture = steps.find((step) => ["--verify", "-r-", "-vvv", "--entitlements"].every((arg) => scriptOf(step).includes(arg)) && /\bcodesign\b/.test(scriptOf(step)));
