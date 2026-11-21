@@ -80,5 +80,5 @@ This applies from the first release on. Every release on the [Releases page](htt
 To check a download, compare its checksum with its line in `SHA256SUMS`, using `sha256sum <file>` on Linux, `shasum -a 256 <file>` on macOS or `Get-FileHash <file>` in PowerShell. Then check where it was built with the [GitHub CLI](https://cli.github.com):
 
 ```bash
-gh attestation verify <file> --repo fleetifydev/fleetify
+gh attestation verify <file> --repo fleetifydev/fleetify --signer-workflow fleetifydev/fleetify/.github/workflows/release.yml
 ```

@@ -48,6 +48,7 @@ const DOCS = [
   { file: "CODE_OF_CONDUCT.md" },
   { file: "TRADEMARKS.md" },
   { file: "docs/INSTALL.md" },
+  { file: "docs/RELEASE.md" },
 ];
 
 /** The only email addresses the docs may show: security reports, the code of conduct, business. */

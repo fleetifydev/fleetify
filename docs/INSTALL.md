@@ -87,10 +87,15 @@ Fleetify keeps your sign-in and your API keys in the desktop's keyring, the Secr
 
 ## Updates
 
-Once installed, Fleetify updates itself.
+Once installed, Fleetify updates itself. It checks for a newer version when it starts and every six hours, downloads it in the background, and installs only an update signed with Fleetify's release key. When the download is done, a banner says the new version is ready to install: **Restart to update** installs it and restarts Fleetify, and **Later** hides the banner for now. If the install fails, for example because you closed a password prompt, the update stays ready, and **Restart to update** tries again.
 
-- **macOS:** the microphone permission should carry over, as [above](#the-microphone-permission).
-- **Linux:** the AppImage replaces itself in place. A `.deb` or `.rpm` install updates through `dpkg` or `rpm`, which install a system package, so Linux asks for your password.
+**Settings → General → Updates** has the **Automatic updates** switch, which turns the automatic checks and downloads on or off, and **Check now**, which checks at once, whether the switch is on or not. Once an update is ready, **Restart to update** is there too.
+
+How the update installs:
+
+- **macOS:** Fleetify replaces itself where it is installed. If you can't write to that folder, macOS asks for an administrator's password. The microphone permission should carry over, as [above](#the-microphone-permission).
+- **Windows:** Fleetify closes, the installer runs with a progress window, and then it starts Fleetify again.
+- **Linux:** the AppImage replaces itself, so keep it in a folder you own. A `.deb` or `.rpm` install updates through `dpkg` or `rpm`, which install a system package, so Linux asks for your password.
 
 ## Verify a download
 
@@ -105,10 +110,10 @@ Each release comes with a `SHA256SUMS` file, which lists the SHA-256 checksum of
 **Check where it was built**, with the [GitHub CLI](https://cli.github.com):
 
 ```bash
-gh attestation verify <file> --repo fleetifydev/fleetify
+gh attestation verify <file> --repo fleetifydev/fleetify --signer-workflow fleetifydev/fleetify/.github/workflows/release.yml
 ```
 
-A pass shows that the file was built by this repository's GitHub Actions and hasn't changed since. [SECURITY.md](../SECURITY.md#verifying-a-release) covers the same checks.
+A pass shows that the file was built by this repository's release workflow and hasn't changed since. [SECURITY.md](../SECURITY.md#verifying-a-release) covers the same checks.
 
 ## Uninstall
 
