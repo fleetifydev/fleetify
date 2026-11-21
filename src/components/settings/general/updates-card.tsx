@@ -1,19 +1,23 @@
 /**
  * Updates card — Settings → General.
  *
- * Renders the surface but disables it in "Coming soon" mode because
- * the Tauri updater plugin isn't wired in this build. The Automatic-
- * updates toggle still persists the user's intent so flipping the
- * plugin on later is a no-touch UX change. The channel select and
- * Check-now button are visibly disabled with a hint in the master
- * row's description.
+ * Automatic updates (`updatesAuto`) lets the shell check for updates when
+ * Fleetify starts and every six hours, and download a newer version in the
+ * background (src-tauri/src/shell/updater.rs). Like the shell, it counts as
+ * on unless it is saved as `false`. Check now asks the shell to check at
+ * once, whether automatic updates are on or not. The row's description
+ * follows the updater's status (useUpdateStore), and once an update has
+ * downloaded, Restart to update installs it. Fleetify has one stable
+ * channel, so there is no channel picker.
  */
+import type { CSSProperties } from "react";
 import { CardShell, Row, Toggle } from "./_primitives";
 import { useConfigCard } from "./_config";
+import { useUpdateStore } from "@/stores/update-store";
+import type { UpdateStatus } from "@/lib/api";
 
 interface UpdatesCfg {
   updatesAuto?: boolean;
-  updatesChannel?: "stable" | "beta" | "canary";
 }
 
 const AUTOMATIC_UPDATES = "Automatic updates";
@@ -29,68 +33,99 @@ function appVersion(): string {
   try { return __APP_VERSION__ ?? "—"; } catch { return "—"; }
 }
 
+/** The statuses in which Check now is off: a check is running or can't run. */
+const CHECK_UNAVAILABLE: ReadonlySet<UpdateStatus["state"]> =
+  new Set(["checking", "downloading", "installing", "disabled"]);
+
+/** The "Check for updates" row's description for `status`, where `app` is
+ *  the version running. */
+function statusLine(status: UpdateStatus | null, app: string): string {
+  if (!status) return `Current: v${app}`;
+  switch (status.state) {
+    case "checking":
+      return "Checking…";
+    case "upToDate":
+      return `v${app} is the latest version.`;
+    case "downloading": {
+      // The percent only when the server gave a size.
+      if (!status.total) return `Downloading v${status.version}…`;
+      const pct = Math.min(100, Math.floor((status.downloaded / status.total) * 100));
+      return `Downloading v${status.version}… ${pct}%`;
+    }
+    case "ready":
+      return `v${status.version} is ready.`;
+    case "installing":
+      return `Installing v${status.version}…`;
+    case "failed":
+      return status.message;
+    case "disabled":
+      return "Updates are off in development builds.";
+    case "idle":
+    default:
+      return `Current: v${app}`;
+  }
+}
+
 export function UpdatesCard() {
   // A failed save puts the control back and shows why under its row.
   const { cfg, loaded, patch, errorFor } = useConfigCard<UpdatesCfg>();
+  const status = useUpdateStore(s => s.status);
+  const restartError = useUpdateStore(s => s.restartError);
+  const check = useUpdateStore(s => s.check);
+  const restart = useUpdateStore(s => s.restart);
 
   if (!loaded) {
     return <CardShell><div style={{ padding: 16, fontSize: 13, color: "var(--c-low)" }}>Loading…</div></CardShell>;
   }
 
-  const auto = cfg.updatesAuto ?? true;
-  const channel = cfg.updatesChannel ?? "stable";
-
-  // The Tauri updater plugin isn't wired in this build (see Cargo.toml).
-  // We render the controls so the surface exists, but disable them with
-  // a "Coming soon" hint instead of pretending they work. This is a
-  // strict UX win over hiding the section.
-  const updaterReady = false;
+  const auto = cfg.updatesAuto !== false;
+  const ready = status?.state === "ready";
+  const checkEnabled = !status || !CHECK_UNAVAILABLE.has(status.state);
 
   return (
     <CardShell>
-      <Row title={AUTOMATIC_UPDATES} desc={updaterReady
-        ? "Download and install in the background when available."
-        : "Download and install in the background when available. (Coming soon)"}
+      <Row title={AUTOMATIC_UPDATES}
+           desc="Check for updates when Fleetify starts and every six hours, and download them in the background."
            error={errorFor("updatesAuto")}>
         <Toggle on={auto} label={AUTOMATIC_UPDATES} onChange={() => void patch({ updatesAuto: !auto })} />
       </Row>
-      <Row title="Update channel" desc="Pick how often you receive new features."
-           error={errorFor("updatesChannel")}>
-        <select
-          value={channel}
-          onChange={(e) => void patch({ updatesChannel: e.target.value as UpdatesCfg["updatesChannel"] })}
-          disabled={!updaterReady}
-          style={{
-            background: "var(--c-srf)", border: "1px solid var(--c-brd)",
-            borderRadius: 7, padding: "5px 22px 5px 10px",
-            fontSize: 12.5, color: "var(--c-high)",
-            fontFamily: "inherit", outline: "none",
-            cursor: updaterReady ? "pointer" : "not-allowed",
-            opacity: updaterReady ? 1 : 0.55,
-          }}
-        >
-          <option value="stable">Stable</option>
-          <option value="beta">Beta</option>
-          <option value="canary">Canary</option>
-        </select>
-      </Row>
+      {/* A failed install leaves the update ready: Restart to update stays,
+          with the reason under the row. */}
       <Row title="Check for updates"
-           desc={`Current: v${appVersion()}`}
+           desc={statusLine(status, appVersion())}
+           error={ready ? restartError : null}
            last>
-        <button
-          disabled={!updaterReady}
-          style={{
-            padding: "6px 14px", borderRadius: 7,
-            background: "var(--c-high)", border: "none",
-            color: "var(--card)", fontSize: 12, fontWeight: 600,
-            cursor: updaterReady ? "pointer" : "not-allowed",
-            opacity: updaterReady ? 1 : 0.55,
-            fontFamily: "inherit",
-          }}
-        >
-          Check now
-        </button>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {ready && (
+            <button type="button" onClick={() => void restart()} style={buttonStyle("primary", true)}>
+              Restart to update
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => void check()}
+            disabled={!checkEnabled}
+            style={buttonStyle(ready ? "secondary" : "primary", checkEnabled)}
+          >
+            Check now
+          </button>
+        </div>
       </Row>
     </CardShell>
   );
+}
+
+/** The row's buttons. Once an update is ready, Restart to update is the
+ *  primary one and Check now steps back. */
+function buttonStyle(kind: "primary" | "secondary", enabled: boolean): CSSProperties {
+  return {
+    padding: "6px 14px", borderRadius: 7,
+    background: kind === "primary" ? "var(--c-high)" : "transparent",
+    border: kind === "primary" ? "1px solid transparent" : "1px solid var(--c-brd)",
+    color: kind === "primary" ? "var(--card)" : "var(--c-high)",
+    fontSize: 12, fontWeight: 600,
+    cursor: enabled ? "pointer" : "not-allowed",
+    opacity: enabled ? 1 : 0.55,
+    fontFamily: "inherit",
+  };
 }

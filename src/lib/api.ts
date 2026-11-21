@@ -3,6 +3,19 @@ import { withApiToken, withApiTokenQuery } from "@/lib/api-token";
 
 const API_BASE = "/api";
 
+/** Where the in-app updater is, as the shell sends it: `UpdateStatus` in
+ *  src-tauri/src/shell/updater.rs. `total` is null when the server gives no
+ *  size. */
+export type UpdateStatus =
+  | { state: "disabled" }
+  | { state: "idle" }
+  | { state: "checking" }
+  | { state: "upToDate" }
+  | { state: "downloading"; version: string; downloaded: number; total: number | null }
+  | { state: "ready"; version: string }
+  | { state: "installing"; version: string }
+  | { state: "failed"; message: string };
+
 // ── window.fleetify (provided by Electron preload) ────────────
 declare global {
   interface Window {
@@ -37,6 +50,17 @@ declare global {
       detectEditors(): Promise<{ editors: { id: string; label: string }[] }>;
       /** Launch a project directory in the chosen editor (id from detectEditors). */
       openInEditor(editorId: string, path: string): Promise<{ ok: boolean; error?: string }>;
+      /** The updater's current status (`updater_status`). */
+      updaterStatus:   () => Promise<UpdateStatus>;
+      /** Checks for an update now (`updater_check`), and answers with the
+       *  status the check ends on. */
+      updaterCheck:    () => Promise<UpdateStatus>;
+      /** Installs the update that has downloaded and restarts into it
+       *  (`updater_restart`). Rejects with the shell's message when no update
+       *  is ready or the install fails; the update then stays ready. */
+      updaterRestart:  () => Promise<void>;
+      /** Every status change (`fleet:updater-status`). Returns the unsubscribe. */
+      onUpdaterStatus: (cb: (status: UpdateStatus) => void) => () => void;
     };
   }
 }

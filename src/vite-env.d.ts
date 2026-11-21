@@ -124,9 +124,13 @@ interface FleetConfig {
   /** Restore the last session on launch (vs. start at the workspace
    *  picker). Default true. */
   restoreLastSession?: boolean;
-  /** Auto-install background updates when available. Default true. */
+  /** Automatic updates: check when Fleetify starts and every six hours, and
+   *  download a newer version in the background; it installs on Restart to
+   *  update. Default true; anything but `false` counts as on, as the shell
+   *  reads it (`auto_updates_enabled`). Settings → General → Updates. */
   updatesAuto?: boolean;
-  /** Update channel — Stable / Beta / Canary. Default "stable". */
+  /** Ignored. Written by the old "Update channel" row; Fleetify has one
+   *  stable channel, and nothing reads this. */
   updatesChannel?: "stable" | "beta" | "canary";
   /** Legacy: written by the old privacy card's analytics switch; nothing
    *  writes it now. An explicit `false` still counts as a saved dashboard

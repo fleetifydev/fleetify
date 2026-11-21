@@ -70,6 +70,33 @@ document.addEventListener("mousedown", function (e) {
     openInEditor: function (editorId, path) {
       return invoke("open_in_editor", { editorId: String(editorId || ""), path: String(path || "") });
     },
+    // In-app updates, run by the shell (shell/updater.rs). Each status is
+    // {"state":"ready","version":"0.2.1"} and so on. updaterCheck answers
+    // with the status its check ends on; updaterRestart installs the update
+    // that has downloaded and restarts into it, and rejects with the
+    // shell's message when it can't.
+    updaterStatus: function () { return invoke("updater_status"); },
+    updaterCheck: function () { return invoke("updater_check"); },
+    updaterRestart: function () { return invoke("updater_restart"); },
+    // Every status change. The unsubscribe also works before `listen` has
+    // resolved: the listener then goes as soon as it is in place.
+    onUpdaterStatus: function (cb) {
+      var stopped = false;
+      var unlisten = null;
+      var e = ev();
+      if (e) {
+        e.listen("fleet:updater-status", function (m) {
+          if (stopped) return;
+          try { cb(m && m.payload); } catch (_) {}
+        }).then(function (u) {
+          if (stopped) u(); else unlisten = u;
+        });
+      }
+      return function () {
+        stopped = true;
+        if (unlisten) { unlisten(); unlisten = null; }
+      };
+    },
   };
 
   // window.electronAPI: boot-safe until Phase 1c. Async no-op for unknown

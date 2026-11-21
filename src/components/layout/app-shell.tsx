@@ -7,6 +7,7 @@ import { NewAgentView } from "@/components/agent/new-agent-dialog";
 import { FirstLaunchTour } from "@/components/onboarding/first-launch-tour";
 import { WindowsTitleBar } from "./windows-title-bar";
 import { KeychainWarningBanner } from "./keychain-warning-banner";
+import { UpdateReadyBanner } from "./update-ready-banner";
 import { StudioSession } from "@/components/studio/StudioSession";
 import { StudioComposer } from "@/components/studio/StudioComposer";
 import { isStudioTool } from "@/lib/studio-tools";
@@ -24,6 +25,7 @@ const WorkflowsPage = lazy(() =>
 );
 import { useAppStore } from "@/stores/app-store";
 import { useDiscoveredModelsStore } from "@/stores/discovered-models-store";
+import { useUpdateStore } from "@/stores/update-store";
 import { providers } from "@/lib/providers-api";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import { fetchSessions, deleteEmptyDrafts, updateSession as apiUpdateSession } from "@/lib/api";
@@ -184,6 +186,12 @@ export function AppShell({ introReveal = false }: { introReveal?: boolean }) {
       document.removeEventListener("visibilitychange", revalidate);
     };
   }, []);
+
+  // ── In-app updates ──
+  // Follow the shell's updater status, once, for the update banner below
+  // and Settings → General → Updates. App keeps this shell mounted (hidden)
+  // while Settings or Library is open, so the status stays current there.
+  useEffect(() => useUpdateStore.getState().init(), []);
 
   // ── First-launch tour ──
   // The typed "Welcome to Fleet…" message and its "wait for the greeting
@@ -448,6 +456,10 @@ export function AppShell({ introReveal = false }: { introReveal?: boolean }) {
       {/* Full-width warning when the sign-in could not be saved to the OS
           keychain; renders nothing otherwise. */}
       <KeychainWarningBanner />
+
+      {/* Restart to update, once an update has downloaded; renders nothing
+          otherwise. */}
+      <UpdateReadyBanner />
 
       <div style={{
         display: "flex",
