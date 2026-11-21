@@ -1,0 +1,21 @@
+{
+  "packages": [
+    { "name": "alpha-rs", "version": "1.0.0", "id": "registry+https://github.com/rust-lang/crates.io-index#alpha-rs@1.0.0", "manifest_path": "/fixture/registry/alpha-rs-1.0.0/Cargo.toml" },
+    { "name": "bare-rs", "version": "0.1.0", "id": "registry+https://github.com/rust-lang/crates.io-index#bare-rs@0.1.0", "manifest_path": "/fixture/registry/bare-rs-0.1.0/Cargo.toml" },
+    { "name": "beta-rs", "version": "0.2.0", "id": "registry+https://github.com/rust-lang/crates.io-index#beta-rs@0.2.0", "manifest_path": "/fixture/registry/beta-rs-0.2.0/Cargo.toml" },
+    { "name": "binding-sys", "version": "0.15.0", "id": "registry+https://github.com/rust-lang/crates.io-index#binding-sys@0.15.0", "manifest_path": "/fixture/registry/binding-sys-0.15.0/Cargo.toml" },
+    { "name": "dual-rs", "version": "1.0.0", "id": "registry+https://github.com/rust-lang/crates.io-index#dual-rs@1.0.0", "manifest_path": "/fixture/registry/dual-rs-1.0.0/Cargo.toml" },
+    { "name": "fleetify-fixture-app", "version": "0.1.0", "id": "path+file:///fixture/workspace/app#fleetify-fixture-app@0.1.0", "manifest_path": "/fixture/workspace/app/Cargo.toml" },
+    { "name": "fleetify-fixture-core", "version": "0.1.0", "id": "path+file:///fixture/workspace/core#fleetify-fixture-core@0.1.0", "manifest_path": "/fixture/workspace/core/Cargo.toml" },
+    { "name": "framework-macros", "version": "2.0.0", "id": "path+file:///fixture/workspace/vendor/framework-macros#2.0.0", "manifest_path": "/fixture/workspace/vendor/framework-macros/Cargo.toml" },
+    { "name": "framework-rs", "version": "2.0.0", "id": "registry+https://github.com/rust-lang/crates.io-index#framework-rs@2.0.0", "manifest_path": "/fixture/registry/framework-rs-2.0.0/Cargo.toml" },
+    { "name": "gamma-rs", "version": "0.3.0", "id": "registry+https://github.com/rust-lang/crates.io-index#gamma-rs@0.3.0", "manifest_path": "/fixture/registry/gamma-rs-0.3.0/Cargo.toml" },
+    { "name": "sync-thing", "version": "1.0.2", "id": "registry+https://github.com/rust-lang/crates.io-index#sync-thing@1.0.2", "manifest_path": "/fixture/registry/sync-thing-1.0.2/Cargo.toml" },
+    { "name": "whisper-rs", "version": "0.16.0", "id": "registry+https://github.com/rust-lang/crates.io-index#whisper-rs@0.16.0", "manifest_path": "/fixture/registry/whisper-rs-0.16.0/Cargo.toml" },
+    { "name": "whisper-rs-sys", "version": "0.15.0", "id": "registry+https://github.com/rust-lang/crates.io-index#whisper-rs-sys@0.15.0", "manifest_path": "/fixture/registry/whisper-rs-sys-0.15.0/Cargo.toml" }
+  ],
+  "workspace_members": [
+    "path+file:///fixture/workspace/app#fleetify-fixture-app@0.1.0",
+    "path+file:///fixture/workspace/core#fleetify-fixture-core@0.1.0"
+  ]
+}

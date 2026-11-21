@@ -14,12 +14,16 @@
  *   - Rust crates, from `cargo about generate --format json` as
  *     scripts/release/about.toml configures it: the four release targets,
  *     no dev or build dependencies. The workspace's own crates are left out.
- *     Each licence text appears once, with the crates it covers.
+ *     Each licence text appears once, with the crates it covers. The NOTICE,
+ *     COPYRIGHT and third-party notice files in each crate's folder (found
+ *     through `cargo metadata`) follow the crate's first licence.
  *   - npm packages: the production packages in package-lock.json, each with
  *     the LICENSE*, LICENCE*, COPYING* and NOTICE* files it has in
  *     node_modules.
  *   - Bundled C/C++ source: whisper.cpp and ggml, which the whisper-rs-sys
- *     crate compiles in, under whisper.cpp's MIT licence from that crate.
+ *     crate compiles in, under whisper.cpp's MIT licence from that crate,
+ *     then every other licence notice found in that source, with the files
+ *     it is in.
  *   - Linux AppImage: a pointer to LINUX-APPIMAGE-LIBRARIES.txt, which
  *     appimage-libraries.mjs writes for each release.
  *
@@ -35,17 +39,35 @@
  * Exit codes: 0 written; 1 a source is missing or a command failed; 2 usage.
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import {
+  existsSync,
+  lstatSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, join, posix } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
 const USAGE = "usage: node scripts/release/third-party-notices.mjs --out <file>";
 
-/** A licence or NOTICE file, by name: LICENSE*, LICENCE*, COPYING* or NOTICE*, in any letter case. */
-const NOTICE_FILE = /^(licen[cs]e|copying|notice)/i;
-/** A licence file, by name: the same without NOTICE*. */
+// File names, matched in any letter case.
+/** An npm package's licence or NOTICE file: LICENSE*, LICENCE*, COPYING* or NOTICE*. */
+const PACKAGE_FILE = /^(licen[cs]e|copying|notice)/i;
+/** A licence file: LICENSE*, LICENCE* or COPYING*. */
 const LICENCE_FILE = /^(licen[cs]e|copying)/i;
+/**
+ * A crate's notice file: NOTICE*, COPYRIGHT*, LICENSE-THIRD-PARTY* and
+ * THIRD-PARTY* (also THIRD_PARTY*, ThirdParty*). A folder of that last kind
+ * holds vendored code, and its licence files count as the crate's notices.
+ */
+const CRATE_NOTICE = /^(notice|copyright|licen[cs]e[-_]third[-_]?party|third[-_]?party)/i;
+const THIRD_PARTY_FOLDER = /^third[-_]?party/i;
+/** A licence or notice file inside vendored code: LICENSE*, LICENCE*, COPYING*, COPYRIGHT* or NOTICE*. */
+const VENDORED_LICENCE = /^(licen[cs]e|copying|copyright|notice)/i;
 
 /**
  * Standard licence texts, for npm packages published without a licence
@@ -102,18 +124,23 @@ const isFile = (path) => {
   }
 };
 
+/** `{ file, text }` for each of `files`, paths relative to `dir` with "/", sorted. */
+const readAll = (dir, files) =>
+  [...files].sort(compare).map((file) => ({ file, text: readFileSync(join(dir, file), "utf8") }));
+
 /**
- * The licence and NOTICE files directly inside `dir`, by name, as
- * `{ file, text }`. Throws when `dir` can't be read.
- *
- * @param {string} dir
- * @returns {Array<{ file: string, text: string }>}
+ * The paths of the files under `dir`, relative to it with "/" separators.
+ * Symlinks are not followed.
  */
-export function licenceFiles(dir) {
-  return readdirSync(dir)
-    .filter((name) => NOTICE_FILE.test(name) && isFile(join(dir, name)))
-    .sort(compare)
-    .map((file) => ({ file, text: readFileSync(join(dir, file), "utf8") }));
+function walk(dir, prefix = "") {
+  const found = [];
+  for (const name of readdirSync(dir)) {
+    const stats = lstatSync(join(dir, name));
+    const rel = prefix ? `${prefix}/${name}` : name;
+    if (stats.isDirectory()) found.push(...walk(join(dir, name), rel));
+    else if (stats.isFile()) found.push(rel);
+  }
+  return found;
 }
 
 /**
@@ -128,8 +155,42 @@ export function packageFileReader(root) {
   return (path) => {
     const dir = join(root, path);
     if (!existsSync(dir)) throw new Error(`${path} is not installed: run npm ci first`);
-    return licenceFiles(dir);
+    return readAll(dir, readdirSync(dir).filter((name) => PACKAGE_FILE.test(name) && isFile(join(dir, name))));
   };
+}
+
+/**
+ * The licence and notice files of the crate in `dir`, as `{ file, text }`
+ * with `file` relative to `dir`, sorted: the licence files (LICENCE_FILE)
+ * and notice files (CRATE_NOTICE) at its top level, and the licence files
+ * anywhere inside a top-level third-party folder, such as ring's
+ * third_party/.
+ *
+ * @param {string} dir
+ * @returns {Array<{ file: string, text: string }>}
+ */
+export function crateFiles(dir) {
+  const files = [];
+  for (const name of readdirSync(dir)) {
+    const path = join(dir, name);
+    if (isFile(path) && (LICENCE_FILE.test(name) || CRATE_NOTICE.test(name))) {
+      files.push(name);
+    } else if (THIRD_PARTY_FOLDER.test(name) && lstatSync(path).isDirectory()) {
+      files.push(...walk(path, name).filter((rel) => VENDORED_LICENCE.test(posix.basename(rel))));
+    }
+  }
+  return readAll(dir, files);
+}
+
+/**
+ * Each package's folder, by package id, from `cargo metadata
+ * --format-version 1` output.
+ *
+ * @param {{ packages?: Array<{ id: string, manifest_path: string }> }} metadata
+ * @returns {Map<string, string>}
+ */
+export function crateDirectories(metadata) {
+  return new Map((metadata.packages ?? []).map((p) => [p.id, dirname(p.manifest_path)]));
 }
 
 const MODULES = "node_modules/";
@@ -209,60 +270,175 @@ const compareLicences = (a, b) => compare(a.id, b.id) || byFirstCrate(a, b) || c
  * package id is in `exclude` (the workspace's own) are left out, and so is a
  * licence that no other crate uses.
  *
- * When cargo-about finds no file with a licence's text in a crate, it gives
- * the licence's standard text, with no `source_path`. Offline, that happens
- * for crates that ship no licence file, but also for files it skips, such as
- * Tauri's LICENSE_MIT and windows-rs's license-mit. Such an entry has
- * `standard: true`, and `files` lists the licence and NOTICE files its crates
- * do ship (`readCrateFiles(<crate folder>)`), once per name and text, so
- * their copyright lines reach the notices.
+ * Each entry's `files` are files from its crates' folders, verbatim, once per
+ * name and text, with the crates that ship them. `crateDirs` (from
+ * crateDirectories) locates each folder, and `readCrateFiles` reads it.
+ *   - Notice files (NOTICE, COPYRIGHT, third-party notices; see crateFiles)
+ *     follow the crate's first licence in sorted order, so they appear once.
+ *   - When cargo-about finds no file with a licence's text in a crate, it
+ *     gives the licence's standard text, with no `source_path`. Offline,
+ *     that happens for crates that ship no licence file, but also for files
+ *     it skips, such as Tauri's LICENSE_MIT and windows-rs's license-mit. Such
+ *     an entry has `standard: true`, and its crates' own licence files follow
+ *     it, so their copyright lines reach the notices.
+ *
+ * Throws when a crate is not in `crateDirs`.
  *
  * @param {{ licenses?: Array<any> }} about
- * @param {{ exclude?: Set<string>, readCrateFiles?: (dir: string) => Array<{ file: string, text: string }> }} [options]
+ * @param {{ exclude?: Set<string>, crateDirs?: Map<string, string>,
+ *           readCrateFiles?: (dir: string) => Array<{ file: string, text: string }> }} [options]
  */
-export function rustLicences(about, { exclude = new Set(), readCrateFiles = licenceFiles } = {}) {
+export function rustLicences(about, { exclude = new Set(), crateDirs = new Map(), readCrateFiles = crateFiles } = {}) {
+  const read = new Map();
+  const filesOf = (crate) => {
+    const dir = crateDirs.get(crate.id);
+    if (!dir) throw new Error(`${label(crate)} (${crate.id}) is not in cargo metadata, so its folder is unknown`);
+    if (!read.has(dir)) read.set(dir, readCrateFiles(dir));
+    return read.get(dir);
+  };
+
   const licences = [];
   for (const licence of about.licenses ?? []) {
-    const crates = licence.used_by.map((use) => use.crate).filter((crate) => !exclude.has(crate.id));
-    if (crates.length === 0) continue;
+    const users = licence.used_by.map((use) => use.crate).filter((crate) => !exclude.has(crate.id));
+    if (users.length === 0) continue;
     const standard = licence.source_path == null;
-    licences.push({
-      id: licence.id,
-      name: licence.name,
-      text: licence.text,
-      standard,
-      crates: crateList(crates),
-      files: standard ? shippedFiles(crates, readCrateFiles) : [],
-    });
+    licences.push({ id: licence.id, name: licence.name, text: licence.text, standard, crates: crateList(users), users });
   }
-  return licences.sort(compareLicences);
+  licences.sort(compareLicences);
+
+  const placed = new Set();
+  return licences.map(({ users, ...licence }) => {
+    const files = new Map();
+    for (const crate of users) {
+      const first = !placed.has(crate.id);
+      placed.add(crate.id);
+      for (const { file, text } of filesOf(crate)) {
+        const wanted = CRATE_NOTICE.test(file) ? first : licence.standard && LICENCE_FILE.test(file);
+        if (!wanted) continue;
+        const key = `${file}\0${text}`;
+        if (!files.has(key)) files.set(key, { file, text, crates: [] });
+        files.get(key).crates.push(crate);
+      }
+    }
+    const shipped = [...files.values()].map((f) => ({ ...f, crates: crateList(f.crates) }));
+    return { ...licence, files: shipped.sort(compareFiles) };
+  });
 }
 
-/** The licence and NOTICE files in the crates' folders, once per name and text. */
-function shippedFiles(crates, readCrateFiles) {
-  const files = new Map();
-  for (const crate of crates) {
-    for (const { file, text } of readCrateFiles(dirname(crate.manifest_path))) {
-      const key = `${file}\0${text}`;
-      if (!files.has(key)) files.set(key, { file, text, crates: [] });
-      files.get(key).crates.push(crate);
+/** Source files sourceNotices reads, by extension: C-style comments (// and block comments) or # comments. */
+const SLASH_COMMENTS = new Set([
+  ".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx", ".cu", ".cuh", ".cl",
+  ".comp", ".glsl", ".wgsl", ".tmpl", ".m", ".mm", ".metal", ".idl",
+]);
+const HASH_COMMENTS = new Set([".cmake", ".txt", ".in", ".py", ".sh"]);
+/** Words that make a comment a licence notice. */
+const NOTICE_MARKER =
+  /copyright|spdx-license-identifier|licen[cs]ed under|mit licen[cs]e|apache licen[cs]e|bsd licen[cs]e|permission is hereby granted|redistribution and use|public domain/i;
+
+/** The words of a text, lower-cased, without punctuation, comment marks or line breaks. */
+const words = (text) => text.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+
+/**
+ * The comments in a source file's `text`: each run of consecutive comment
+ * lines as `{ line, text }`, `line` counting from 1. In "slash" style a run is
+ * // lines, or a whole block comment, blank lines included; in "hash" style
+ * it is # lines. A blank line ends a // or # run.
+ */
+function commentBlocks(text, style) {
+  const lines = text.split("\n");
+  const blocks = [];
+  let start = -1;
+  let inBlock = false;
+  const end = (i) => {
+    if (start >= 0) blocks.push({ line: start + 1, text: lines.slice(start, i).join("\n") });
+    start = -1;
+  };
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i].trimStart();
+    let comment;
+    if (style === "hash") {
+      comment = line.startsWith("#");
+    } else if (inBlock) {
+      comment = true;
+      inBlock = !line.includes("*/");
+    } else if (line.startsWith("//")) {
+      comment = true;
+    } else if (line.startsWith("/*")) {
+      comment = true;
+      inBlock = !line.slice(2).includes("*/");
+    } else {
+      comment = false;
+    }
+    if (!comment) end(i);
+    else if (start < 0) start = i;
+  }
+  end(lines.length);
+  return blocks;
+}
+
+const comparePlaces = (a, b) => compare(a.path, b.path) || a.line - b.line;
+const compareNotices = (a, b) => comparePlaces(a.places[0], b.places[0]) || compare(a.text, b.text);
+
+/**
+ * The licence notices in a source tree other than its licence, `licence`
+ * (the text of `<root>/LICENSE`). Each is verbatim, once, with every place it
+ * is at as `{ path, line }` (path relative to `root`, with "/"), sorted:
+ *   - a licence or notice file anywhere below the top (VENDORED_LICENCE), whole;
+ *   - in a source file (SLASH_COMMENTS, HASH_COMMENTS), a comment with a
+ *     NOTICE_MARKER in it: a file header, or a line or two crediting
+ *     borrowed code.
+ * A notice whose words all appear, in order, in `licence` only repeats it,
+ * and is left out.
+ *
+ * @param {string} root
+ * @param {string} licence
+ * @returns {Array<{ text: string, places: Array<{ path: string, line: number }> }>}
+ */
+export function sourceNotices(root, licence) {
+  const own = words(licence);
+  const notices = new Map();
+  const add = (text, place) => {
+    if (own.includes(words(text))) return;
+    if (!notices.has(text)) notices.set(text, []);
+    notices.get(text).push(place);
+  };
+  for (const path of walk(root)) {
+    if (path === "LICENSE") continue;
+    const name = posix.basename(path);
+    const extension = posix.extname(name);
+    if (VENDORED_LICENCE.test(name)) {
+      add(readFileSync(join(root, path), "utf8"), { path, line: 1 });
+      continue;
+    }
+    const style = SLASH_COMMENTS.has(extension) ? "slash" : HASH_COMMENTS.has(extension) ? "hash" : null;
+    if (!style) continue;
+    for (const block of commentBlocks(readFileSync(join(root, path), "utf8"), style)) {
+      if (NOTICE_MARKER.test(block.text)) add(block.text, { path, line: block.line });
     }
   }
-  return [...files.values()].map((f) => ({ ...f, crates: crateList(f.crates) })).sort(compareFiles);
+  return [...notices]
+    .map(([text, places]) => ({ text, places: places.sort(comparePlaces) }))
+    .sort(compareNotices);
 }
 
 /**
  * whisper.cpp's licence, which covers the ggml library inside it too. The
  * whisper-rs-sys crate compiles both into Fleetify, for on-device voice
  * dictation, from the whisper.cpp folder beside its Cargo.toml. `metadata`
- * is `cargo metadata --format-version 1` output. Throws when whisper-rs-sys
- * isn't in the graph exactly once, or the licence is missing, empty or not
- * the MIT License.
+ * is `cargo metadata --format-version 1` output. `notices` are the other
+ * licence notices in that folder (`findNotices`, sourceNotices by default),
+ * their paths starting with "whisper.cpp/". Throws when whisper-rs-sys isn't
+ * in the graph exactly once, or the licence is missing, empty or not the MIT
+ * License.
  *
  * @param {{ packages?: Array<{ name: string, version: string, manifest_path: string }> }} metadata
- * @param {{ readText?: (path: string) => string }} [options]
+ * @param {{ readText?: (path: string) => string,
+ *           findNotices?: (dir: string, licence: string) => ReturnType<typeof sourceNotices> }} [options]
  */
-export function whisperCppLicence(metadata, { readText = (path) => readFileSync(path, "utf8") } = {}) {
+export function whisperCppLicence(
+  metadata,
+  { readText = (path) => readFileSync(path, "utf8"), findNotices = sourceNotices } = {},
+) {
   const crates = (metadata.packages ?? []).filter((p) => p.name === "whisper-rs-sys");
   if (crates.length !== 1) {
     throw new Error(
@@ -270,7 +446,8 @@ export function whisperCppLicence(metadata, { readText = (path) => readFileSync(
     );
   }
   const [crate] = crates;
-  const path = join(dirname(crate.manifest_path), "whisper.cpp", "LICENSE");
+  const source = join(dirname(crate.manifest_path), "whisper.cpp");
+  const path = join(source, "LICENSE");
   let text;
   try {
     text = readText(path);
@@ -279,12 +456,17 @@ export function whisperCppLicence(metadata, { readText = (path) => readFileSync(
   }
   if (!text.trim()) throw new Error(`whisper.cpp's licence is empty: ${path}`);
   if (!/\bMIT License\b/.test(text)) throw new Error(`whisper.cpp's licence is not the MIT License: ${path}`);
+  const notices = findNotices(source, text).map((notice) => ({
+    text: notice.text,
+    places: notice.places.map(({ path: file, line }) => ({ path: `whisper.cpp/${file}`, line })),
+  }));
   return {
     name: "whisper.cpp and ggml",
     from: `whisper-rs-sys ${crate.version}`,
     licence: "MIT",
     file: "whisper.cpp/LICENSE",
     text,
+    notices,
   };
 }
 
@@ -300,7 +482,9 @@ const INTRO = [
 const RUST_INTRO = [
   "The Rust crates compiled into Fleetify and its MCP sidecars. Each licence text",
   "appears once, after the crates it covers. A crate that offers a choice of",
-  "licences is listed under the one Fleetify takes.",
+  "licences is listed under the one Fleetify takes. The NOTICE, COPYRIGHT and",
+  "third-party notice files that a crate ships follow the first licence it is",
+  "listed under, verbatim.",
 ];
 const STANDARD_NOTE = [
   "cargo-about found no file with this licence's text in these crates, so the",
@@ -308,8 +492,12 @@ const STANDARD_NOTE = [
 ];
 const STANDARD_AND_SHIPPED_NOTE = [
   "cargo-about found no file with this licence's text in these crates, so the",
-  "licence's standard text follows, then the licence files that some of them do",
-  "ship.",
+  "licence's standard text follows, then the files that some of them ship.",
+];
+const SOURCE_NOTICES_NOTE = [
+  "Licence notices inside individual files of this source follow, verbatim, with",
+  "the files and lines they are at. Notices that only repeat the licence above are",
+  "left out.",
 ];
 const NPM_INTRO = [
   "The npm packages built into Fleetify's user interface, each with the licence",
@@ -377,6 +565,13 @@ export function renderNotices({ version, rust, npm, bundled }) {
   for (const source of [...bundled].sort((a, b) => compare(a.name, b.name))) {
     out.push("", LINE, `${source.name}, from ${source.from}`, `Licence: ${source.licence}`);
     out.push("", `[${source.file}]`, "", verbatim(source.text));
+    const notices = (source.notices ?? [])
+      .map((notice) => ({ ...notice, places: [...notice.places].sort(comparePlaces) }))
+      .sort(compareNotices);
+    if (notices.length > 0) out.push("", ...SOURCE_NOTICES_NOTE);
+    for (const notice of notices) {
+      out.push("", "Notice in:", ...notice.places.map((p) => `    ${p.path}:${p.line}`), "", verbatim(notice.text));
+    }
   }
 
   heading(out, "Linux AppImage", APPIMAGE);
@@ -436,15 +631,21 @@ function main(argv) {
     );
     const lock = JSON.parse(readFileSync(join(ROOT, "package-lock.json"), "utf8"));
 
-    const rust = rustLicences(about, { exclude: new Set(metadata.workspace_members) });
+    const rust = rustLicences(about, {
+      exclude: new Set(metadata.workspace_members),
+      crateDirs: crateDirectories(metadata),
+    });
     const npm = npmProductionPackages(lock, packageFileReader(ROOT));
     const bundled = [whisperCppLicence(metadata)];
     writeFileSync(args.out, renderNotices({ version, rust, npm, bundled }));
 
     const crates = new Set(rust.flatMap((licence) => licence.crates.map(label))).size;
+    const crateFileCount = rust.reduce((n, licence) => n + licence.files.length, 0);
+    const sourceNoticeCount = bundled.reduce((n, source) => n + source.notices.length, 0);
     process.stderr.write(
-      `third-party-notices: wrote ${args.out}: ${crates} Rust crates under ${rust.length} licence texts, ` +
-        `${npm.length} npm packages, ${bundled.map((source) => source.name).join(", ")}\n`,
+      `third-party-notices: wrote ${args.out}: ${crates} Rust crates under ${rust.length} licence texts ` +
+        `with ${crateFileCount} files from their folders, ${npm.length} npm packages, ` +
+        `${bundled.map((source) => source.name).join(", ")} with ${sourceNoticeCount} more notices\n`,
     );
     return 0;
   } catch (err) {

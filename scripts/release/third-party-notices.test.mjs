@@ -4,10 +4,11 @@
  *
  *   node --test scripts/release/third-party-notices.test.mjs
  *
- * Nothing here runs cargo or npm. The cargo-about output and the
- * package-lock excerpt come from fixtures/notices/, and the node_modules tree
- * is built in a temp dir. Every licence text is made up, so no real author's
- * contact details can end up in the repo.
+ * Nothing here runs cargo or npm. The cargo-about and cargo metadata output
+ * and the package-lock excerpt come from fixtures/notices/; the node_modules
+ * tree, crate folders and whisper.cpp source are built in a temp dir or
+ * stubbed. Every licence text is made up, so no real author's contact details
+ * can end up in the repo.
  */
 import { after, describe, test } from "node:test";
 import assert from "node:assert/strict";
@@ -20,10 +21,13 @@ import { fileURLToPath } from "node:url";
 import {
   NO_LICENCE_FILE,
   STANDARD_TEXTS,
+  crateDirectories,
+  crateFiles,
   npmProductionPackages,
   packageFileReader,
   renderNotices,
   rustLicences,
+  sourceNotices,
   whisperCppLicence,
 } from "./third-party-notices.mjs";
 
@@ -94,11 +98,11 @@ const LISTED = { "standard-only": "MIT" };
 const npm = (dir = tree(), options = { noLicenceFile: LISTED }) =>
   npmProductionPackages(LOCK, packageFileReader(dir), options);
 
-// The fixture workspace's own crates, as `cargo metadata` lists them.
-const WORKSPACE = new Set([
-  "path+file:///fixture/workspace/app#fleetify-fixture-app@0.1.0",
-  "path+file:///fixture/workspace/core#fleetify-fixture-core@0.1.0",
-]);
+// `cargo metadata` for the fixture graph. The cargo-about fixture carries no
+// manifest paths, so every crate folder below has to come from here.
+const METADATA = JSON.parse(fixture("cargo-metadata.json"));
+const WORKSPACE = new Set(METADATA.workspace_members);
+const CRATE_DIRS = crateDirectories(METADATA);
 
 const FRAMEWORK_MIT =
   "Fixture MIT licence of framework-rs.\n\nCopyright (c) 2026 The Framework Fixture Contributors\n";
@@ -107,36 +111,60 @@ const FRAMEWORK_FILES = [
   { file: "LICENSE_APACHE-2.0", text: FRAMEWORK_APACHE },
   { file: "LICENSE_MIT", text: FRAMEWORK_MIT },
 ];
-/** The licence files in each crate folder that the fixture's standard-text licences cover. */
+const CRATE_TEXT = {
+  alphaMit: "Fixture MIT licence file of alpha-rs.\n",
+  alphaNotice: "alpha-rs\nCopyright 2026 The Alpha Fixture Authors\n\nThis crate includes fixture code.\n",
+  betaThirdParty: "Fixture licences of the third-party code in beta-rs.\r\n",
+  gammaCopyright: "Copyrights in gamma-rs are retained by its fixture contributors.  \n",
+  dualBsd: "Fixture BSD-style licence text of dual-rs.\n",
+  dualThirdParty: "Fixture third-party notices of dual-rs.",
+  appNotice: "Fixture NOTICE of the fixture workspace app.\n",
+};
+/** The licence and notice files in each crate folder, as crateFiles would read them. */
 const CRATE_FILES = new Map([
+  ["/fixture/registry/alpha-rs-1.0.0", [
+    { file: "LICENSE-MIT", text: CRATE_TEXT.alphaMit },
+    { file: "NOTICE", text: CRATE_TEXT.alphaNotice },
+  ]],
+  ["/fixture/registry/beta-rs-0.2.0", [{ file: "LICENSE-THIRD-PARTY", text: CRATE_TEXT.betaThirdParty }]],
+  ["/fixture/registry/gamma-rs-0.3.0", [{ file: "COPYRIGHT", text: CRATE_TEXT.gammaCopyright }]],
+  ["/fixture/registry/dual-rs-1.0.0", [
+    { file: "LICENSE-BSD", text: CRATE_TEXT.dualBsd },
+    { file: "THIRD-PARTY-NOTICES", text: CRATE_TEXT.dualThirdParty },
+  ]],
   ["/fixture/registry/framework-rs-2.0.0", FRAMEWORK_FILES],
   ["/fixture/workspace/vendor/framework-macros", FRAMEWORK_FILES],
   ["/fixture/registry/bare-rs-0.1.0", []],
   ["/fixture/registry/sync-thing-1.0.2", []],
   ["/fixture/registry/binding-sys-0.15.0", []],
+  ["/fixture/workspace/app", [{ file: "NOTICE", text: CRATE_TEXT.appNotice }]],
+  ["/fixture/workspace/core", []],
 ]);
 function readCrateFiles(dir) {
-  if (!CRATE_FILES.has(dir)) throw new Error(`read the licence files of ${dir}`);
+  if (!CRATE_FILES.has(dir)) throw new Error(`read the files of ${dir}`);
   return CRATE_FILES.get(dir);
 }
-const rust = () => rustLicences(ABOUT, { exclude: WORKSPACE, readCrateFiles });
+const rust = () => rustLicences(ABOUT, { exclude: WORKSPACE, crateDirs: CRATE_DIRS, readCrateFiles });
 
 const WHISPER_DIR = "/fixture/registry/whisper-rs-sys-0.15.0";
 const WHISPER_TEXT =
   "MIT License\n\nCopyright (c) 2026 The Fixture ggml Authors\n\nPermission is granted to use this fixture in tests.\n";
-const METADATA = {
-  packages: [
-    { name: "whisper-rs", version: "0.16.0", manifest_path: "/fixture/registry/whisper-rs-0.16.0/Cargo.toml" },
-    { name: "whisper-rs-sys", version: "0.15.0", manifest_path: `${WHISPER_DIR}/Cargo.toml` },
-  ],
-  workspace_members: [...WORKSPACE],
-};
+const ROPE_NOTICE =
+  "// Fixture rope algorithm, after a fixture paper.\n// MIT licensed. Copyright (c) 2026 The Fixture Rope Authors.";
 /** readText for whisperCppLicence: the fixture licence at its path, ENOENT anywhere else. */
 function readWhisper(path) {
   if (path === join(WHISPER_DIR, "whisper.cpp", "LICENSE")) return WHISPER_TEXT;
   throw Object.assign(new Error(`ENOENT: no such file or directory, open '${path}'`), { code: "ENOENT" });
 }
-const bundled = () => [whisperCppLicence(METADATA, { readText: readWhisper })];
+/** findNotices for whisperCppLicence: one notice, found where the scan would report it. */
+function findWhisperNotices(dir, licence) {
+  assert.equal(dir, join(WHISPER_DIR, "whisper.cpp"));
+  assert.equal(licence, WHISPER_TEXT);
+  return [{ text: ROPE_NOTICE, places: [{ path: "ggml/src/ggml-cpu/ops.cpp", line: 12 }] }];
+}
+const bundled = () => [
+  whisperCppLicence(METADATA, { readText: readWhisper, findNotices: findWhisperNotices }),
+];
 
 const notices = (input = {}) =>
   renderNotices({ version: "1.2.3", rust: rust(), npm: npm(), bundled: bundled(), ...input });
@@ -264,61 +292,183 @@ describe("rustLicences", () => {
       rust().map((g) => ({ id: g.id, standard: g.standard, crates: g.crates.map(label) })),
       [
         { id: "Apache-2.0", standard: true, crates: ["sync-thing 1.0.2"] },
+        { id: "BSD-3-Clause", standard: false, crates: ["dual-rs 1.0.0"] },
         { id: "MIT", standard: false, crates: ["alpha-rs 1.0.0", "beta-rs 0.2.0"] },
         { id: "MIT", standard: true, crates: ["bare-rs 0.1.0", "framework-macros 2.0.0", "framework-rs 2.0.0"] },
-        { id: "MIT", standard: false, crates: ["gamma-rs 0.3.0"] },
+        { id: "MIT", standard: false, crates: ["dual-rs 1.0.0", "gamma-rs 0.3.0"] },
         { id: "Unlicense", standard: true, crates: ["binding-sys 0.15.0"] },
       ],
     );
   });
 
-  test("a licence in its standard text carries the licence files its crates ship, once per file", () => {
-    const groups = rust();
+  test("appends a standard text's licence files, and each crate's notice files after its first licence", () => {
+    const framework = ["framework-macros 2.0.0", "framework-rs 2.0.0"];
     assert.deepEqual(
-      groups.map((g) => g.files.map((f) => ({ file: f.file, text: f.text, crates: f.crates.map(label) }))),
+      rust().map((g) => g.files.map((f) => ({ file: f.file, text: f.text, crates: f.crates.map(label) }))),
       [
         [],
-        [],
+        // dual-rs is under BSD-3-Clause first, so its notice comes here, not under MIT.
+        [{ file: "THIRD-PARTY-NOTICES", text: CRATE_TEXT.dualThirdParty, crates: ["dual-rs 1.0.0"] }],
+        // cargo-about found these crates' licence text, so only the notices follow it.
         [
-          { file: "LICENSE_APACHE-2.0", text: FRAMEWORK_APACHE, crates: ["framework-macros 2.0.0", "framework-rs 2.0.0"] },
-          { file: "LICENSE_MIT", text: FRAMEWORK_MIT, crates: ["framework-macros 2.0.0", "framework-rs 2.0.0"] },
+          { file: "NOTICE", text: CRATE_TEXT.alphaNotice, crates: ["alpha-rs 1.0.0"] },
+          { file: "LICENSE-THIRD-PARTY", text: CRATE_TEXT.betaThirdParty, crates: ["beta-rs 0.2.0"] },
         ],
-        [],
+        [
+          { file: "LICENSE_APACHE-2.0", text: FRAMEWORK_APACHE, crates: framework },
+          { file: "LICENSE_MIT", text: FRAMEWORK_MIT, crates: framework },
+        ],
+        [{ file: "COPYRIGHT", text: CRATE_TEXT.gammaCopyright, crates: ["gamma-rs 0.3.0"] }],
         [],
       ],
     );
   });
+
+  test("finds each crate's folder through cargo metadata", () => {
+    const crateDirs = new Map(CRATE_DIRS);
+    crateDirs.delete("registry+https://github.com/rust-lang/crates.io-index#alpha-rs@1.0.0");
+    assert.throws(
+      () => rustLicences(ABOUT, { exclude: WORKSPACE, crateDirs, readCrateFiles }),
+      /alpha-rs 1\.0\.0 .*cargo metadata/,
+    );
+  });
+});
+
+describe("crateFiles", () => {
+  test("reads a crate's licence and notice files, and the licence files in its third-party folders", () => {
+    const dir = join(ROOT, "crate-folder");
+    const files = {
+      "COPYRIGHT": "Fixture copyright file.\n",
+      "LICENSE-MIT": "Fixture licence file.\n",
+      "LICENSE-THIRD-PARTY": "Fixture third-party licences.\n",
+      "NOTICE.md": "Fixture NOTICE file.\n",
+      "THIRD_PARTY": "Fixture THIRD_PARTY file.\n",
+      "ThirdPartyNotices.txt": "Fixture third-party notices.\n",
+      "third_party/vendored/LICENSE": "Fixture licence of vendored code.\n",
+      "third_party/vendored/code.h": "/* fixture code */\n",
+      "README.md": "# fixture\n",
+      "src/lib.rs": "// fixture code\n",
+      "src/LICENSE": "Not read: src isn't a third-party folder.\n",
+    };
+    for (const [rel, text] of Object.entries(files)) {
+      mkdirSync(dirname(join(dir, rel)), { recursive: true });
+      writeFileSync(join(dir, rel), text);
+    }
+    const read = [
+      "COPYRIGHT",
+      "LICENSE-MIT",
+      "LICENSE-THIRD-PARTY",
+      "NOTICE.md",
+      "THIRD_PARTY",
+      "ThirdPartyNotices.txt",
+      "third_party/vendored/LICENSE",
+    ];
+    assert.deepEqual(crateFiles(dir), read.map((file) => ({ file, text: files[file] })));
+  });
 });
 
 describe("whisperCppLicence", () => {
-  test("reads whisper.cpp/LICENSE beside whisper-rs-sys's manifest", () => {
-    assert.deepEqual(whisperCppLicence(METADATA, { readText: readWhisper }), {
+  test("reads whisper.cpp/LICENSE beside whisper-rs-sys's manifest, with the source's other notices", () => {
+    assert.deepEqual(whisperCppLicence(METADATA, { readText: readWhisper, findNotices: findWhisperNotices }), {
       name: "whisper.cpp and ggml",
       from: "whisper-rs-sys 0.15.0",
       licence: "MIT",
       file: "whisper.cpp/LICENSE",
       text: WHISPER_TEXT,
+      notices: [{ text: ROPE_NOTICE, places: [{ path: "whisper.cpp/ggml/src/ggml-cpu/ops.cpp", line: 12 }] }],
     });
+  });
+
+  test("scans the real whisper.cpp folder by default", () => {
+    const crate = join(ROOT, "registry", "whisper-rs-sys-0.15.0");
+    mkdirSync(join(crate, "whisper.cpp", "ggml", "src"), { recursive: true });
+    writeFileSync(join(crate, "whisper.cpp", "LICENSE"), WHISPER_TEXT);
+    writeFileSync(join(crate, "whisper.cpp", "ggml", "src", "rope.cu"), `int a;\n\n${ROPE_NOTICE}\nint b;\n`);
+    const metadata = {
+      packages: [{ name: "whisper-rs-sys", version: "0.15.0", manifest_path: join(crate, "Cargo.toml") }],
+    };
+    assert.deepEqual(whisperCppLicence(metadata).notices, [
+      { text: ROPE_NOTICE, places: [{ path: "whisper.cpp/ggml/src/rope.cu", line: 3 }] },
+    ]);
   });
 
   test("a missing whisper.cpp licence throws", () => {
     const missing = () => {
       throw Object.assign(new Error("ENOENT: no such file or directory"), { code: "ENOENT" });
     };
-    assert.throws(() => whisperCppLicence(METADATA, { readText: missing }), /whisper\.cpp/);
-    assert.throws(() => whisperCppLicence(METADATA, { readText: () => "" }), /whisper\.cpp/);
+    const none = () => [];
+    assert.throws(() => whisperCppLicence(METADATA, { readText: missing, findNotices: none }), /whisper\.cpp/);
+    assert.throws(() => whisperCppLicence(METADATA, { readText: () => "", findNotices: none }), /whisper\.cpp/);
   });
 
   test("a whisper.cpp licence that isn't MIT throws", () => {
     assert.throws(
-      () => whisperCppLicence(METADATA, { readText: () => "Fixture licence of another kind.\n" }),
+      () =>
+        whisperCppLicence(METADATA, {
+          readText: () => "Fixture licence of another kind.\n",
+          findNotices: () => [],
+        }),
       /MIT/,
     );
   });
 
   test("a graph without whisper-rs-sys throws", () => {
     const metadata = { ...METADATA, packages: METADATA.packages.filter((p) => p.name !== "whisper-rs-sys") };
-    assert.throws(() => whisperCppLicence(metadata, { readText: readWhisper }), /whisper-rs-sys/);
+    assert.throws(
+      () => whisperCppLicence(metadata, { readText: readWhisper, findNotices: findWhisperNotices }),
+      /whisper-rs-sys/,
+    );
+  });
+});
+
+describe("sourceNotices", () => {
+  const LICENCE = WHISPER_TEXT;
+  const SOURCE = {
+    "LICENSE": LICENCE,
+    "ggml/src/ggml-cpu/ops.cpp": `int a;\n\n${ROPE_NOTICE}\nstatic void rope(void) {}\n`,
+    "ggml/src/ggml-cuda/rope.cu": `#include "common.cuh"\n\n${ROPE_NOTICE}\n__global__ void rope() {}\n`,
+    // A block comment whose lines don't start with "*", with a blank line inside.
+    "ggml/src/ggml-x/kernel.c":
+      "/*\n Copyright 2026 The Fixture Foundation\n\n Permission to use this fixture is granted for tests.\n*/\nint k;\n",
+    "cmake/FindThing.cmake":
+      "# Find Thing\n#\n# Copyright (c) 2026, A Fixture Person\n" +
+      "# Redistribution and use is allowed according to the terms of the BSD license.\n\ninclude(X)\n",
+    // Only repeats LICENSE, so it adds nothing.
+    "ggml/src/ggml-cann/common.h":
+      "/*\n * Copyright (c) 2026 The Fixture ggml Authors\n *\n" +
+      " * Permission is granted to use this fixture in tests.\n */\n#pragma once\n",
+    "ggml/src/vendored/LICENSE": "Fixture licence of vendored code.\n",
+    // Not notices: a plain comment, "copyright" in code, a file type the scan doesn't read.
+    "src/whisper.cpp": '// Plain comment.\nconst char * s = "copyright";\n',
+    "ggml/src/blob.bin": "Copyright 2026 nobody\n",
+  };
+  const root = join(ROOT, "whisper-source");
+  for (const [rel, text] of Object.entries(SOURCE)) {
+    mkdirSync(dirname(join(root, rel)), { recursive: true });
+    writeFileSync(join(root, rel), text);
+  }
+
+  test("finds each separate licence notice once, verbatim, with every file and line it is at", () => {
+    assert.deepEqual(sourceNotices(root, LICENCE), [
+      {
+        text:
+          "# Find Thing\n#\n# Copyright (c) 2026, A Fixture Person\n" +
+          "# Redistribution and use is allowed according to the terms of the BSD license.",
+        places: [{ path: "cmake/FindThing.cmake", line: 1 }],
+      },
+      {
+        text: ROPE_NOTICE,
+        places: [
+          { path: "ggml/src/ggml-cpu/ops.cpp", line: 3 },
+          { path: "ggml/src/ggml-cuda/rope.cu", line: 3 },
+        ],
+      },
+      {
+        text: "/*\n Copyright 2026 The Fixture Foundation\n\n Permission to use this fixture is granted for tests.\n*/",
+        places: [{ path: "ggml/src/ggml-x/kernel.c", line: 1 }],
+      },
+      { text: "Fixture licence of vendored code.\n", places: [{ path: "ggml/src/vendored/LICENSE", line: 1 }] },
+    ]);
   });
 });
 
@@ -336,26 +486,49 @@ describe("renderNotices", () => {
     const out = notices();
     for (const [name, text] of Object.entries(TEXT)) assert.ok(out.includes(text), name);
     for (const g of ABOUT.licenses.filter((l) => l.id !== "ISC")) assert.ok(out.includes(g.text), g.id);
+    for (const name of ["alphaNotice", "betaThirdParty", "gammaCopyright", "dualThirdParty"]) {
+      assert.ok(out.includes(CRATE_TEXT[name]), name);
+    }
     assert.ok(out.includes(FRAMEWORK_MIT));
     assert.ok(out.includes(FRAMEWORK_APACHE));
     assert.ok(out.includes(WHISPER_TEXT));
+    assert.ok(out.includes(ROPE_NOTICE));
     assert.ok(out.includes(STANDARD_TEXTS.MIT));
   });
 
   test("each text appears once, however many crates or copies share it", () => {
     const out = notices();
-    assert.equal(occurrences(out, ABOUT.licenses[1].text), 1); // alpha-rs and beta-rs
+    const textA = ABOUT.licenses.find((l) => l.text.startsWith("Fixture MIT licence text A")).text;
+    assert.equal(occurrences(out, textA), 1); // alpha-rs and beta-rs
     assert.equal(occurrences(out, FRAMEWORK_MIT), 1); // framework-rs and framework-macros
     assert.equal(occurrences(out, TEXT.delta), 1); // two copies of delta 1.0.0
+    assert.equal(occurrences(out, CRATE_TEXT.dualThirdParty), 1); // dual-rs, under two licences
     assert.ok(!out.includes("Fixture ISC licence text."), "a licence only the workspace uses");
+    // cargo-about found alpha-rs's licence text, so its licence file isn't repeated.
+    assert.ok(!out.includes(CRATE_TEXT.alphaMit));
   });
 
   test("lists each crate under its licence by name and version", () => {
     const part = lines(section(notices(), "Rust crates")).map((l) => l.trim());
-    for (const crate of ["alpha-rs 1.0.0", "beta-rs 0.2.0", "framework-rs 2.0.0", "binding-sys 0.15.0", "sync-thing 1.0.2"]) {
+    for (const crate of ["alpha-rs 1.0.0", "beta-rs 0.2.0", "dual-rs 1.0.0", "framework-rs 2.0.0", "binding-sys 0.15.0", "sync-thing 1.0.2"]) {
       assert.ok(part.includes(crate), crate);
     }
     assert.ok(!part.includes("fleetify-fixture-app 0.1.0"));
+  });
+
+  test("a crate's NOTICE file shows verbatim under its name, after its licence", () => {
+    const part = section(notices(), "Rust crates");
+    const textA = ABOUT.licenses.find((l) => l.text.startsWith("Fixture MIT licence text A")).text;
+    const block = `[NOTICE] in:\n    alpha-rs 1.0.0\n\n${CRATE_TEXT.alphaNotice}`;
+    assert.equal(occurrences(part, block), 1);
+    // Between alpha-rs's licence text and the next licence's entry.
+    const licence = part.indexOf(textA);
+    const next = part.indexOf("-".repeat(80), licence);
+    assert.ok(licence < part.indexOf(block) && part.indexOf(block) < next);
+  });
+
+  test("the workspace's own notice files stay out", () => {
+    assert.ok(!notices().includes(CRATE_TEXT.appNotice));
   });
 
   test("names whisper.cpp and ggml under the bundled source, with the crate they come from", () => {
@@ -365,14 +538,27 @@ describe("renderNotices", () => {
     assert.ok(part.includes(WHISPER_TEXT));
   });
 
+  test("gives the bundled source's other licence notices verbatim, with the files they are in", () => {
+    const part = section(notices(), "Bundled C/C++ source");
+    assert.equal(occurrences(part, `\n    whisper.cpp/ggml/src/ggml-cpu/ops.cpp:12\n\n${ROPE_NOTICE}\n`), 1);
+    assert.ok(part.indexOf(WHISPER_TEXT) < part.indexOf(ROPE_NOTICE));
+  });
+
   test("the output is deterministic", () => {
     const input = { version: "1.2.3", rust: rust(), npm: npm(), bundled: bundled() };
     const first = renderNotices(input);
     const shuffled = renderNotices({
       version: "1.2.3",
-      rust: [...input.rust].reverse().map((g) => ({ ...g, crates: [...g.crates].reverse(), files: [...g.files].reverse() })),
+      rust: [...input.rust].reverse().map((g) => ({
+        ...g,
+        crates: [...g.crates].reverse(),
+        files: [...g.files].reverse().map((f) => ({ ...f, crates: [...f.crates].reverse() })),
+      })),
       npm: [...input.npm].reverse(),
-      bundled: [...input.bundled].reverse(),
+      bundled: [...input.bundled].reverse().map((b) => ({
+        ...b,
+        notices: [...b.notices].reverse().map((n) => ({ ...n, places: [...n.places].reverse() })),
+      })),
     });
     assert.equal(shuffled, first);
     assert.equal(renderNotices(input), first);

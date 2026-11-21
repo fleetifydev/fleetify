@@ -1,9 +1,10 @@
 {
   "overview": [
-    { "count": 6, "name": "MIT License", "id": "MIT", "indices": [1, 2, 3], "text": "Fixture MIT licence text A.\n\nCopyright (c) 2026 The Alpha Fixture Authors\n\nPermission is granted to use this fixture in tests.\n" },
+    { "count": 7, "name": "MIT License", "id": "MIT", "indices": [2, 3, 4], "text": "Fixture MIT licence text A.\n\nCopyright (c) 2026 The Alpha Fixture Authors\n\nPermission is granted to use this fixture in tests.\n" },
     { "count": 2, "name": "Apache License 2.0", "id": "Apache-2.0", "indices": [0], "text": "Standard text of the Apache License 2.0 (fixture).\n" },
-    { "count": 1, "name": "ISC License", "id": "ISC", "indices": [4], "text": "Fixture ISC licence text.\n" },
-    { "count": 1, "name": "The Unlicense", "id": "Unlicense", "indices": [5], "text": "Standard text of the Unlicense (fixture).\n" }
+    { "count": 1, "name": "BSD 3-Clause \"New\" or \"Revised\" License", "id": "BSD-3-Clause", "indices": [1], "text": "Fixture BSD-style licence text of dual-rs.\n" },
+    { "count": 1, "name": "ISC License", "id": "ISC", "indices": [5], "text": "Fixture ISC licence text.\n" },
+    { "count": 1, "name": "The Unlicense", "id": "Unlicense", "indices": [6], "text": "Standard text of the Unlicense (fixture).\n" }
   ],
   "licenses": [
     {
@@ -19,8 +20,7 @@
             "version": "0.1.0",
             "id": "path+file:///fixture/workspace/app#fleetify-fixture-app@0.1.0",
             "license": "Apache-2.0",
-            "source": null,
-            "manifest_path": "/fixture/workspace/app/Cargo.toml"
+            "source": null
           },
           "path": null
         },
@@ -30,8 +30,26 @@
             "version": "1.0.2",
             "id": "registry+https://github.com/rust-lang/crates.io-index#sync-thing@1.0.2",
             "license": "Apache-2.0",
-            "source": "registry+https://github.com/rust-lang/crates.io-index",
-            "manifest_path": "/fixture/registry/sync-thing-1.0.2/Cargo.toml"
+            "source": "registry+https://github.com/rust-lang/crates.io-index"
+          },
+          "path": null
+        }
+      ]
+    },
+    {
+      "name": "BSD 3-Clause \"New\" or \"Revised\" License",
+      "id": "BSD-3-Clause",
+      "first_of_kind": true,
+      "text": "Fixture BSD-style licence text of dual-rs.\n",
+      "source_path": "/fixture/registry/dual-rs-1.0.0/LICENSE-BSD",
+      "used_by": [
+        {
+          "crate": {
+            "name": "dual-rs",
+            "version": "1.0.0",
+            "id": "registry+https://github.com/rust-lang/crates.io-index#dual-rs@1.0.0",
+            "license": "MIT AND BSD-3-Clause",
+            "source": "registry+https://github.com/rust-lang/crates.io-index"
           },
           "path": null
         }
@@ -50,8 +68,7 @@
             "version": "0.2.0",
             "id": "registry+https://github.com/rust-lang/crates.io-index#beta-rs@0.2.0",
             "license": "MIT OR Apache-2.0",
-            "source": "registry+https://github.com/rust-lang/crates.io-index",
-            "manifest_path": "/fixture/registry/beta-rs-0.2.0/Cargo.toml"
+            "source": "registry+https://github.com/rust-lang/crates.io-index"
           },
           "path": null
         },
@@ -61,8 +78,7 @@
             "version": "1.0.0",
             "id": "registry+https://github.com/rust-lang/crates.io-index#alpha-rs@1.0.0",
             "license": "MIT",
-            "source": "registry+https://github.com/rust-lang/crates.io-index",
-            "manifest_path": "/fixture/registry/alpha-rs-1.0.0/Cargo.toml"
+            "source": "registry+https://github.com/rust-lang/crates.io-index"
           },
           "path": null
         }
@@ -81,8 +97,17 @@
             "version": "0.3.0",
             "id": "registry+https://github.com/rust-lang/crates.io-index#gamma-rs@0.3.0",
             "license": "MIT",
-            "source": "registry+https://github.com/rust-lang/crates.io-index",
-            "manifest_path": "/fixture/registry/gamma-rs-0.3.0/Cargo.toml"
+            "source": "registry+https://github.com/rust-lang/crates.io-index"
+          },
+          "path": null
+        },
+        {
+          "crate": {
+            "name": "dual-rs",
+            "version": "1.0.0",
+            "id": "registry+https://github.com/rust-lang/crates.io-index#dual-rs@1.0.0",
+            "license": "MIT AND BSD-3-Clause",
+            "source": "registry+https://github.com/rust-lang/crates.io-index"
           },
           "path": null
         }
@@ -101,8 +126,7 @@
             "version": "2.0.0",
             "id": "registry+https://github.com/rust-lang/crates.io-index#framework-rs@2.0.0",
             "license": "Apache-2.0 OR MIT",
-            "source": "registry+https://github.com/rust-lang/crates.io-index",
-            "manifest_path": "/fixture/registry/framework-rs-2.0.0/Cargo.toml"
+            "source": "registry+https://github.com/rust-lang/crates.io-index"
           },
           "path": null
         },
@@ -112,8 +136,7 @@
             "version": "2.0.0",
             "id": "path+file:///fixture/workspace/vendor/framework-macros#2.0.0",
             "license": "Apache-2.0 OR MIT",
-            "source": null,
-            "manifest_path": "/fixture/workspace/vendor/framework-macros/Cargo.toml"
+            "source": null
           },
           "path": null
         },
@@ -123,8 +146,7 @@
             "version": "0.1.0",
             "id": "registry+https://github.com/rust-lang/crates.io-index#bare-rs@0.1.0",
             "license": "MIT",
-            "source": "registry+https://github.com/rust-lang/crates.io-index",
-            "manifest_path": "/fixture/registry/bare-rs-0.1.0/Cargo.toml"
+            "source": "registry+https://github.com/rust-lang/crates.io-index"
           },
           "path": null
         }
@@ -143,8 +165,7 @@
             "version": "0.1.0",
             "id": "path+file:///fixture/workspace/core#fleetify-fixture-core@0.1.0",
             "license": "ISC",
-            "source": null,
-            "manifest_path": "/fixture/workspace/core/Cargo.toml"
+            "source": null
           },
           "path": null
         }
@@ -163,8 +184,7 @@
             "version": "0.15.0",
             "id": "registry+https://github.com/rust-lang/crates.io-index#binding-sys@0.15.0",
             "license": "Unlicense",
-            "source": "registry+https://github.com/rust-lang/crates.io-index",
-            "manifest_path": "/fixture/registry/binding-sys-0.15.0/Cargo.toml"
+            "source": "registry+https://github.com/rust-lang/crates.io-index"
           },
           "path": null
         }
@@ -176,6 +196,7 @@
     { "package": { "name": "bare-rs", "version": "0.1.0", "id": "registry+https://github.com/rust-lang/crates.io-index#bare-rs@0.1.0" }, "license": "MIT" },
     { "package": { "name": "beta-rs", "version": "0.2.0", "id": "registry+https://github.com/rust-lang/crates.io-index#beta-rs@0.2.0" }, "license": "MIT OR Apache-2.0" },
     { "package": { "name": "binding-sys", "version": "0.15.0", "id": "registry+https://github.com/rust-lang/crates.io-index#binding-sys@0.15.0" }, "license": "Unlicense" },
+    { "package": { "name": "dual-rs", "version": "1.0.0", "id": "registry+https://github.com/rust-lang/crates.io-index#dual-rs@1.0.0" }, "license": "MIT AND BSD-3-Clause" },
     { "package": { "name": "fleetify-fixture-app", "version": "0.1.0", "id": "path+file:///fixture/workspace/app#fleetify-fixture-app@0.1.0" }, "license": "Apache-2.0" },
     { "package": { "name": "fleetify-fixture-core", "version": "0.1.0", "id": "path+file:///fixture/workspace/core#fleetify-fixture-core@0.1.0" }, "license": "ISC" },
     { "package": { "name": "framework-macros", "version": "2.0.0", "id": "path+file:///fixture/workspace/vendor/framework-macros#2.0.0" }, "license": "Apache-2.0 OR MIT" },
