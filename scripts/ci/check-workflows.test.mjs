@@ -34,6 +34,9 @@
  * with each build's own key and adds the install scripts, and its smoke runs
  * the bundles without the source tree, then installs each platform's bundle
  * with its install script, from the release as a local server serves it.
+ * The Linux compile leg checks, once the AppImage is repacked and before it
+ * collects the bundles, that the app, the sidecars and every ELF file in the
+ * AppImage need no glibc newer than Ubuntu 22.04's, nor GLIBC_PRIVATE.
  * Where a step's script decides something, such as the environment or the
  * arguments the smoke gets, the check runs that script with bash, as the
  * runner does. Only the jobs that call build.yml hand it secrets: the four
@@ -1184,6 +1187,43 @@ function keyedProblems({ words: [name, ...args], assignments, redirects }, funct
   return problems;
 }
 
+/**
+ * The AppImage of the glibc check's test: --appimage-extract writes
+ * squashfs-root into the current folder, as the real one does, with the app,
+ * a library that needs the glibc BUNDLED_GLIBC names, two symlinks and a file
+ * that isn't ELF.
+ */
+const FAKE_APPIMAGE = `#!/bin/sh
+[ "$1" = --appimage-extract ] || exit 64
+mkdir -p squashfs-root/usr/bin squashfs-root/usr/lib squashfs-root/usr/share
+printf '\\177ELF\\nGLIBC 2.34\\n' > squashfs-root/usr/bin/fleetify-app
+printf '\\177ELF\\nGLIBC %s\\n' "$BUNDLED_GLIBC" > squashfs-root/usr/lib/libbundled.so.1
+ln -s libbundled.so.1 squashfs-root/usr/lib/libbundled.so
+ln -s usr/bin/fleetify-app squashfs-root/AppRun
+echo notes > squashfs-root/usr/share/notes.txt
+echo squashfs-root/usr/bin/fleetify-app
+`;
+
+/**
+ * The readelf of the glibc check's test: it logs the file it reads, and
+ * answers as readelf does for an x86-64 file that needs the glibc version on
+ * the file's "GLIBC" line.
+ */
+const FAKE_READELF = `#!/bin/sh
+for file; do :; done
+printf '%s\\n' "$file" >> "$READELF_LOG"
+version=$(sed -n 's/^GLIBC //p' "$file")
+cat <<EOF
+ELF Header:
+  Machine:                           Advanced Micro Devices X86-64
+
+Version needs section '.gnu.version_r' contains 1 entry:
+ Addr: 0x0000000000000000  Offset: 0x00000000  Link: 5 (.dynstr)
+  000000: Version: 1  File: libc.so.6  Cnt: 1
+  0x0010:   Name: GLIBC_$version  Flags: none  Version: 2
+EOF
+`;
+
 describe("build.yml", () => {
   yamlTest("compile runs in no environment; sign and bundle-macos, after it, in the one the caller names", () => {
     const call = triggersOf(workflow(BUILD)).workflow_call;
@@ -1707,6 +1747,69 @@ capture() {
     const libraries = steps.findIndex((step) => scriptOf(step).includes("appimage-libraries.mjs"));
     assert.ok(collect !== -1 && libraries !== -1, "the compile job doesn't collect the bundles or list the AppImage's libraries");
     assert.ok(exclude < collect && exclude < libraries, "the bundles are collected, or the AppImage's libraries listed, before appimage-exclude.mjs runs");
+  });
+
+  yamlTest("the Linux compile leg checks the glibc the app, the sidecars and the extracted AppImage need, once appimage-exclude.mjs has repacked it and before it collects or uploads the bundles", () => {
+    // INSTALL.md promises Ubuntu 22.04, whose glibc is 2.35. A runner with a
+    // newer glibc builds bundles that need it, and nothing else would fail.
+    const steps = stepsOf("compile");
+    const check = steps.findIndex((step) => scriptOf(step).includes("glibc-floor.mjs"));
+    assert.ok(check !== -1, "the compile job doesn't run glibc-floor.mjs");
+    assert.equal(steps[check].if, "runner.os == 'Linux'", "the check must run on Linux, in release builds and dry runs alike");
+    assert.equal(steps[check].env, undefined, "the check gets an environment");
+    // The AppImage that ships is the one appimage-exclude.mjs repacked.
+    const exclude = steps.findIndex((step) => scriptOf(step).includes("appimage-exclude.mjs"));
+    assert.ok(exclude !== -1 && check > exclude, "the glibc check runs before appimage-exclude.mjs repacks the AppImage, so it doesn't check the one that ships");
+    const collect = steps.findIndex((step) => scriptOf(step).includes("collect-bundles.mjs"));
+    assert.ok(collect !== -1 && check < collect, "the glibc check runs after the bundles are collected");
+    assert.ok(check < steps.findIndex((step) => usesAction(step, "actions/upload-artifact")), "the glibc check runs after something is uploaded");
+    const lines = commandLines(steps[check]);
+    const extract = lines.indexOf('(cd "$extract" && "${appimages[0]}" --appimage-extract > /dev/null)');
+    const run = lines.indexOf('node scripts/release/glibc-floor.mjs "target/$TRIPLE/release/fleetify-app" target/"$TRIPLE"/release/fleet-*-mcp "$extract/squashfs-root" || status=$?');
+    assert.ok(extract !== -1 && run > extract, `the step must extract the AppImage, then check the app, the sidecars and the extracted tree:\n${lines.join("\n")}`);
+  });
+
+  scriptTest("the glibc check reads the app, each sidecar and every ELF file in the AppImage, fails on a bundled library that needs a newer glibc, and removes its extraction either way", () => {
+    const step = stepsOf("compile").find((candidate) => scriptOf(candidate).includes("glibc-floor.mjs"));
+    assert.ok(step, "the compile job doesn't run glibc-floor.mjs");
+    const triple = "x86_64-unknown-linux-gnu";
+    const sidecars = ["fleet-browser-mcp", "fleet-dispatch-mcp", "fleet-memory-mcp", "fleet-reveng-mcp"];
+    inTempDir((dir) => {
+      const check = (bundledGlibc) => {
+        const base = join(dir, bundledGlibc);
+        const checkout = join(base, "checkout");
+        const release = join(checkout, "target", triple, "release");
+        mkdirSync(join(checkout, "scripts", "release"), { recursive: true });
+        copyFileSync(join(ROOT, "scripts/release/glibc-floor.mjs"), join(checkout, "scripts/release/glibc-floor.mjs"));
+        mkdirSync(join(release, "bundle", "appimage"), { recursive: true });
+        for (const name of ["fleetify-app", ...sidecars]) writeFileSync(join(release, name), "\x7fELF\nGLIBC 2.34\n");
+        // Cargo's dependency file, beside the sidecars, isn't one.
+        writeFileSync(join(release, "fleet-memory-mcp.d"), "fleet-memory-mcp: src/main.rs\n");
+        writeFileSync(join(release, "bundle", "appimage", "Fleetify_1.2.3_amd64.AppImage"), FAKE_APPIMAGE, { mode: 0o755 });
+        const bin = join(base, "bin");
+        mkdirSync(bin);
+        writeFileSync(join(bin, "readelf"), FAKE_READELF, { mode: 0o755 });
+        const temp = join(base, "temp");
+        mkdirSync(temp);
+        const log = join(base, "readelf.log");
+        const env = { PATH: `${bin}:${process.env.PATH}`, RUNNER_TEMP: temp, TRIPLE: triple, BUNDLED_GLIBC: bundledGlibc, READELF_LOG: log };
+        const result = runScript(step.run, { cwd: checkout, env });
+        const read = existsSync(log) ? readFileSync(log, "utf8").trim().split("\n") : [];
+        return { ...result, read, extracted: join(temp, "glibc-floor", "squashfs-root"), left: readdirSync(temp) };
+      };
+      const good = check("2.35");
+      assert.equal(good.status, 0, `${good.stdout}${good.stderr}`);
+      assert.deepEqual(good.read, [
+        ...["fleetify-app", ...sidecars].map((name) => `target/${triple}/release/${name}`),
+        join(good.extracted, "usr/bin/fleetify-app"),
+        join(good.extracted, "usr/lib/libbundled.so.1"),
+      ]);
+      assert.deepEqual(good.left, [], "the step leaves its extraction of the AppImage behind");
+      const bad = check("2.39");
+      assert.equal(bad.status, 1, `${bad.stdout}${bad.stderr}`);
+      assert.ok(bad.stdout.includes(`::error::${join(bad.extracted, "usr/lib/libbundled.so.1")}: needs GLIBC_2.39, newer than the floor, glibc 2.35\n`), bad.stdout);
+      assert.deepEqual(bad.left, [], "the step leaves its extraction of the AppImage behind when the check fails");
+    });
   });
 
   yamlTest("the macOS compile legs pack exactly compiled-tar.mjs's list, in ustar without macOS metadata, and check the archive", () => {

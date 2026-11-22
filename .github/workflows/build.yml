@@ -304,10 +304,34 @@ jobs:
       # system's Mesa needs its own copy of: with the AppImage's loaded,
       # WebKit can't draw and the window stays blank. This takes the
       # libraries the system must provide out of the AppImage and repacks
-      # it, before anything collects, signs or lists it.
+      # it, before anything checks, collects, signs or lists it.
       - name: Take the system's libraries out of the AppImage (Linux)
         if: runner.os == 'Linux'
         run: node scripts/release/appimage-exclude.mjs --dir "target/$TRIPLE/release/bundle/appimage"
+      # docs/INSTALL.md promises Ubuntu 22.04, whose glibc is 2.35. A file
+      # built here, or a library the AppImage copies from this system, may
+      # need any glibc up to this system's, so a runner with a newer one
+      # could make bundles that don't start there, with nothing else failing.
+      # glibc-floor.mjs fails on any ELF file that needs a glibc newer than
+      # 2.35 or glibc's private interface, or isn't x86-64: the app and the
+      # sidecars, which the .deb and the .rpm carry too, and each one inside
+      # the AppImage that ships, as the step above repacked it, extracted
+      # without FUSE into a folder that goes once the check is done.
+      - name: Check the glibc the build needs (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          appimages=("$PWD/target/$TRIPLE/release/bundle/appimage/"*.AppImage)
+          if [ "${#appimages[@]}" -ne 1 ] || [ ! -f "${appimages[0]}" ]; then
+            echo "::error::expected one AppImage, found: ${appimages[*]}"
+            exit 1
+          fi
+          extract="$RUNNER_TEMP/glibc-floor"
+          mkdir -p "$extract"
+          (cd "$extract" && "${appimages[0]}" --appimage-extract > /dev/null)
+          status=0
+          node scripts/release/glibc-floor.mjs "target/$TRIPLE/release/fleetify-app" target/"$TRIPLE"/release/fleet-*-mcp "$extract/squashfs-root" || status=$?
+          rm -rf "$extract"
+          exit "$status"
       # Into a folder of its own first: collect-bundles.mjs fills only an
       # empty one, so the artifact holds only this build's files.
       - name: Collect the unsigned bundles (Linux and Windows)
