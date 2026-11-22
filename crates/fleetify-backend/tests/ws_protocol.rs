@@ -98,14 +98,14 @@ async fn ws_sessions_subscribe_and_ping() {
     .expect("ws connect");
 
     // ping → pong
-    ws.send(Frame::Text(json!({"type":"ping"}).to_string()))
+    ws.send(Frame::text(json!({"type":"ping"}).to_string()))
         .await
         .unwrap();
     let pong = recv_json(&mut ws).await;
     assert_eq!(pong["type"], "pong");
 
     // subscribe owned → init
-    ws.send(Frame::Text(
+    ws.send(Frame::text(
         json!({"type":"subscribe","session_ids":[sid]}).to_string(),
     ))
     .await
@@ -116,7 +116,7 @@ async fn ws_sessions_subscribe_and_ping() {
     assert_eq!(init["model"], "pending");
 
     // subscribe a bogus id → error scoped to that sid
-    ws.send(Frame::Text(
+    ws.send(Frame::text(
         json!({"type":"subscribe","session_ids":["00000000-0000-0000-0000-000000000000"]})
             .to_string(),
     ))

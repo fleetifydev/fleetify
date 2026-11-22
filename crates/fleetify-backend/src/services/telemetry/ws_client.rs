@@ -32,7 +32,7 @@ use std::time::Duration;
 use anyhow::{anyhow, Result};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
-use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::{Bytes, Message};
 
 use super::{cloud_enabled, device_id, emitters, gate_changed, outbox};
 
@@ -241,7 +241,7 @@ async fn one_connection_attempt(bearer_source: &BearerSource) -> Result<()> {
                         "→ send {}",
                         frame_log(&frame)
                     );
-                    write.send(Message::Text(frame)).await
+                    write.send(Message::text(frame)).await
                         .map_err(|e| anyhow!("ws send failed: {e}"))?;
                 }
             }
@@ -285,7 +285,7 @@ async fn one_connection_attempt(bearer_source: &BearerSource) -> Result<()> {
             // Keepalive ping
             _ = tokio::time::sleep(ping_interval.saturating_sub(last_ping.elapsed())) => {
                 if last_ping.elapsed() >= ping_interval {
-                    let _ = write.send(Message::Ping(Vec::new())).await;
+                    let _ = write.send(Message::Ping(Bytes::new())).await;
                     last_ping = std::time::Instant::now();
                 }
             }
