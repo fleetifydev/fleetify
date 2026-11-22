@@ -202,7 +202,7 @@ async fn git_state(root: &Path) -> Option<String> {
     }
     let root_str = root.to_string_lossy().to_string();
 
-    let branch_out = tokio::process::Command::new("git")
+    let branch_out = fleetify_core::process::tokio_command("git")
         .args(["-C", &root_str, "branch", "--show-current"])
         .output()
         .await
@@ -214,7 +214,7 @@ async fn git_state(root: &Path) -> Option<String> {
         .trim()
         .to_string();
 
-    let status_out = tokio::process::Command::new("git")
+    let status_out = fleetify_core::process::tokio_command("git")
         .args([
             "-C",
             &root_str,

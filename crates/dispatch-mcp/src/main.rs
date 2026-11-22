@@ -23,6 +23,13 @@
 //!   - Target resolved by EXACT UUID or case-insensitive name. No
 //!     partial match (avoids mis-routing in fleets with similar names).
 
+// Agent CLIs start this server with its standard streams piped, and not all of
+// them stop Windows from opening a console window for a console program. A
+// GUI-subsystem program gets no console, and this one needs none: it uses only
+// the standard streams it inherits (Rust reads a missing one as end of input
+// and drops what is written to it).
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};

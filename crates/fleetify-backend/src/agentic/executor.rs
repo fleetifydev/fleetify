@@ -416,11 +416,11 @@ async fn exec_run_command(input: &Value, ws: &Workspace) -> Result<String> {
     }
 
     let mut cmd = if cfg!(windows) {
-        let mut c = tokio::process::Command::new("cmd");
+        let mut c = fleetify_core::process::tokio_command("cmd");
         c.args(["/C", command]);
         c
     } else {
-        let mut c = tokio::process::Command::new("sh");
+        let mut c = fleetify_core::process::tokio_command("sh");
         c.args(["-c", command]);
         c
     };

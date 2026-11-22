@@ -16,7 +16,7 @@ crate-type = ["cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-fleetify-core.workspace = true
+fleetify-core = { workspace = true, features = ["tokio"] }
 fleetify-backend.workspace = true
 tauri = { version = "2", features = ["macos-private-api", "image-png", "unstable"] }
 tauri-plugin-dialog = "2"

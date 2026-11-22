@@ -1,11 +1,13 @@
-//! Shared, I/O-free domain types for the Fleetify backend + shell, and the
+//! Shared, I/O-free domain types for the Fleetify backend + shell, the
 //! HTTP client builder for calls to the app's own loopback services
-//! ([`loopback`]), shared with the MCP sidecars.
+//! ([`loopback`]), shared with the MCP sidecars, and the constructors every
+//! child process starts from ([`process`]).
 
 use std::path::{Path, PathBuf};
 
 pub mod endpoints;
 pub mod loopback;
+pub mod process;
 pub mod text;
 
 /// Backend wire-protocol version. Bumped only on breaking WS/REST changes.

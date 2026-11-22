@@ -181,7 +181,7 @@ async fn rename_entry(Json(b): Json<RenameBody>) -> Json<Value> {
 // ── /api/fs/git — branch + porcelain status + recent commits ─────
 // Faithful with workspace.py git_status: fan out 4 probes in parallel.
 async fn run_git(args: &[&str], cwd: &str) -> (String, i32) {
-    let cmd = tokio::process::Command::new("git")
+    let cmd = fleetify_core::process::tokio_command("git")
         .args(args)
         .current_dir(cwd)
         .output();
@@ -264,7 +264,7 @@ struct DiffQ {
 }
 
 async fn run_git_keep_out(args: Vec<String>, cwd: String) -> (String, i32) {
-    let cmd = tokio::process::Command::new("git")
+    let cmd = fleetify_core::process::tokio_command("git")
         .args(&args)
         .current_dir(&cwd)
         .output();

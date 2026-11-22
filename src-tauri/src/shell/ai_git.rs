@@ -61,7 +61,7 @@ fn cli_fallback_chain(skip: &str) -> Vec<(&'static str, &'static [&'static str])
 /// detect "binary missing" without paying the spawn cost.
 async fn binary_on_path(bin: &str) -> bool {
     let probe_cmd = if cfg!(windows) { "where" } else { "which" };
-    let out = tokio::process::Command::new(probe_cmd)
+    let out = fleetify_core::process::tokio_command(probe_cmd)
         .arg(bin)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -115,7 +115,7 @@ async fn spawn_session_cli(
     prompt: &str,
     timeout: Duration,
 ) -> (bool, String, String, String) {
-    let mut cmd = tokio::process::Command::new(bin);
+    let mut cmd = fleetify_core::process::tokio_command(bin);
     cmd.args(args)
         .current_dir(folder)
         .stdin(std::process::Stdio::piped())

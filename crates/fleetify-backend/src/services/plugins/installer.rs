@@ -394,7 +394,7 @@ async fn run_cmd(
     cwd: Option<&std::path::Path>,
     timeout: Duration,
 ) -> RunOutput {
-    let mut cmd = tokio::process::Command::new(bin);
+    let mut cmd = fleetify_core::process::tokio_command(bin);
     cmd.args(args);
     if let Some(c) = cwd {
         cmd.current_dir(c);
@@ -524,7 +524,7 @@ mod tests {
     /// Run `git <args>` in `cwd` with author/committer identity pinned so
     /// commits succeed on a CI box that has no global git config.
     fn git(cwd: &std::path::Path, args: &[&str]) {
-        let out = std::process::Command::new("git")
+        let out = fleetify_core::process::command("git")
             .args(args)
             .current_dir(cwd)
             .env("GIT_AUTHOR_NAME", "Test")

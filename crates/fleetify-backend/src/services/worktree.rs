@@ -7,8 +7,8 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+use fleetify_core::process::tokio_command;
 use regex::Regex;
-use tokio::process::Command;
 
 pub const WORKTREES_DIRNAME: &str = ".fleetify-worktrees";
 
@@ -64,7 +64,7 @@ pub fn compute_round_branch(label: Option<&str>, session_id: &str, round: u32) -
 }
 
 async fn git(args: &[&str], cwd: &str) -> (i32, String, String) {
-    let out = Command::new("git")
+    let out = tokio_command("git")
         .args(args)
         .current_dir(cwd)
         .output()
@@ -709,7 +709,7 @@ mod tests {
     use super::*;
 
     fn git_available() -> bool {
-        std::process::Command::new("git")
+        fleetify_core::process::command("git")
             .arg("--version")
             .output()
             .map(|o| o.status.success())
@@ -729,7 +729,7 @@ mod tests {
         }
         let tmp = tempfile::tempdir().unwrap();
         let repo = tmp.path();
-        assert!(std::process::Command::new("git")
+        assert!(fleetify_core::process::command("git")
             .args(["init", "-b", "main"])
             .current_dir(repo)
             .output()
@@ -770,7 +770,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let repo = tmp.path();
         let run = |args: &[&str], cwd: &Path| {
-            std::process::Command::new("git")
+            fleetify_core::process::command("git")
                 .args(args)
                 .current_dir(cwd)
                 .output()
@@ -799,7 +799,7 @@ mod tests {
         ensure_worktrees_ignored(repo);
         assert!(run(&["add", "-A"], repo));
 
-        let staged = std::process::Command::new("git")
+        let staged = fleetify_core::process::command("git")
             .args(["diff", "--cached", "--name-only"])
             .current_dir(repo)
             .output()

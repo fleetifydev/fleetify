@@ -17,6 +17,13 @@
 //!   remember(title: string, content: string, kind?: string)
 //!   recall(query?: string, limit?: number)
 
+// Agent CLIs start this server with its standard streams piped, and not all of
+// them stop Windows from opening a console window for a console program. A
+// GUI-subsystem program gets no console, and this one needs none: it uses only
+// the standard streams it inherits (Rust reads a missing one as end of input
+// and drops what is written to it).
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 use std::io::Write;
 
 use anyhow::Result;

@@ -63,7 +63,7 @@ pub fn no_proxy_with_loopback(upper: Option<&str>, lower: Option<&str>) -> Strin
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::process::Command;
+    use crate::process::command;
 
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -84,7 +84,7 @@ mod tests {
         // The proxy variables are set only in a child process (this test
         // binary, running the one test below), so no other test sees them.
         let proxy = format!("http://127.0.0.1:{}", closed_port());
-        let mut child = Command::new(std::env::current_exe().unwrap());
+        let mut child = command(std::env::current_exe().unwrap());
         child
             .args(["--exact", CHILD_TEST, "--ignored", "--test-threads=1"])
             .env(CHILD, "1");

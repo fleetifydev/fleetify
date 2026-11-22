@@ -1,7 +1,7 @@
 use crate::routers::ApiError;
+use fleetify_core::process::tokio_command;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
-use tokio::process::Command;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HfModel {
@@ -88,7 +88,7 @@ pub async fn run_hf(args: &[&str], timeout_secs: u64) -> (i32, String, String) {
         Some(b) => b,
         None => return (-1, String::new(), "hf not found on PATH".into()),
     };
-    let child = match Command::new(&bin)
+    let child = match tokio_command(&bin)
         .args(args)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())

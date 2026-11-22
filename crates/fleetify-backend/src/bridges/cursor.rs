@@ -25,8 +25,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
+use fleetify_core::process::tokio_command;
 use serde_json::{json, Value};
-use tokio::process::{Child, Command};
+use tokio::process::Child;
 use tokio::sync::{mpsc, Mutex};
 
 use super::acp::AcpClient;
@@ -96,11 +97,11 @@ pub async fn list_models(project_path: &str) -> Result<Vec<ModelInfo>> {
         .into_owned();
 
     let mut cmd = if cfg!(windows) && bin.to_ascii_lowercase().ends_with(".cmd") {
-        let mut c = Command::new("cmd");
+        let mut c = tokio_command("cmd");
         c.arg("/C").arg(&bin).arg("acp");
         c
     } else {
-        let mut c = Command::new(&bin);
+        let mut c = tokio_command(&bin);
         c.arg("acp");
         c
     };

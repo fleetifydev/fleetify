@@ -5,14 +5,18 @@
 use std::path::Path;
 use std::time::Duration;
 
+use fleetify_core::process::tokio_command;
 use serde_json::{json, Value};
-use tokio::process::Command;
 
 /// Run `git` or `gh` and return (exit_code, stdout, stderr).
 /// 8s default timeout — matches the Electron `gitExec` cap.
 pub async fn run(bin: &str, args: &[&str], cwd: &Path, timeout: Duration) -> (i32, String, String) {
     let fut = async {
-        let out = Command::new(bin).args(args).current_dir(cwd).output().await;
+        let out = tokio_command(bin)
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .await;
         match out {
             Ok(o) => (
                 o.status.code().unwrap_or(-1),
@@ -313,7 +317,7 @@ async fn gh(args: &[&str], cwd: &Path) -> (i32, String, String) {
             .map(String::from)
     });
 
-    let mut cmd = tokio::process::Command::new(gh_bin());
+    let mut cmd = tokio_command(gh_bin());
     cmd.args(args).current_dir(cwd);
     if let Some(t) = token {
         cmd.env("GH_TOKEN", t);
@@ -2901,7 +2905,7 @@ mod tests {
     }
 
     fn git_available() -> bool {
-        std::process::Command::new("git")
+        fleetify_core::process::command("git")
             .arg("--version")
             .output()
             .map(|o| o.status.success())

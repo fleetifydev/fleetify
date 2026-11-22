@@ -9,6 +9,13 @@
 //!   FLEETIFY_BACKEND_URL     — backend base (default http://127.0.0.1:8765)
 //!   FLEETIFY_INTERNAL_SECRET — loopback auth for the action endpoint
 
+// Agent CLIs start this server with its standard streams piped, and not all of
+// them stop Windows from opening a console window for a console program. A
+// GUI-subsystem program gets no console, and this one needs none: it uses only
+// the standard streams it inherits (Rust reads a missing one as end of input
+// and drops what is written to it).
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 use std::time::Duration;
 
 use anyhow::Result;

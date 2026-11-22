@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-fleetify-core.workspace = true
+fleetify-core = { workspace = true, features = ["tokio"] }
 tokio.workspace = true
 tokio-tungstenite = { version = "0.24", default-features = false, features = ["rustls-tls-webpki-roots", "connect"] }
 axum.workspace = true

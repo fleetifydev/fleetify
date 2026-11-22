@@ -1063,7 +1063,7 @@ mod tests {
             (None, "on"),
         ];
         for (address, expected) in cases {
-            let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+            let mut child = fleetify_core::process::command(std::env::current_exe().unwrap());
             child
                 .args(["--exact", SESSION_BUS_TEST, "--test-threads=1"])
                 .env(EXPECTED, expected)

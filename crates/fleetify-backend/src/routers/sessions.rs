@@ -980,7 +980,7 @@ async fn git_working_diff(cwd: &str) -> WorkingDiff {
             is_repo: false,
         };
     }
-    let inside = tokio::process::Command::new("git")
+    let inside = fleetify_core::process::tokio_command("git")
         .args(["rev-parse", "--is-inside-work-tree"])
         .current_dir(cwd)
         .output()
@@ -994,7 +994,7 @@ async fn git_working_diff(cwd: &str) -> WorkingDiff {
             is_repo: false,
         };
     }
-    let mut diff = tokio::process::Command::new("git")
+    let mut diff = fleetify_core::process::tokio_command("git")
         .args(["diff"])
         .current_dir(cwd)
         .output()
@@ -1007,7 +1007,7 @@ async fn git_working_diff(cwd: &str) -> WorkingDiff {
     if diff.len() > CAP {
         diff = format!("{}\n… (diff truncated)", trunc(&diff, CAP));
     }
-    let file_count = tokio::process::Command::new("git")
+    let file_count = fleetify_core::process::tokio_command("git")
         .args(["diff", "--name-only"])
         .current_dir(cwd)
         .output()
@@ -1673,7 +1673,7 @@ async fn list_user_repos(AuthUser(_u): AuthUser) -> Result<Json<Value>, ApiError
     };
     let proc = tokio::time::timeout(
         std::time::Duration::from_secs(15),
-        tokio::process::Command::new(&gh)
+        fleetify_core::process::tokio_command(&gh)
             .args([
                 "api",
                 "user/repos?affiliation=owner,collaborator,organization_member&sort=updated&per_page=100",
@@ -1889,7 +1889,7 @@ mod tests {
         let repo = tmp.path().join("repo");
         std::fs::create_dir_all(&repo).unwrap();
         let run = |args: &[&str]| {
-            std::process::Command::new("git")
+            fleetify_core::process::command("git")
                 .args(args)
                 .current_dir(&repo)
                 .output()

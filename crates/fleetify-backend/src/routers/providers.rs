@@ -10,9 +10,9 @@ use std::time::{Duration, Instant};
 use axum::extract::{Path, Query, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use fleetify_core::process::tokio_command;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tokio::process::Command;
 use tokio::sync::RwLock;
 
 use crate::providers::catalog::ExpiryUnit;
@@ -411,11 +411,11 @@ async fn discover_opencode_models() -> ModelList {
     // can't exec a `.cmd` directly).
     let lower = bin.to_ascii_lowercase();
     let mut cmd = if cfg!(windows) && (lower.ends_with(".cmd") || lower.ends_with(".bat")) {
-        let mut c = Command::new("cmd");
+        let mut c = tokio_command("cmd");
         c.arg("/C").arg(&bin).arg("models");
         c
     } else {
-        let mut c = Command::new(&bin);
+        let mut c = tokio_command(&bin);
         c.arg("models");
         c
     };
@@ -1523,7 +1523,7 @@ async fn working_python_path() -> Option<String> {
         let Some(path) = candidate else { continue };
         // Verify the candidate actually runs — the Store stub on Windows
         // passes `which` but exits 9009 when there is no real interpreter.
-        let ok = tokio::process::Command::new(&path)
+        let ok = tokio_command(&path)
             .arg("--version")
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -1555,7 +1555,7 @@ pub async fn python_module_installed(module: &str) -> PythonProbe {
     };
     let installed = tokio::time::timeout(
         std::time::Duration::from_secs(5),
-        tokio::process::Command::new(&py)
+        tokio_command(&py)
             .args(["-c", &format!("import {module}")])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -1585,12 +1585,12 @@ async fn cli_path(bin: &str) -> Option<String> {
         //    when `--version` fails (some pre-release builds don't
         //    implement it) we still report the path — the user sees
         //    "installed" instead of a misleading "not installed".
-        let _ = Command::new(&p).arg("--version").output().await;
+        let _ = tokio_command(&p).arg("--version").output().await;
         return Some(p.to_string_lossy().into_owned());
     }
     // 3. Last-ditch Unix fallback: bare-name spawn (which might fail
     //    if `which` itself isn't on PATH but the binary still is).
-    let out = Command::new(bin).arg("--version").output().await.ok()?;
+    let out = tokio_command(bin).arg("--version").output().await.ok()?;
     if out.status.success() {
         Some(bin.to_string())
     } else {
@@ -1685,7 +1685,7 @@ async fn check_antigravity_sdk_cli() -> Value {
     // "Not installed" than block the Settings → Agents tile.
     let installed_pkg = tokio::time::timeout(
         std::time::Duration::from_secs(5),
-        tokio::process::Command::new(&py)
+        tokio_command(&py)
             .args(["-c", "import google.antigravity"])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -2619,7 +2619,7 @@ mod tests {
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         let py_works = ["python3", "python", "py"].iter().any(|name| {
-            std::process::Command::new(name)
+            fleetify_core::process::command(name)
                 .arg("--version")
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
@@ -2647,7 +2647,7 @@ mod tests {
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         let py_works = ["python3", "python", "py"].iter().any(|name| {
-            std::process::Command::new(name)
+            fleetify_core::process::command(name)
                 .arg("--version")
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())

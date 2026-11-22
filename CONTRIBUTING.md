@@ -101,6 +101,7 @@ actionlint                                              # the GitHub Actions wor
 The two steps marked advisory don't block a merge, and every other step does. Treat a red test as red all the same: check whether it also fails on `main`, and don't leave a new failure behind. CI also runs `cargo audit` and `npm audit --omit=dev`, both advisory.
 
 - CI runs the Rust checks on Windows, and clippy on Linux and macOS as well, so code behind one OS's `cfg`, such as `cfg(windows)`, gets compiled and linted even when your machine skips it.
+- Start child processes with `fleetify_core::process::command` or `tokio_command`, not `Command::new`: on Windows, they keep each one from opening a console window over the app. [`clippy.toml`](clippy.toml) disallows `Command::new`, so clippy fails on it.
 - The script tests read YAML with Python 3 and PyYAML: `sudo apt install python3-yaml` on Debian and Ubuntu, `pip install pyyaml` elsewhere. Without PyYAML, those checks skip on your machine; CI checks for it first (the `import yaml` step), so they can't skip there.
 - [actionlint](https://github.com/rhysd/actionlint) checks the workflows, and their shell scripts too when [ShellCheck](https://www.shellcheck.net) is installed. CI runs actionlint 1.7.12 with ShellCheck, so install both to see what CI sees.
 - Pull requests also need a [conventional title](#titles) and a [sign-off on every commit](#sign-off-your-commits-dco), each enforced by its own check. Editing a pull request's title reruns the title check.

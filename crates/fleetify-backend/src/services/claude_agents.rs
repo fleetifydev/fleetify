@@ -81,7 +81,7 @@ impl LiveAgent {
 /// reconciliation, never as "no background sessions". Conflating the two would
 /// let a transient hiccup archive every live row.
 pub async fn list_background_agents() -> Option<Vec<LiveAgent>> {
-    let fut = tokio::process::Command::new("claude")
+    let fut = fleetify_core::process::tokio_command("claude")
         .args(["agents", "--json"])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())

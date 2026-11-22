@@ -60,7 +60,7 @@ pub fn spawn_piped(
     cwd: Option<String>,
     env: Option<HashMap<String, String>>,
 ) -> Result<String, String> {
-    let mut cmd = std::process::Command::new(&program);
+    let mut cmd = fleetify_core::process::command(&program);
     cmd.args(&args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())

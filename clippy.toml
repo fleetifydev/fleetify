@@ -1,10 +1,10 @@
 # Every crate in the workspace reads this file.
 
-# The `open` crate's launchers go through `cmd /c start` on Windows, which
-# acts on `"`, `&` and `%` in what it opens. The app opens links and paths
-# only through fleetify_backend::open_external, which validates links and
-# launches through ShellExecuteExW on Windows.
 disallowed-methods = [
+  # The `open` crate's launchers go through `cmd /c start` on Windows, which
+  # acts on `"`, `&` and `%` in what it opens. The app opens links and paths
+  # only through fleetify_backend::open_external, which validates links and
+  # launches through ShellExecuteExW on Windows.
   { path = "open::that", reason = "use fleetify_backend::open_external::{open_url, open_path}" },
   { path = "open::with", reason = "use fleetify_backend::open_external::{open_url, open_path}" },
   { path = "open::that_in_background", reason = "use fleetify_backend::open_external::{open_url, open_path}" },
@@ -13,4 +13,9 @@ disallowed-methods = [
   { path = "open::with_detached", reason = "use fleetify_backend::open_external::{open_url, open_path}" },
   { path = "open::commands", reason = "use fleetify_backend::open_external::{open_url, open_path}" },
   { path = "open::with_command", reason = "use fleetify_backend::open_external::{open_url, open_path}" },
+  # On Windows, a console program started from the app (a GUI program with no
+  # console) gets a console window of its own unless it's started with
+  # CREATE_NO_WINDOW, which the constructors in fleetify_core::process pass.
+  { path = "std::process::Command::new", reason = "use fleetify_core::process::command, which opens no console window on Windows" },
+  { path = "tokio::process::Command::new", reason = "use fleetify_core::process::tokio_command, which opens no console window on Windows" },
 ]

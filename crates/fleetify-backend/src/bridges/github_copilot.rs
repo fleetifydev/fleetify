@@ -11,9 +11,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
+use fleetify_core::process::tokio_command;
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::{Child, Command};
+use tokio::process::Child;
 use tokio::sync::{mpsc, Mutex};
 
 use super::acp::AcpClient;
@@ -236,11 +237,11 @@ pub async fn list_models(project_path: &str) -> Result<Vec<CopilotModel>> {
     // npm ships a `.cmd` shim on Windows; run it via `cmd /C`. winget's `.exe`
     // and Unix binaries spawn directly.
     let mut cmd = if cfg!(windows) && bin.to_ascii_lowercase().ends_with(".cmd") {
-        let mut c = Command::new("cmd");
+        let mut c = tokio_command("cmd");
         c.arg("/C").arg(&bin);
         c
     } else {
-        Command::new(&bin)
+        tokio_command(&bin)
     };
     cmd.arg("--acp")
         .arg("--stdio")

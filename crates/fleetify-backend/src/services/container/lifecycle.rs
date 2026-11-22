@@ -314,7 +314,7 @@ async fn pull_image(image: &str, tx: Option<&SetupTx>) -> anyhow::Result<()> {
     use tokio::io::{AsyncBufReadExt, BufReader};
 
     report(tx, "pull", format!("Downloading {image}…"), Some(0.0));
-    let mut child = tokio::process::Command::new("docker")
+    let mut child = fleetify_core::process::tokio_command("docker")
         .args(["pull", image])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -432,7 +432,7 @@ async fn build_image(
         "Building the image from your Dockerfile…",
         None,
     );
-    let mut child = tokio::process::Command::new("docker")
+    let mut child = fleetify_core::process::tokio_command("docker")
         .args([
             "build",
             "-t",

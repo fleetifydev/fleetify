@@ -7,10 +7,10 @@
 //! is gone, and the response reports the removed (old) branch.
 
 use std::net::SocketAddr;
-use std::process::Command;
 
 use fleetify_backend::access::ApiToken;
 use fleetify_backend::ServeOptions;
+use fleetify_core::process::command;
 
 fn enable_noauth() {
     std::env::set_var("FLEETIFY_NOAUTH", "1");
@@ -20,7 +20,7 @@ fn enable_noauth() {
 }
 
 fn git_available() -> bool {
-    Command::new("git")
+    command("git")
         .arg("--version")
         .output()
         .map(|o| o.status.success())
@@ -31,7 +31,7 @@ fn git_available() -> bool {
 /// under an ancestor repo; a nested `.git` shadows it for queries inside).
 fn clean_repo(path: &str) {
     let run = |args: &[&str]| {
-        let _ = Command::new("git").args(args).current_dir(path).output();
+        let _ = command("git").args(args).current_dir(path).output();
     };
     run(&["init", "-b", "main"]);
     run(&["config", "user.email", "t@x"]);

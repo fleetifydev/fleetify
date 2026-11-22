@@ -324,7 +324,7 @@ async fn probe_stdio(name: &str, config: &Value) -> ProbeResult {
         })
         .unwrap_or_default();
 
-    let mut cmd = tokio::process::Command::new(command);
+    let mut cmd = fleetify_core::process::tokio_command(command);
     cmd.args(&args)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())

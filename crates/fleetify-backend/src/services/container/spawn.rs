@@ -236,7 +236,7 @@ pub async fn preflight(
 /// and the host's PATH is irrelevant to a process on the other side.
 pub fn command(req: &SpawnRequest) -> anyhow::Result<tokio::process::Command> {
     let argv = argv_for(req)?;
-    let mut cmd = tokio::process::Command::new(&argv[0]);
+    let mut cmd = fleetify_core::process::tokio_command(&argv[0]);
     cmd.args(&argv[1..])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());

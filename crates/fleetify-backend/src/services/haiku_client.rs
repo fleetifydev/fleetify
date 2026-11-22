@@ -67,7 +67,7 @@ pub async fn call_haiku(
         args.push(s.to_string());
     }
 
-    let mut cmd = tokio::process::Command::new(&bin);
+    let mut cmd = fleetify_core::process::tokio_command(&bin);
     cmd.args(&args)
         .current_dir(std::env::temp_dir())
         .stdin(std::process::Stdio::piped())
@@ -177,7 +177,7 @@ where
         args.push(s.to_string());
     }
 
-    let mut cmd = tokio::process::Command::new(&bin);
+    let mut cmd = fleetify_core::process::tokio_command(&bin);
     cmd.args(&args)
         .current_dir(std::env::temp_dir())
         .stdin(std::process::Stdio::piped())

@@ -25,8 +25,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
+use fleetify_core::process::tokio_command;
 use serde_json::{json, Value};
-use tokio::process::{Child, Command};
+use tokio::process::Child;
 use tokio::sync::{mpsc, Mutex};
 
 use super::acp::AcpClient;
@@ -131,7 +132,7 @@ pub async fn list_models(project_path: &str) -> Result<Vec<ModelInfo>> {
         .to_string_lossy()
         .into_owned();
 
-    let mut cmd = Command::new(&bin);
+    let mut cmd = tokio_command(&bin);
     cmd.arg("agent")
         .arg("stdio")
         .current_dir(&cwd)

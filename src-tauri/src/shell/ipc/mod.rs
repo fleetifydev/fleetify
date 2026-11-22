@@ -321,7 +321,7 @@ fn reveal_in_file_manager(path: &std::path::Path) -> Result<(), String> {
         // successful /select,<path> reveal — quirky but documented.
         // Treat spawn success as the success signal; ignore status.
         let arg = format!("/select,{}", path.display());
-        std::process::Command::new("explorer.exe")
+        fleetify_core::process::command("explorer.exe")
             .arg(arg)
             .spawn()
             .map(|_| ())
@@ -329,7 +329,7 @@ fn reveal_in_file_manager(path: &std::path::Path) -> Result<(), String> {
     }
     #[cfg(target_os = "macos")]
     {
-        std::process::Command::new("open")
+        fleetify_core::process::command("open")
             .arg("-R")
             .arg(path)
             .spawn()
@@ -343,7 +343,7 @@ fn reveal_in_file_manager(path: &std::path::Path) -> Result<(), String> {
         // ≥4.18) registers it. The `array:string` payload is a list of
         // file URIs to select within their parent dirs.
         let uri = format!("file://{}", path.display());
-        let dbus = std::process::Command::new("dbus-send")
+        let dbus = fleetify_core::process::command("dbus-send")
             .args([
                 "--session",
                 "--print-reply",
@@ -440,7 +440,7 @@ pub async fn open_in_editor(editor_id: String, path: String) -> serde_json::Valu
             return serde_json::json!({ "ok": false, "error": format!("{bin} not found: {e}") })
         }
     };
-    match std::process::Command::new(exe).arg(&target).spawn() {
+    match fleetify_core::process::command(exe).arg(&target).spawn() {
         Ok(_) => serde_json::json!({ "ok": true }),
         Err(e) => serde_json::json!({ "ok": false, "error": format!("launch {bin}: {e}") }),
     }
@@ -2330,7 +2330,9 @@ pub async fn git_unwatch_head(key: String) -> serde_json::Value {
 pub async fn gh_auth_login_launch() -> serde_json::Value {
     let cmdline = "gh auth login --web --hostname github.com --git-protocol https";
     let spawn_result = if cfg!(windows) {
-        tokio::process::Command::new("cmd")
+        // `start` gives the inner `cmd` a new console, window included; only
+        // this outer `cmd`, which exits at once, runs without one.
+        fleetify_core::process::tokio_command("cmd")
             .args([
                 "/c",
                 "start",
@@ -2341,7 +2343,7 @@ pub async fn gh_auth_login_launch() -> serde_json::Value {
             ])
             .spawn()
     } else if cfg!(target_os = "macos") {
-        tokio::process::Command::new("osascript")
+        fleetify_core::process::tokio_command("osascript")
             .args([
                 "-e",
                 &format!("tell application \"Terminal\" to do script \"{cmdline}\""),
@@ -2349,11 +2351,11 @@ pub async fn gh_auth_login_launch() -> serde_json::Value {
             .spawn()
     } else {
         // Best-effort Linux: try x-terminal-emulator, then xterm.
-        tokio::process::Command::new("x-terminal-emulator")
+        fleetify_core::process::tokio_command("x-terminal-emulator")
             .args(["-e", "bash", "-c", &format!("{cmdline}; exec bash")])
             .spawn()
             .or_else(|_| {
-                tokio::process::Command::new("xterm")
+                fleetify_core::process::tokio_command("xterm")
                     .args(["-e", "bash", "-c", &format!("{cmdline}; exec bash")])
                     .spawn()
             })
@@ -2758,7 +2760,7 @@ pub async fn shell_install_provider(tool_key: String) -> serde_json::Value {
                 "error": "No Python interpreter found. Install Python 3.10+ first, then click Install again."
             });
         };
-        let res = tokio::process::Command::new(&py)
+        let res = fleetify_core::process::tokio_command(&py)
             .args([
                 "-m",
                 "pip",
@@ -2790,7 +2792,7 @@ pub async fn shell_install_provider(tool_key: String) -> serde_json::Value {
     // works for it without an npm package.
     if tool_key == "antigravity-cli" {
         let res = if cfg!(windows) {
-            tokio::process::Command::new("powershell")
+            fleetify_core::process::tokio_command("powershell")
                 .args([
                     "-NoProfile",
                     "-ExecutionPolicy",
@@ -2801,7 +2803,7 @@ pub async fn shell_install_provider(tool_key: String) -> serde_json::Value {
                 .output()
                 .await
         } else {
-            tokio::process::Command::new("sh")
+            fleetify_core::process::tokio_command("sh")
                 .args([
                     "-c",
                     "curl -fsSL https://antigravity.google/cli/install.sh | bash",
@@ -2830,7 +2832,7 @@ pub async fn shell_install_provider(tool_key: String) -> serde_json::Value {
     // so the Install button and the Settings-displayed command agree.
     if tool_key == "cursor-cli" {
         let res = if cfg!(windows) {
-            tokio::process::Command::new("powershell")
+            fleetify_core::process::tokio_command("powershell")
                 .args([
                     "-NoProfile",
                     "-ExecutionPolicy",
@@ -2841,7 +2843,7 @@ pub async fn shell_install_provider(tool_key: String) -> serde_json::Value {
                 .output()
                 .await
         } else {
-            tokio::process::Command::new("sh")
+            fleetify_core::process::tokio_command("sh")
                 .args(["-c", "curl https://cursor.com/install -fsS | bash"])
                 .output()
                 .await
@@ -2853,7 +2855,7 @@ pub async fn shell_install_provider(tool_key: String) -> serde_json::Value {
     // Unix). Mirrors the catalog's hermes `install_hints`.
     if tool_key == "hermes-agent" {
         let res = if cfg!(windows) {
-            tokio::process::Command::new("powershell")
+            fleetify_core::process::tokio_command("powershell")
                 .args([
                     "-NoProfile",
                     "-ExecutionPolicy",
@@ -2864,7 +2866,7 @@ pub async fn shell_install_provider(tool_key: String) -> serde_json::Value {
                 .output()
                 .await
         } else {
-            tokio::process::Command::new("sh")
+            fleetify_core::process::tokio_command("sh")
                 .args([
                     "-c",
                     "curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash",
@@ -2887,7 +2889,7 @@ pub async fn shell_install_provider(tool_key: String) -> serde_json::Value {
     // Windows resolves `npm.cmd`; Unix resolves `npm` (no shell needed —
     // tokio::process honors PATHEXT on Windows for explicit `.cmd`).
     let bin = if cfg!(windows) { "npm.cmd" } else { "npm" };
-    let res = tokio::process::Command::new(bin)
+    let res = fleetify_core::process::tokio_command(bin)
         .args(["install", "--global", pkg])
         .output()
         .await;
@@ -2911,7 +2913,7 @@ pub async fn shell_install_provider(tool_key: String) -> serde_json::Value {
 pub async fn shell_install_ollama() -> serde_json::Value {
     let download_url = "https://ollama.com/download";
     let res = if cfg!(windows) {
-        tokio::process::Command::new("powershell")
+        fleetify_core::process::tokio_command("powershell")
             .args([
                 "-NoProfile",
                 "-ExecutionPolicy",
@@ -2922,7 +2924,7 @@ pub async fn shell_install_ollama() -> serde_json::Value {
             .output()
             .await
     } else {
-        tokio::process::Command::new("sh")
+        fleetify_core::process::tokio_command("sh")
             .args(["-c", "curl -fsSL https://ollama.com/install.sh | sh"])
             .output()
             .await
@@ -2959,7 +2961,9 @@ pub async fn shell_check_python_runtime() -> serde_json::Value {
     // real interpreter without an interactive install dialog).
     let res = tokio::time::timeout(
         std::time::Duration::from_secs(3),
-        tokio::process::Command::new(&py).arg("--version").output(),
+        fleetify_core::process::tokio_command(&py)
+            .arg("--version")
+            .output(),
     )
     .await;
     let version: Option<String> = match res {

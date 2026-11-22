@@ -8,6 +8,13 @@
 //!   FLEETIFY_PROJECT_PATH — root dir for save_asset writes
 //!   FLEETIFY_SESSION_ID   — informational, not used for routing here
 
+// Agent CLIs start this server with its standard streams piped, and not all of
+// them stop Windows from opening a console window for a console program. A
+// GUI-subsystem program gets no console, and this one needs none: it uses only
+// the standard streams it inherits (Rust reads a missing one as end of input
+// and drops what is written to it).
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 use std::io::Write as _;
 use std::path::PathBuf;
 use std::time::Duration;

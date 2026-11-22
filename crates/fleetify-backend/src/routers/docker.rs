@@ -50,7 +50,7 @@ fn docker_path() -> Option<std::path::PathBuf> {
 pub(crate) async fn run_docker(cmd: &[&str], timeout_secs: u64) -> (i32, String, String) {
     let started = std::time::Instant::now();
     let logged = sanitize_docker_argv(cmd);
-    let child = match tokio::process::Command::new("docker")
+    let child = match fleetify_core::process::tokio_command("docker")
         .args(cmd)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())

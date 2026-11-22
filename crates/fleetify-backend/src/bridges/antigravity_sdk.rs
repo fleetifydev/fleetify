@@ -352,7 +352,7 @@ impl AntigravitySdkBridge {
                 "system_instructions": system_instructions,
             });
 
-            let mut command = tokio::process::Command::new(&python_path);
+            let mut command = fleetify_core::process::tokio_command(&python_path);
             command
                 .arg(&script_path)
                 .current_dir(&agent_cwd)

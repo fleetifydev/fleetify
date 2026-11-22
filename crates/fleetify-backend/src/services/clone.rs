@@ -90,7 +90,7 @@ pub async fn git_cmd(
     cwd: Option<&Path>,
     timeout_secs: u64,
 ) -> (i32, String, String) {
-    let mut cmd = tokio::process::Command::new("git");
+    let mut cmd = fleetify_core::process::tokio_command("git");
     cmd.args(args);
     if let Some(c) = cwd {
         cmd.current_dir(c);
@@ -270,7 +270,7 @@ pub async fn check_accessible(url: &str) -> Result<(), CloneError> {
     if url.is_empty() {
         return Err(CloneError::Failed("Empty URL".into()));
     }
-    let mut cmd = tokio::process::Command::new("git");
+    let mut cmd = fleetify_core::process::tokio_command("git");
     cmd.env("GIT_TERMINAL_PROMPT", "0");
     cmd.args(["ls-remote", url]);
     cmd.stdout(std::process::Stdio::piped());
@@ -348,7 +348,7 @@ pub async fn list_remote_branches(url: &str) -> Result<RemoteBranches, CloneErro
         return Err(CloneError::Failed("Empty URL".into()));
     }
     let auth_url = inject_github_token(url);
-    let mut cmd = tokio::process::Command::new("git");
+    let mut cmd = fleetify_core::process::tokio_command("git");
     cmd.env("GIT_TERMINAL_PROMPT", "0");
     cmd.args([
         "-c",

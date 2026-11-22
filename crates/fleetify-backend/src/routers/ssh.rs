@@ -120,7 +120,7 @@ fn build_ssh_args(t: &SshTarget, home: &Path) -> Vec<String> {
 /// `timeout_secs` defaults to 8s; on timeout returns 124, "",
 /// "Timed out while contacting the host." (faithful with Python).
 async fn run_ssh_cmd(cmd: &[String], timeout_secs: u64) -> (i32, String, String) {
-    let child = match tokio::process::Command::new("ssh")
+    let child = match fleetify_core::process::tokio_command("ssh")
         .args(cmd)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
