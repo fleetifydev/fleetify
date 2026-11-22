@@ -16,7 +16,9 @@
 #
 #   macOS  Fleetify.app, from the app archive for this Mac (Apple silicon or
 #          Intel), into --dir: by default /Applications when you can write to
-#          it, else ~/Applications. An earlier Fleetify.app is replaced.
+#          it, else ~/Applications. An earlier Fleetify.app is replaced, but
+#          not while Fleetify runs from it: closing Fleetify's window keeps
+#          it running, so the script stops and asks you to quit it first.
 #   Linux  the AppImage, as --dir/fleetify (by default ~/.local/bin), with a
 #          menu entry, fleetify.desktop, and the AppImage's own icon, under
 #          $XDG_DATA_HOME (by default ~/.local/share). With --deb or --rpm, the
@@ -29,7 +31,7 @@
 # install. Each step is printed, prefixed "fleetify-install:".
 #
 # Exit codes: 0 installed (or downloaded); 1 failed, with nothing installed
-# when the download didn't match SHA256SUMS; 2 usage.
+# when the download didn't match SHA256SUMS or Fleetify was running; 2 usage.
 
 # All of it is one { } group, which sh reads whole before it runs any of it:
 # cut short anywhere, as by a pipe that breaks off, it is a syntax error, and
@@ -118,6 +120,47 @@ desktop_arg() {
   *[!A-Za-z0-9_./+@,-]*) printf '"%s"' "$(printf '%s' "$1" | sed -e 's/[\\"`$]/\\&/g' -e 's/\\/\\\\/g' -e 's/%/%%/g')" ;;
   *) printf '%s' "$1" ;;
   esac
+}
+
+# $1 as an extended regular expression that matches just it: each character
+# that means something there gets a backslash.
+regex_literal() {
+  printf '%s' "$1" | sed 's/[][\\.^$*+?(){}|]/\\&/g'
+}
+
+# Stop when a Fleetify started from the Fleetify.app in the folder $1 is
+# running. With its window closed, Fleetify keeps running, in the Dock, and
+# replacing the app would pull its files away under it. pgrep -f matches a
+# regular expression against every process's command line, whoever runs it;
+# the folder's physical path counts too, when a link makes it differ, as an
+# app opened from Finder runs by that one. Nothing runs from a folder that
+# isn't there yet, and without pgrep, which every macOS Fleetify supports
+# has, there is nothing to check with.
+stop_if_running() {
+  [ -d "$1" ] || return 0
+  command -v pgrep >/dev/null 2>&1 || return 0
+  logical=$(CDPATH='' cd -- "$1" && pwd) || return 0
+  physical=$(CDPATH='' cd -- "$1" && pwd -P) || physical=$logical
+  for folder in "$logical" "$physical"; do
+    if pgrep -f "$(regex_literal "$folder/Fleetify.app")/Contents/MacOS/" >/dev/null 2>&1; then
+      die "Fleetify is running from $folder/Fleetify.app: quit it first (Fleetify > Quit Fleetify, or Command-Q), then run this again. Closing its window keeps it running."
+    fi
+    [ "$physical" != "$logical" ] || break
+  done
+}
+
+# The folder Fleetify.app goes into, as apps_dir: --dir, else /Applications
+# when you can write to it, else ~/Applications.
+choose_apps_dir() {
+  apps_dir=$dir
+  if [ -z "$apps_dir" ]; then
+    if [ -w /Applications ]; then
+      apps_dir=/Applications
+    else
+      [ -n "${HOME:-}" ] || die "HOME isn't set: give --dir"
+      apps_dir=$HOME/Applications
+    fi
+  fi
 }
 
 # Put back an earlier Fleetify.app that an unfinished replacement moved
@@ -302,16 +345,8 @@ install_appimage() {
   esac
 }
 
+# Install the checked app archive into apps_dir (choose_apps_dir).
 install_app() {
-  apps_dir=$dir
-  if [ -z "$apps_dir" ]; then
-    if [ -w /Applications ]; then
-      apps_dir=/Applications
-    else
-      [ -n "${HOME:-}" ] || die "HOME isn't set: give --dir"
-      apps_dir=$HOME/Applications
-    fi
-  fi
   mkdir -p "$apps_dir" || die "can't make $apps_dir"
   apps_dir=$(CDPATH='' cd -- "$apps_dir" && pwd) || die "can't use $apps_dir"
   unpacked=$tmp/unpacked
@@ -321,6 +356,9 @@ install_app() {
   target=$apps_dir/Fleetify.app
   make_stage "$apps_dir"
   mv "$unpacked/Fleetify.app" "$stage/Fleetify.app" || die "can't write to $apps_dir"
+  # Again, just before the swap: Fleetify may have started during the
+  # download.
+  stop_if_running "$apps_dir"
   if [ -e "$target" ] || [ -L "$target" ]; then
     old=$stage/Fleetify.app.old
     mv "$target" "$old" || die "can't move the earlier $target aside"
@@ -441,6 +479,12 @@ main() {
     sum_tool=shasum
   else
     die "sha256sum or shasum is needed to check the download"
+  fi
+  # Before anything is downloaded: a Fleetify running from the app this
+  # would replace stops the install.
+  if [ "$kind" = app ] && [ -z "$download_only" ]; then
+    choose_apps_dir
+    stop_if_running "$apps_dir"
   fi
 
   trap cleanup EXIT

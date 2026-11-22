@@ -20,7 +20,7 @@ The install scripts install the latest release, or the one you name. Each downlo
 curl -fsSL https://fleetify.dev/install.sh | sh
 ```
 
-On macOS it installs Fleetify.app for your Mac, Apple silicon or Intel, into `/Applications`, or into `~/Applications` if you can't write to `/Applications`, replacing an earlier copy. On Linux it installs the AppImage as `~/.local/bin/fleetify`, with a menu entry; the AppImage needs FUSE 2, as [Linux](#linux) explains. Options go after `sh -s --`:
+On macOS it installs Fleetify.app for your Mac, Apple silicon or Intel, into `/Applications`, or into `~/Applications` if you can't write to `/Applications`, replacing an earlier copy. Quit Fleetify first, with **Fleetify → Quit Fleetify** or ⌘Q: closing its window keeps it running, and the script stops while Fleetify runs from the copy it would replace. On Linux it installs the AppImage as `~/.local/bin/fleetify`, with a menu entry; the AppImage needs FUSE 2, as [Linux](#linux) explains. Options go after `sh -s --`:
 
 ```bash
 curl -fsSL https://fleetify.dev/install.sh | sh -s -- --deb             # the .deb, through sudo apt-get

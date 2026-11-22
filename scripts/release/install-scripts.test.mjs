@@ -13,8 +13,9 @@
  * SHA256SUMS.
  *
  * install.sh runs under /bin/sh with a PATH of its own: stand-ins for uname
- * and id, which answer as a test asks, and for sudo, apt-get, dnf and zypper,
- * which log each call and run nothing; and links to the system tools TOOLS
+ * and id, which answer as a test asks, for sudo, apt-get, dnf and zypper,
+ * which log each call and run nothing, and on a Mac for pgrep, which answers
+ * from a made-up process table; and links to the system tools TOOLS
  * lists. So it runs the same on any machine, a package manager is there only
  * when a test puts it there, and a tool the script starts to need fails here
  * until TOOLS lists it. Its macOS branch runs here with uname saying Darwin,
@@ -336,8 +337,31 @@ fi
 exit "\${STUB_EXIT:-0}"`;
 
 /**
+ * pgrep, as a Mac has it, over a made-up process table: STUB_PROCESSES, one
+ * command line a line. It logs each call to $STUB_LOG.pgrep and, for
+ * -f PATTERN, exits 0 when a command line matches PATTERN as an extended
+ * regular expression, as pgrep -f does, and 1 when none does.
+ */
+const PGREP = `printf 'pgrep %s\\n' "$*" >> "$STUB_LOG.pgrep"
+[ "$1" = -f ] || exit 2
+printf '%s\\n' "\${STUB_PROCESSES:-}" | grep -Eq -- "$2"`;
+
+/**
+ * The same, seeing the processes only once the install has staged the new
+ * app in $STUB_APPS, the folder Fleetify.app goes into: as if Fleetify
+ * started while the download ran.
+ */
+const PGREP_ONCE_STAGED = `staged=
+for stage in "$STUB_APPS"/.fleetify.*; do [ -d "$stage" ] && staged=1; done
+printf 'pgrep %s\\n' "$*" >> "$STUB_LOG.pgrep"
+[ -n "$staged" ] || exit 1
+[ "$1" = -f ] || exit 2
+printf '%s\\n' "\${STUB_PROCESSES:-}" | grep -Eq -- "$2"`;
+
+/**
  * A folder of stand-ins: uname for `platform` (none when null), id, sudo, the
- * package managers in `managers`, and `extra`, { name: script body }.
+ * package managers in `managers`, on a Mac pgrep (PGREP), and `extra`,
+ * { name: script body }, where a null body leaves that stand-in out.
  */
 function stubFolder({ platform, managers, extra = {} }) {
   const dir = folder("stubs");
@@ -345,7 +369,8 @@ function stubFolder({ platform, managers, extra = {} }) {
   if (platform !== null) write("uname", `case "$1" in -m) echo ${platform.m} ;; *) echo ${platform.s} ;; esac`);
   write("id", 'if [ "$1" = -u ]; then echo "${STUB_UID:-1000}"; else exit 1; fi');
   for (const name of ["sudo", ...managers]) write(name, RECORD);
-  for (const [name, body] of Object.entries(extra)) write(name, body);
+  const others = platform?.s === "Darwin" ? { pgrep: PGREP, ...extra } : extra;
+  for (const [name, body] of Object.entries(others)) if (body !== null) write(name, body);
   return dir;
 }
 
@@ -390,9 +415,10 @@ const lines = (file) => (existsSync(file) ? readFileSync(file, "utf8").split("\n
 /**
  * Run install.sh with `args` in `ws` (from ws.work unless `cwd`), against
  * `release`: { status, stdout, stderr, output, calls, dirs, appimageRuns,
- * seen }. calls are the stand-ins' log lines; dirs the `ls -ld` lines of the
- * folders of the files they were handed, copied into the folder `seen`;
- * appimageRuns the fake AppImage's argument lists.
+ * pgrep, seen }. calls are the stand-ins' log lines; dirs the `ls -ld` lines
+ * of the folders of the files they were handed, copied into the folder
+ * `seen`; appimageRuns the fake AppImage's argument lists; pgrep the pgrep
+ * stand-in's calls.
  */
 async function installSh(args, { ws, release, platform = PLATFORMS.linux, managers = [], stubs: extra = {}, uid, env = {}, cwd = ws.work, noIcon = false, stuck = false, command = [INSTALL_SH, ...args] }) {
   const stubs = stubFolder({ platform, managers, extra });
@@ -416,7 +442,7 @@ async function installSh(args, { ws, release, platform = PLATFORMS.linux, manage
       ...env,
     },
   });
-  return { ...result, calls: lines(log), dirs: lines(`${log}.dirs`), moves: lines(`${log}.mv`), appimageRuns: lines(appimageLog), seen };
+  return { ...result, calls: lines(log), dirs: lines(`${log}.dirs`), moves: lines(`${log}.mv`), appimageRuns: lines(appimageLog), pgrep: lines(`${log}.pgrep`), seen };
 }
 
 /** Every file, folder and link under `dir`, with its mode, size, mtime and contents' hash: what a failed run must leave as it was. */
@@ -1014,6 +1040,114 @@ describe("install.sh on macOS, with uname saying Darwin", { skip: SKIP_MAC_STUB 
     assert.deepEqual(readdirSync(ws.tmp), []);
   });
 
+  // Closing Fleetify's window keeps it running, in the Dock: replacing the
+  // app under it would pull its files away.
+  test("a Fleetify running from the app it would replace: exit 1 before anything is downloaded, saying to quit it first, and the earlier app as it was", async () => {
+    const ws = workspace();
+    const apps = join(ws.root, "Applications");
+    const target = join(apps, "Fleetify.app");
+    mkdirSync(join(target, "Contents"), { recursive: true });
+    writeFileSync(join(target, "Contents", "earlier.txt"), "the earlier version\n");
+    const before = snapshot(apps);
+    GOOD.mark();
+    const processes = ["/sbin/launchd", `${target}/Contents/MacOS/${APP_BINARY}`, "/usr/libexec/trustd"].join("\n");
+    const run = await installSh(["--dir", apps], { ws, release: GOOD, platform: PLATFORMS.macArm, env: { STUB_PROCESSES: processes } });
+    assert.equal(run.status, 1, run.output);
+    assert.ok(
+      run.stderr.includes(
+        `fleetify-install: error: Fleetify is running from ${target}: quit it first (Fleetify > Quit Fleetify, or Command-Q), then run this again. Closing its window keeps it running.\n`,
+      ),
+      run.stderr,
+    );
+    assert.deepEqual(GOOD.since(), [], "it downloaded something first");
+    assert.equal(run.pgrep[0], `pgrep -f ${escapeRe(target)}/Contents/MacOS/`);
+    assert.deepEqual(snapshot(apps), before);
+    assert.deepEqual(readdirSync(ws.tmp), []);
+  });
+
+  test("a Fleetify running from another copy, or a program in another folder, doesn't stop it", async () => {
+    const ws = workspace();
+    const apps = join(ws.root, "Applications");
+    mkdirSync(join(apps, "Fleetify.app", "Contents"), { recursive: true });
+    const processes = [
+      `/Volumes/Fleetify/Fleetify.app/Contents/MacOS/${APP_BINARY}`,
+      `${join(ws.root, "Elsewhere")}/Fleetify.app/Contents/MacOS/${APP_BINARY}`,
+      `${apps}/Fleetify.app.old/Contents/MacOS/${APP_BINARY}`,
+    ].join("\n");
+    const run = await installSh(["--dir", apps], { ws, release: GOOD, platform: PLATFORMS.macArm, env: { STUB_PROCESSES: processes } });
+    assert.equal(run.status, 0, run.output);
+    assert.equal(archOf(join(apps, "Fleetify.app")), "aarch64");
+    // Asked before the download, and again before the swap.
+    assert.ok(run.pgrep.length >= 2, run.pgrep.join("\n"));
+    assert.deepEqual(readdirSync(apps), ["Fleetify.app"]);
+  });
+
+  test("a folder whose name means something in a regular expression is matched as it is", async () => {
+    const ws = workspace();
+    const apps = join(ws.root, "A.p+s (1)");
+    mkdirSync(join(apps, "Fleetify.app", "Contents"), { recursive: true });
+    // What the name matches as a pattern, though it is another folder.
+    const lookalike = `${join(ws.root, "Axpps 1")}/Fleetify.app/Contents/MacOS/${APP_BINARY}`;
+    const other = await installSh(["--dir", apps], { ws, release: GOOD, platform: PLATFORMS.macArm, env: { STUB_PROCESSES: lookalike } });
+    assert.equal(other.status, 0, other.output);
+    const running = `${apps}/Fleetify.app/Contents/MacOS/${APP_BINARY}`;
+    const run = await installSh(["--dir", apps], { ws, release: GOOD, platform: PLATFORMS.macArm, env: { STUB_PROCESSES: running } });
+    assert.equal(run.status, 1, run.output);
+    assert.ok(run.stderr.includes(`fleetify-install: error: Fleetify is running from ${apps}/Fleetify.app: quit it first`), run.stderr);
+  });
+
+  test("a Fleetify that starts during the download: exit 1 just before the swap, with the earlier app as it was and nothing staged left", async () => {
+    const ws = workspace();
+    const apps = join(ws.root, "Applications");
+    const target = join(apps, "Fleetify.app");
+    mkdirSync(join(target, "Contents"), { recursive: true });
+    writeFileSync(join(target, "Contents", "earlier.txt"), "the earlier version\n");
+    const before = contents(apps);
+    GOOD.mark();
+    const run = await installSh(["--dir", apps], {
+      ws,
+      release: GOOD,
+      platform: PLATFORMS.macArm,
+      stubs: { pgrep: PGREP_ONCE_STAGED },
+      env: { STUB_APPS: apps, STUB_PROCESSES: `${target}/Contents/MacOS/${APP_BINARY}` },
+    });
+    assert.equal(run.status, 1, run.output);
+    assert.ok(run.stderr.includes(`fleetify-install: error: Fleetify is running from ${target}: quit it first`), run.stderr);
+    assert.ok(GOOD.since().includes(`/download/v${V}/${ASSETS.macArm}`), "the check before the download stopped it");
+    assert.deepEqual(contents(apps), before);
+    assert.deepEqual(readdirSync(apps), ["Fleetify.app"]);
+    assert.deepEqual(readdirSync(ws.tmp), []);
+  });
+
+  test("--download-only replaces nothing, so it doesn't ask whether Fleetify runs", async () => {
+    const ws = workspace();
+    const run = await installSh(["--download-only"], {
+      ws,
+      release: GOOD,
+      platform: PLATFORMS.macArm,
+      env: { STUB_PROCESSES: `/Applications/Fleetify.app/Contents/MacOS/${APP_BINARY}\n${ws.home}/Applications/Fleetify.app/Contents/MacOS/${APP_BINARY}` },
+    });
+    assert.equal(run.status, 0, run.output);
+    assert.ok(existsSync(join(ws.work, ASSETS.macArm)));
+    assert.deepEqual(run.pgrep, []);
+  });
+
+  test("without pgrep there is nothing to check with, and it installs as before", async () => {
+    const ws = workspace();
+    const apps = join(ws.root, "Applications");
+    mkdirSync(join(apps, "Fleetify.app", "Contents"), { recursive: true });
+    const run = await installSh(["--dir", apps], {
+      ws,
+      release: GOOD,
+      platform: PLATFORMS.macArm,
+      stubs: { pgrep: null },
+      env: { STUB_PROCESSES: `${apps}/Fleetify.app/Contents/MacOS/${APP_BINARY}` },
+    });
+    assert.equal(run.status, 0, run.output);
+    assert.equal(archOf(join(apps, "Fleetify.app")), "aarch64");
+    assert.deepEqual(run.pgrep, []);
+  });
+
   test(
     "without --dir: ~/Applications when /Applications can't be written to",
     { skip: (() => { try { accessSync("/Applications", constants.W_OK); return "/Applications can be written to here"; } catch { return false; } })() },
@@ -1031,8 +1165,8 @@ describe("install.sh on this Mac", { skip: process.platform !== "darwin" ? "runs
     const ws = workspace();
     const apps = join(ws.root, "Applications");
     GOOD.mark();
-    // uname and sysctl are the Mac's own.
-    for (const name of ["uname", "sysctl"]) {
+    // uname, sysctl and pgrep are the Mac's own.
+    for (const name of ["uname", "sysctl", "pgrep"]) {
       const path = which(name);
       if (path !== null && !existsSync(join(TOOLS_DIR, name))) symlinkSync(path, join(TOOLS_DIR, name));
     }
