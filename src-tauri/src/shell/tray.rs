@@ -56,6 +56,13 @@ mod notification_area {
     use tauri::menu::{MenuBuilder, MenuItem};
     use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
     use tauri::AppHandle;
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, GetLastError, ERROR_SUCCESS, HANDLE, WAIT_FAILED, WAIT_OBJECT_0,
+    };
+    use windows_sys::Win32::System::Registry::{
+        RegNotifyChangeKeyValue, REG_NOTIFY_CHANGE_LAST_SET,
+    };
+    use windows_sys::Win32::System::Threading::{CreateEventW, WaitForSingleObject, INFINITE};
     use winreg::enums::{HKEY_CURRENT_USER, KEY_NOTIFY, KEY_QUERY_VALUE};
     use winreg::RegKey;
 
@@ -148,46 +155,82 @@ mod notification_area {
         key?.get_value::<u32, _>(SYSTEM_USES_LIGHT_THEME).ok()
     }
 
-    /// Switches the icon's mark whenever the taskbar's theme changes. A
-    /// thread of its own waits on `key` for Windows to say that one of its
-    /// values changed: no polling, and it catches a taskbar-only change,
-    /// which the window's `ThemeChanged` (the apps' theme) doesn't. The
-    /// thread waits until the process ends; if waiting fails, the mark stays
-    /// as it is.
-    fn follow_taskbar_theme(app: AppHandle, key: RegKey, mut theme: Option<u32>) {
+    /// Switches the icon's mark whenever the taskbar's theme changes, from
+    /// `shown`, the theme of the mark it was built with. A thread of its own
+    /// waits on `key` for Windows to say that one of its values changed
+    /// ([`watch_taskbar_theme`]): no polling, and it catches a taskbar-only
+    /// change, which the window's `ThemeChanged` (the apps' theme) doesn't.
+    /// The thread waits until the process ends; once a call fails, it ends,
+    /// and the mark stays as it is.
+    fn follow_taskbar_theme(app: AppHandle, key: RegKey, shown: Option<u32>) {
         let watcher = std::thread::Builder::new()
             .name("tray-theme".into())
-            .spawn(move || loop {
-                if let Err(status) = wait_for_a_change(&key) {
-                    tracing::warn!(
-                        status,
-                        "can't follow the taskbar's theme any more; the tray icon keeps its mark"
-                    );
-                    return;
-                }
-                let now = system_uses_light_theme(Some(&key));
-                if tray_icon_png(now) != tray_icon_png(theme) {
-                    set_mark(&app, now);
-                }
-                theme = now;
+            .spawn(move || {
+                let error = match ChangeEvent::new() {
+                    Ok(event) => {
+                        let error = watch_taskbar_theme(&app, &key, &event, shown);
+                        // The key first: closing it ends the registration
+                        // that signals the event.
+                        drop(key);
+                        drop(event);
+                        error
+                    }
+                    Err(error) => error,
+                };
+                tracing::warn!(
+                    error,
+                    "can't follow the taskbar's theme any more; the tray icon keeps its mark"
+                );
             });
         if let Err(e) = watcher {
             tracing::warn!("can't follow the taskbar's theme; the tray icon keeps its mark: {e}");
         }
     }
 
-    /// Blocks until a value of `key` is set. Err holds the Win32 error.
-    fn wait_for_a_change(key: &RegKey) -> Result<(), u32> {
-        use windows_sys::Win32::Foundation::ERROR_SUCCESS;
-        use windows_sys::Win32::System::Registry::{
-            RegNotifyChangeKeyValue, REG_NOTIFY_CHANGE_LAST_SET,
-        };
-        // SAFETY: `key` is an open registry key with KEY_NOTIFY access, and
-        // it outlives the call. Without an event and with fAsynchronous
-        // FALSE, the call only blocks this thread until a value of the key
-        // (not of its subkeys) changes.
+    /// Keeps the icon's mark on the taskbar's theme until a call fails, and
+    /// returns that call's Win32 error. `shown` is the theme of the mark
+    /// the icon has.
+    ///
+    /// Each round registers for the next change to `key` first, then reads
+    /// the theme, then waits for `event`. Any change after the registration
+    /// signals the event, so the wait returns and the next round reads
+    /// again. Reading first and registering after would miss a change in
+    /// between: switching the theme writes AppsUseLightTheme and
+    /// SystemUsesLightTheme back to back, and the first write's wake-up
+    /// could read the old taskbar value and register only after the
+    /// second, leaving the wrong mark until the next switch.
+    fn watch_taskbar_theme(
+        app: &AppHandle,
+        key: &RegKey,
+        event: &ChangeEvent,
+        mut shown: Option<u32>,
+    ) -> u32 {
+        loop {
+            if let Err(error) = notify_on_change(key, event) {
+                return error;
+            }
+            let now = system_uses_light_theme(Some(key));
+            if tray_icon_png(now) != tray_icon_png(shown) {
+                set_mark(app, now);
+            }
+            shown = now;
+            if let Err(error) = event.wait() {
+                return error;
+            }
+        }
+    }
+
+    /// Asks Windows to signal `event` at the next change to a value of
+    /// `key` (not of its subkeys), and returns at once. Err holds the Win32
+    /// error.
+    fn notify_on_change(key: &RegKey, event: &ChangeEvent) -> Result<(), u32> {
+        // SAFETY: `key` is an open registry key with KEY_NOTIFY access and
+        // `event` an open event handle; the thread that watches keeps both
+        // until it ends, and it is the thread that registers. With
+        // fAsynchronous TRUE the call returns at once, and Windows signals
+        // the event at the key's next change, or when the key is closed.
         let status = unsafe {
-            RegNotifyChangeKeyValue(key.raw_handle(), 0, REG_NOTIFY_CHANGE_LAST_SET, 0, 0)
+            RegNotifyChangeKeyValue(key.raw_handle(), 0, REG_NOTIFY_CHANGE_LAST_SET, event.0, 1)
         };
         if status == ERROR_SUCCESS {
             Ok(())
@@ -196,7 +239,47 @@ mod notification_area {
         }
     }
 
-    /// Gives the icon the mark for `theme`.
+    /// An unnamed auto-reset event for RegNotifyChangeKeyValue to signal,
+    /// closed when dropped.
+    struct ChangeEvent(HANDLE);
+
+    impl ChangeEvent {
+        /// A new event, not signaled. Err holds the Win32 error.
+        fn new() -> Result<Self, u32> {
+            // SAFETY: no security attributes and no name, so no other
+            // process can open it. Auto-reset (bManualReset FALSE): a wait
+            // that returns resets it. Not signaled (bInitialState FALSE).
+            let handle = unsafe { CreateEventW(std::ptr::null(), 0, 0, std::ptr::null()) };
+            if handle == 0 {
+                // SAFETY: reads the error CreateEventW just set.
+                Err(unsafe { GetLastError() })
+            } else {
+                Ok(Self(handle))
+            }
+        }
+
+        /// Blocks until the event is signaled. Err holds the Win32 error.
+        fn wait(&self) -> Result<(), u32> {
+            // SAFETY: self.0 is an open event handle until drop.
+            match unsafe { WaitForSingleObject(self.0, INFINITE) } {
+                WAIT_OBJECT_0 => Ok(()),
+                // SAFETY: reads the error the failed wait just set.
+                WAIT_FAILED => Err(unsafe { GetLastError() }),
+                other => Err(other),
+            }
+        }
+    }
+
+    impl Drop for ChangeEvent {
+        fn drop(&mut self) {
+            // SAFETY: self.0 is the event handle this value owns, and only
+            // this closes it.
+            unsafe { CloseHandle(self.0) };
+        }
+    }
+
+    /// Gives the icon the mark for `theme`. From the watching thread too:
+    /// TrayIcon::set_icon runs the change on the main thread.
     fn set_mark(app: &AppHandle, theme: Option<u32>) {
         let Some(tray) = app.tray_by_id(TRAY_ID) else {
             return;
@@ -249,5 +332,39 @@ mod tests {
     #[test]
     fn the_two_marks_are_different_images() {
         assert_ne!(ICON_LIGHT_PNG, ICON_DARK_PNG);
+    }
+
+    #[test]
+    fn the_theme_watcher_registers_before_it_reads_and_waits_for_an_event() {
+        // Windows-only code, read as text so the check runs everywhere.
+        // Registered first, then read: a change between the two still
+        // signals the event, so the wait that follows returns and the next
+        // round reads again. Search strings built at run time, so this test
+        // never matches itself. Whitespace removed, so line wrapping
+        // doesn't matter.
+        let source = include_str!("tray.rs").replace("\r\n", "\n");
+        let end = source
+            .find(&format!("#[cfg(test)]\nmod {} {{", "tests"))
+            .unwrap_or(source.len());
+        let code: String = source[..end].split_whitespace().collect();
+        let watch = code
+            .find(&format!("fn{}(", "watch_taskbar_theme"))
+            .expect("tray.rs has watch_taskbar_theme");
+        let body = &code[watch..];
+        let register = body
+            .find(&format!("{}(key,event)", "notify_on_change"))
+            .expect("the watcher registers for the next change");
+        let read = body
+            .find(&format!("{}(Some(key))", "system_uses_light_theme"))
+            .expect("the watcher reads the theme");
+        let wait = body
+            .find(&format!("event.{}()", "wait"))
+            .expect("the watcher waits for the event");
+        assert!(register < read && read < wait, "register, read, then wait");
+        // Asynchronous registration, with the event: fAsynchronous TRUE.
+        assert!(code.contains(&format!(
+            "{}(key.raw_handle(),0,REG_NOTIFY_CHANGE_LAST_SET,event.0,1)",
+            "RegNotifyChangeKeyValue"
+        )));
     }
 }
