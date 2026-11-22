@@ -5,9 +5,18 @@ import { GeneralSection } from "../general-section";
 
 const KEEP_RUNNING = /keep fleetify running when you close the window/i;
 
+const WINDOWS_STAYS =
+  "Fleetify stays in the notification area, and your agents keep working. To quit, right-click the Fleetify icon at the right end of the taskbar (it may be under the ^ arrow) and choose Quit Fleetify.";
+const WINDOWS_NO_ICON =
+  "Fleetify couldn't add its notification-area icon this time, so closing the window quits it.";
+const MAC_STAYS =
+  "Fleetify stays in the Dock, and your agents keep working. To quit, press ⌘Q, or right-click its Dock icon and choose Quit.";
+
 /** The bridge on `platform` (`win32`, `darwin` or `linux`), with `saved` as
- *  fleet.config.json. setConfig stores what it is given, as config_set does. */
-function bridge(platform: string, saved: Record<string, unknown> = {}) {
+ *  fleet.config.json. setConfig stores what it is given, as config_set does.
+ *  windowCanKeepRunning answers `canKeepRunning`, as the shell does: false
+ *  on Windows when the notification-area icon couldn't be added. */
+function bridge(platform: string, saved: Record<string, unknown> = {}, canKeepRunning = true) {
   let stored = { ...saved };
   const api = {
     platform,
@@ -16,6 +25,7 @@ function bridge(platform: string, saved: Record<string, unknown> = {}) {
       stored = next;
       return { ok: true };
     }),
+    windowCanKeepRunning: vi.fn(async () => canKeepRunning),
     openFolderDialog: vi.fn(async () => null),
   };
   (window as unknown as { electronAPI: unknown }).electronAPI = api;
@@ -23,25 +33,42 @@ function bridge(platform: string, saved: Record<string, unknown> = {}) {
 }
 
 describe("WindowCard", () => {
-  it("on Windows, is on by default and says where Fleetify stays", async () => {
-    bridge("win32", { onboardingComplete: true });
+  it("on Windows, is on by default and says where Fleetify stays and how to quit it", async () => {
+    const { api } = bridge("win32", { onboardingComplete: true });
     render(<WindowCard />);
     const toggle = await screen.findByRole("switch", { name: KEEP_RUNNING });
     expect(toggle).toHaveAttribute("aria-checked", "true");
-    expect(
-      screen.getByText(
-        "Fleetify stays in the notification area, and your agents keep working. Quit from its icon there.",
-      ),
-    ).toBeInTheDocument();
+    expect(screen.getByText(WINDOWS_STAYS)).toBeInTheDocument();
+    expect(api.windowCanKeepRunning).toHaveBeenCalled();
   });
 
-  it("on macOS, says Fleetify stays in the Dock", async () => {
-    bridge("darwin");
+  // The shell hides the window only while its notification-area icon is
+  // there, so the row mustn't promise the notification area without it.
+  it("on Windows without the notification-area icon, says closing the window quits", async () => {
+    bridge("win32", {}, false);
+    render(<WindowCard />);
+    const toggle = await screen.findByRole("switch", { name: KEEP_RUNNING });
+    // Still the saved setting, for a launch that has the icon.
+    expect(toggle).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByText(WINDOWS_NO_ICON)).toBeInTheDocument();
+    expect(screen.queryByText(/stays in the notification area/)).toBeNull();
+  });
+
+  it("on Windows, keeps the usual description when the shell can't answer", async () => {
+    const { api } = bridge("win32");
+    api.windowCanKeepRunning.mockRejectedValue(new Error("tauri-ipc-unavailable"));
     render(<WindowCard />);
     expect(await screen.findByRole("switch", { name: KEEP_RUNNING })).toBeInTheDocument();
-    expect(
-      screen.getByText("Fleetify stays in the Dock, and your agents keep working. Quit with ⌘Q."),
-    ).toBeInTheDocument();
+    expect(screen.getByText(WINDOWS_STAYS)).toBeInTheDocument();
+  });
+
+  it("on macOS, says Fleetify stays in the Dock and how to quit it", async () => {
+    const { api } = bridge("darwin");
+    render(<WindowCard />);
+    expect(await screen.findByRole("switch", { name: KEEP_RUNNING })).toBeInTheDocument();
+    expect(screen.getByText(MAC_STAYS)).toBeInTheDocument();
+    // The Dock is always there: nothing to ask.
+    expect(api.windowCanKeepRunning).not.toHaveBeenCalled();
   });
 
   it("saves keepRunningOnClose=false when switched off, keeping the other settings", async () => {

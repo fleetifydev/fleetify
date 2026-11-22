@@ -39,6 +39,7 @@ permissions = [
   "allow-window-close",
   "allow-window-set-size",
   "allow-window-set-taskbar-icon",
+  "allow-window-can-keep-running",
   "allow-fs-read-directory",
   "allow-fs-read-file",
   "allow-fs-get-extension",

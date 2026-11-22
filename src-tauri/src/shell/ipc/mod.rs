@@ -1479,6 +1479,20 @@ pub async fn window_set_size(
 const ICON_LIGHT_PNG: &[u8] = include_bytes!("../../../icons/logo-mark-light.png");
 const ICON_DARK_PNG: &[u8] = include_bytes!("../../../icons/logo-mark-dark.png");
 
+/// Whether closing the main window keeps Fleetify running here, as the
+/// close handler decides it (shell::lifecycle::can_keep_running): on
+/// Windows only while the notification-area icon is there, on macOS
+/// always, on Linux never. Settings → General → Window says where Fleetify
+/// stays, or, when the icon couldn't be added, that closing the window
+/// quits.
+#[tauri::command]
+pub async fn window_can_keep_running() -> bool {
+    crate::shell::lifecycle::can_keep_running(
+        crate::shell::lifecycle::PLATFORM,
+        crate::shell::tray::ready(),
+    )
+}
+
 #[tauri::command]
 pub async fn window_set_taskbar_icon(app: tauri::AppHandle, variant: String) -> serde_json::Value {
     let bytes: &[u8] = match variant.as_str() {

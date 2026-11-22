@@ -165,6 +165,7 @@ pub fn run() {
             shell::ipc::window_close,
             shell::ipc::window_set_size,
             shell::ipc::window_set_taskbar_icon,
+            shell::ipc::window_can_keep_running,
             shell::ipc::fs_read_directory,
             shell::ipc::fs_read_file,
             shell::ipc::fs_get_extension,

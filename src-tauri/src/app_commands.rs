@@ -51,6 +51,7 @@ pub const APP_COMMANDS: &[&str] = &[
     "window_close",
     "window_set_size",
     "window_set_taskbar_icon",
+    "window_can_keep_running",
     "fs_read_directory",
     "fs_read_file",
     "fs_get_extension",

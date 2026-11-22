@@ -208,6 +208,11 @@ interface Window {
     setTaskbarIcon: (
       variant: "light" | "dark"
     ) => Promise<{ ok: boolean; variant?: string; error?: string }>;
+    /** Whether closing the window keeps Fleetify running here, as the
+     *  shell decides each close: on Windows only while the
+     *  notification-area icon is there, on macOS always, on Linux never.
+     *  Settings → General → Window. */
+    windowCanKeepRunning?: () => Promise<boolean>;
     setTrafficLightPosition: (x: number, y: number) => Promise<boolean>;
     minimizeWindow: () => Promise<boolean>;
     maximizeWindow: () => Promise<boolean>;

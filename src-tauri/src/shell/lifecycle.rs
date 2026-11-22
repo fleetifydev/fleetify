@@ -71,24 +71,32 @@ pub fn keep_running_from(cfg: &Value) -> bool {
         .unwrap_or(true)
 }
 
+/// Whether closing the main window can keep Fleetify running on `platform`:
+/// whether something would open a hidden window again, and quit. On Windows
+/// only while the notification-area icon is there (`tray_ready`); on macOS
+/// always, as the Dock does both; on Linux never. Settings → General →
+/// Window asks it (shell::ipc::window_can_keep_running), to say where
+/// Fleetify stays, or that closing the window quits.
+pub fn can_keep_running(platform: Platform, tray_ready: bool) -> bool {
+    match platform {
+        Platform::Windows => tray_ready,
+        Platform::MacOs => true,
+        Platform::Linux => false,
+    }
+}
+
 /// What a close request does: hide the main window, so Fleetify keeps
-/// running, when `keep_running` (the setting) is on, on Windows only while
-/// the notification-area icon is there (`tray_ready`), as nothing else would
-/// open the window again or quit, and on macOS, where the Dock does both.
-/// On Linux, and for any window but the main one (`main_window`), the window
-/// closes.
+/// running, when `keep_running` (the setting) is on and
+/// [`can_keep_running`] says it can: on Windows only while the
+/// notification-area icon is there (`tray_ready`), and on macOS. On Linux,
+/// and for any window but the main one (`main_window`), the window closes.
 pub fn close_action(
     main_window: bool,
     platform: Platform,
     keep_running: bool,
     tray_ready: bool,
 ) -> CloseAction {
-    let can_come_back = match platform {
-        Platform::Windows => tray_ready,
-        Platform::MacOs => true,
-        Platform::Linux => false,
-    };
-    if main_window && keep_running && can_come_back {
+    if main_window && keep_running && can_keep_running(platform, tray_ready) {
         CloseAction::Hide
     } else {
         CloseAction::Close
@@ -248,6 +256,18 @@ mod tests {
         let cfg = crate::shell::config::load_config_from(tmp.path());
         assert!(!keep_running_from(&cfg));
         assert_eq!(cfg["theme"], "dark");
+    }
+
+    #[test]
+    fn whether_closing_can_keep_fleetify_running() {
+        // Windows needs the notification-area icon; the Dock does it on
+        // macOS; Linux never keeps running.
+        assert!(can_keep_running(Platform::Windows, true));
+        assert!(!can_keep_running(Platform::Windows, false));
+        assert!(can_keep_running(Platform::MacOs, true));
+        assert!(can_keep_running(Platform::MacOs, false));
+        assert!(!can_keep_running(Platform::Linux, true));
+        assert!(!can_keep_running(Platform::Linux, false));
     }
 
     #[test]

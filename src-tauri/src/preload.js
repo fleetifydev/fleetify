@@ -142,6 +142,9 @@ document.addEventListener("mousedown", function (e) {
       // Light theme ⇒ pass "dark" (dark logo on light taskbar). Dark
       // theme ⇒ pass "light".
       setTaskbarIcon: function (variant) { return invoke("window_set_taskbar_icon", { variant: String(variant || "dark") }); },
+      // Whether closing the window keeps Fleetify running here (Windows:
+      // only while its notification-area icon is there; macOS: always).
+      windowCanKeepRunning: function () { return invoke("window_can_keep_running"); },
       readDirectory: function (p) { return invoke("fs_read_directory", { dirPath: String(p || "") }); },
       readFile: function (p) { return invoke("fs_read_file", { filePath: String(p || "") }); },
       getExtension: function (p) { return invoke("fs_get_extension", { filePath: String(p || "") }); },
