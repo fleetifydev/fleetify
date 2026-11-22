@@ -1,6 +1,5 @@
 {
   "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
-  "bootstrap-sha": "2032b5298a5f3333f980bd28b71524099fdf5d0f",
   "release-type": "node",
   "include-component-in-tag": false,
   "include-v-in-tag": true,
@@ -24,7 +23,6 @@
   "packages": {
     ".": {
       "package-name": "fleetify",
-      "release-as": "0.2.0",
       "changelog-path": "CHANGELOG.md",
       "extra-files": [
         { "type": "toml", "path": "Cargo.toml", "jsonpath": "$.workspace.package.version" },
