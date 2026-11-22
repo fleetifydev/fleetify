@@ -100,20 +100,20 @@ pub fn run() {
         }
     }
 
-    // Opening Fleetify while it runs focuses the running window
-    // (focus_main_window), and the new process exits before it opens a
-    // window or binds the backend's port. Registered before the other
-    // plugins: they set up in that order while the app is built, before
-    // setup() runs. Release builds only: debug builds share the bundle
-    // identifier the plugin keys on, and `dev:tauri:wt` runs beside
-    // `dev:tauri` by design. A cfg!() branch, not #[cfg], so debug builds
-    // still type-check the release arm.
+    // Opening Fleetify while it runs brings the running window to the front
+    // (shell::lifecycle::open_main_window), even one a close hid, and the
+    // new process exits before it opens a window or binds the backend's
+    // port. Registered before the other plugins: they set up in that order
+    // while the app is built, before setup() runs. Release builds only:
+    // debug builds share the bundle identifier the plugin keys on, and
+    // `dev:tauri:wt` runs beside `dev:tauri` by design. A cfg!() branch, not
+    // #[cfg], so debug builds still type-check the release arm.
     let builder = tauri::Builder::default();
     let builder = if cfg!(debug_assertions) || !single_instance_can_start() {
         builder
     } else {
         builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            focus_main_window(app)
+            shell::lifecycle::open_main_window(app)
         }))
     };
     let builder = builder.plugin(tauri_plugin_dialog::init());
@@ -512,6 +512,12 @@ pub fn run() {
                 main_window.set_icon(icon).ok();
             }
 
+            // Windows: the notification-area icon. Once a close has hidden
+            // the main window, it opens the window again and quits
+            // (shell::tray, shell::lifecycle).
+            #[cfg(windows)]
+            shell::tray::create(app.handle());
+
             // Embedded backend (no child process, no health-poll).
             // Port is FLEETIFY_BACKEND_PORT (default 8765) so a second
             // instance launched via `npm run dev:tauri:wt -- <slot>`
@@ -756,46 +762,21 @@ pub fn run() {
 
             Ok(())
         })
-        .on_window_event(|_window, event| {
-            // Tear down any HEAD watchers on window destroy so app-quit
-            // doesn't leak fs watcher handles (matches main.cjs's
-            // before-quit cleanup).
-            if matches!(event, tauri::WindowEvent::Destroyed) {
-                shell::head_watcher::shutdown();
-                // Mark the shutdown as clean — removes the crash flag
-                // so the next boot doesn't falsely report "previous
-                // session crashed". Window-destroyed is the closest
-                // we get to a deterministic "the user closed the app"
-                // signal in Tauri 2; OS-level kills (Task Manager,
-                // SIGKILL) skip this path on purpose, which is exactly
-                // what makes the flag a useful crash signal.
-                shell::logging::mark_clean_shutdown();
+        .on_window_event(|window, event| {
+            // Closing the main window hides it on Windows and macOS while
+            // the setting is on, so Fleetify keeps running; otherwise it
+            // closes, and closing it quits (shell::lifecycle).
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                shell::lifecycle::on_close_requested(window, api);
             }
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
-}
-
-/// Brings the main window to the front when Fleetify is opened again while
-/// it runs (the single-instance plugin's callback): shown, since it starts
-/// hidden, restored if minimized, and focused. It looks the window up with
-/// `get_window`: `get_webview_window` finds a window only while every webview
-/// in it has the window's label, so not while the Browser panel's child
-/// webview is attached. Failures are logged; it never panics.
-fn focus_main_window(app: &tauri::AppHandle) {
-    let Some(window) = app.get_window(shell::startup_window::MAIN_WINDOW) else {
-        tracing::warn!("Fleetify was opened again, but its main window doesn't exist yet");
-        return;
-    };
-    if let Err(e) = window.show() {
-        tracing::warn!("showing the main window for a second launch failed: {e}");
-    }
-    if let Err(e) = window.unminimize() {
-        tracing::warn!("restoring the main window for a second launch failed: {e}");
-    }
-    if let Err(e) = window.set_focus() {
-        tracing::warn!("focusing the main window for a second launch failed: {e}");
-    }
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        // Every orderly quit ends in RunEvent::Exit, where the shutdown
+        // runs: the HEAD watchers go, and the shutdown is marked clean. On
+        // macOS a click on the Dock icon opens the window again
+        // (shell::lifecycle::on_run_event).
+        .run(shell::lifecycle::on_run_event);
 }
 
 /// Whether the single-instance plugin can be registered. On Linux it finds
@@ -934,28 +915,49 @@ mod tests {
     }
 
     #[test]
-    fn a_second_launch_looks_the_main_window_up_as_a_window() {
-        // get_webview_window finds a window only while every webview in it
-        // has the window's label, which the main window hasn't while the
-        // Browser panel's child webview is attached: a second launch would
-        // bring nothing to the front. Whitespace removed, so line wrapping
-        // doesn't matter.
+    fn a_second_launch_opens_the_main_window_as_the_tray_and_the_dock_do() {
+        // shell::lifecycle::open_main_window shows a window that a close hid
+        // and looks it up as a window (its own tests say why). Whitespace
+        // removed, so line wrapping doesn't matter.
         let source: String = app_source().split_whitespace().collect();
-        let focus = source
-            .find(&format!(
-                "fn{}(app:&tauri::AppHandle){{",
-                "focus_main_window"
-            ))
-            .expect("lib.rs has focus_main_window");
-        let lookup = source[focus..]
-            .find("app.get_")
-            .expect("focus_main_window looks the window up");
+        let plugin = source
+            .find(&format!("{}::init(", "tauri_plugin_single_instance"))
+            .expect("run() registers the single-instance plugin");
         assert!(
-            source[focus + lookup..].starts_with(&format!(
-                "app.{}(shell::startup_window::MAIN_WINDOW)",
-                "get_window"
+            source[plugin..].starts_with(&format!(
+                "tauri_plugin_single_instance::init(|app,_argv,_cwd|{{shell::lifecycle::{}(app)}})",
+                "open_main_window"
             )),
-            "focus_main_window must look the main window up with get_window"
+            "a second launch must open the main window with shell::lifecycle::open_main_window"
+        );
+    }
+
+    #[test]
+    fn close_requests_go_to_the_lifecycle_handler() {
+        // It decides whether a close hides the main window or quits.
+        let source: String = app_source().split_whitespace().collect();
+        assert!(
+            source.contains(&format!(
+                "iflettauri::WindowEvent::CloseRequested{{api,..}}=event{{shell::lifecycle::{}(window,api);}}",
+                "on_close_requested"
+            )),
+            "on_window_event must hand close requests to shell::lifecycle::on_close_requested"
+        );
+    }
+
+    #[test]
+    fn the_app_runs_with_the_lifecycle_run_event_handler() {
+        // Its RunEvent::Exit arm runs the shutdown of every orderly quit, a
+        // window that only hides included. Whitespace removed, so line
+        // wrapping doesn't matter.
+        let source: String = app_source().split_whitespace().collect();
+        assert!(
+            source.contains(&format!(".run(shell::lifecycle::{});", "on_run_event")),
+            "run() must run the app with shell::lifecycle::on_run_event"
+        );
+        assert!(
+            !source.contains(&format!("WindowEvent::{}", "Destroyed")),
+            "the shutdown runs at RunEvent::Exit, not when a window is destroyed"
         );
     }
 

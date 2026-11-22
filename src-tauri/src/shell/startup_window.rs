@@ -498,9 +498,10 @@ async fn app_answers(client: Option<&reqwest::Client>, app_url: &Url) -> bool {
 /// Without the backend the app can't work, and a placeholder that never ends
 /// would hide why.
 ///
-/// The quit is a handled one, so it marks the shutdown clean: exiting skips
-/// the main window's `Destroyed` event, which otherwise does, and the next
-/// launch would report a crash. Tauri 2.11.2's wry runtime ends the event
+/// The quit is a handled one, so it marks the shutdown clean first, or the
+/// next launch would report a crash. `RunEvent::Exit` marks it again
+/// (shell::lifecycle::on_exit), but an exit that can't reach the event loop
+/// ends the process without that. Tauri 2.11.2's wry runtime ends the event
 /// loop with `ControlFlow::Exit` whatever code `exit` gets, so the process
 /// status is 0 even though 1 is asked for.
 fn report_start_failure(window: &WebviewWindow, failure: &StartFailure, port: u16) {
@@ -530,9 +531,22 @@ fn report_start_failure(window: &WebviewWindow, failure: &StartFailure, port: u1
         });
 }
 
+/// Set once the startup task shows the main window ([`reveal`]), with the
+/// app or, after a slow start, with the placeholder. Until then the window is
+/// that task's to show: opening Fleetify again (shell::lifecycle) waits.
+static REVEALED: AtomicBool = AtomicBool::new(false);
+
+/// Whether the startup task has shown the main window yet. From then on, a
+/// window that a close hid can be opened again.
+pub fn revealed() -> bool {
+    REVEALED.load(Ordering::SeqCst)
+}
+
 /// Shows and focuses the window, and logs the cold start: setup() entry to
-/// the first reveal.
+/// the first reveal. From here on the window can be opened again
+/// ([`revealed`]), even if showing it failed.
 fn reveal(window: &WebviewWindow, boot_start: Instant) {
+    REVEALED.store(true, Ordering::SeqCst);
     if let Err(e) = window.show() {
         tracing::warn!("show main window failed: {e}");
     } else {

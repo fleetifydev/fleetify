@@ -115,8 +115,8 @@ pub fn unwatch(key: &str) -> serde_json::Value {
     json!({ "ok": true })
 }
 
-/// Drop every watcher. Called from the Tauri `WindowEvent::Destroyed`
-/// path so app shutdown doesn't leak file handles.
+/// Drop every watcher. Called when the app exits (`RunEvent::Exit`, see
+/// shell::lifecycle::on_exit) so app shutdown doesn't leak file handles.
 pub fn shutdown() {
     if let Some(m) = WATCHERS.get() {
         m.lock().unwrap().clear();

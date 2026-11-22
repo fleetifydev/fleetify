@@ -223,8 +223,9 @@ fn file_appender(log_dir: &Path) -> Result<RollingFileAppender, InitError> {
         .build(log_dir)
 }
 
-/// Mark the shutdown as clean — call from a `Tauri::on_window_event(Destroyed)`
-/// or equivalent teardown path. Safe to call multiple times.
+/// Mark the shutdown as clean — called when the app exits (`RunEvent::Exit`,
+/// see shell::lifecycle::on_exit) and by exits that may not get there. Safe
+/// to call multiple times.
 pub fn mark_clean_shutdown() {
     if let Some(dir) = LOG_DIR.get() {
         let _ = fs::remove_file(dir.join(SHUTDOWN_FLAG));

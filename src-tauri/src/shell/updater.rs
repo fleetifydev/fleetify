@@ -269,9 +269,9 @@ pub async fn updater_restart(
     match settled {
         Ok(()) => {
             tracing::info!(target: LOG_TARGET, version = %version, "update installed, restarting");
-            // The restart exits without the window's Destroyed event, which
-            // records a clean shutdown (lib.rs), so record it here, or the
-            // next launch reports a crash.
+            // Record a clean shutdown, or the next launch reports a crash.
+            // `RunEvent::Exit` records it too (shell::lifecycle::on_exit),
+            // but a restart that can't reach the event loop skips that.
             crate::shell::logging::mark_clean_shutdown();
             // Exits through the event loop, as quitting does, and starts the
             // new version. `restart()` would do the same here, then park
@@ -892,8 +892,10 @@ mod tests {
 
     #[test]
     fn restart_records_a_clean_shutdown_before_the_app_exits() {
-        // An update restart exits without lib.rs's WindowEvent::Destroyed,
-        // which records a clean shutdown, so the next launch would report a
+        // An update restart can end the process without `RunEvent::Exit`,
+        // which records a clean shutdown (shell::lifecycle::on_exit): the
+        // Windows installer exits it, and a restart that can't reach the
+        // event loop restarts it at once. The next launch would report a
         // crash. Read from this file above its tests, with each run of
         // whitespace made one space.
         let source = include_str!("updater.rs").replace("\r\n", "\n");

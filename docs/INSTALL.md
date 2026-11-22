@@ -127,6 +127,15 @@ How the update installs:
 - **Windows:** Fleetify closes, the installer runs with a progress window, and then it starts Fleetify again.
 - **Linux:** the AppImage replaces itself, so keep it in a folder you own. A `.deb` or `.rpm` install updates through `dpkg` or `rpm`, which install a system package, so Linux asks for your password.
 
+## Closing the window
+
+On Windows and macOS, closing Fleetify's window keeps Fleetify running, and your agents keep working:
+
+- **Windows:** Fleetify stays in the notification area, next to the clock. Click its icon to open the window again. Right-click it for **Open Fleetify** and **Quit Fleetify**.
+- **macOS:** Fleetify stays in the Dock. Click its Dock icon to open the window again, and press ⌘Q to quit.
+
+To make closing the window quit Fleetify, turn off **Settings → General → Window → Keep Fleetify running when you close the window**. On Linux, closing the window quits Fleetify.
+
 ## Verify a download
 
 Each release comes with a `SHA256SUMS` file, which lists the SHA-256 checksum of every file in the release, and with GitHub build provenance attestations. Releases are also immutable: once a release is published, GitHub lets no one change its files or move its tag, and it attests what the release holds. The install scripts compare the checksum for you.
@@ -164,7 +173,7 @@ Uninstalling removes the app but not your data, and it changes nothing on fleeti
 
 ### Remove your data
 
-Quit Fleetify first. Fleetify's own data, such as your sessions and chat history (`fleet.db`), your Library, installed plugins, MCP servers, device ID and telemetry queues, is in `~/.fleetify`, or in the folder `FLEETIFY_HOME` names if you set it. The rest depends on your OS.
+Quit Fleetify first: on Windows and macOS, closing its window [keeps it running](#closing-the-window). Fleetify's own data, such as your sessions and chat history (`fleet.db`), your Library, installed plugins, MCP servers, device ID and telemetry queues, is in `~/.fleetify`, or in the folder `FLEETIFY_HOME` names if you set it. The rest depends on your OS.
 
 **macOS:**
 

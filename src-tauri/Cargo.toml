@@ -90,6 +90,22 @@ hound = { version = "3.5.1", optional = true }
 [target.'cfg(target_os = "macos")'.dependencies]
 tauri-plugin-macos-fps = "0.1"
 
+# Windows only: the notification-area icon (shell::tray), which opens the
+# window again once a close has hidden it, and quits. Not on Linux, where
+# tauri's `tray-icon` feature loads libayatana-appindicator at run time (and
+# panics without it), and its bundler would then require the library; nor
+# on macOS, where the Dock does the icon's job. Only the [dependencies]
+# entry above names the features that tauri.conf.json controls: tauri-build
+# and the Tauri CLI check and rewrite that one, never this one.
+# winreg (fleetify-backend's version) reads the taskbar's theme, and the
+# windows-sys its RegKey handles come from waits for it to change (winreg has
+# no wrapper for RegNotifyChangeKeyValue). Both are already in the tree.
+# Bump them together: a RegKey handle is that windows-sys's HKEY.
+[target.'cfg(windows)'.dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+winreg = "0.52"
+windows-sys = { version = "0.48", features = ["Win32_Foundation", "Win32_System_Registry"] }
+
 # x11-dl: install a non-fatal X error handler (see setup() in lib.rs) — GDK
 # aborts the whole app on any async X error otherwise. Already in the
 # lockfile via tao/wry.

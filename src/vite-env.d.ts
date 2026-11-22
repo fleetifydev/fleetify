@@ -144,6 +144,13 @@ interface FleetConfig {
    *  anything but `false` counts as on. Read by the shell on every
    *  Create-PR. Settings → General → Attribution. */
   gitAttribution?: boolean;
+  /** Keep Fleetify running when its window is closed: the window hides,
+   *  and Fleetify stays in the notification area on Windows (its icon opens
+   *  the window again and quits) or in the Dock on macOS. Default true;
+   *  anything but `false` counts as on, as the shell reads it, each time the
+   *  window is closed (`keep_running_from`). Linux ignores it: closing the
+   *  window quits. Settings → General → Window. */
+  keepRunningOnClose?: boolean;
 }
 
 interface Window {

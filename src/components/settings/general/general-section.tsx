@@ -1,17 +1,22 @@
 /**
- * General section composer — renders the five Settings → General cards
- * in their canonical order under quiet uppercase section headers:
+ * General section composer — renders the Settings → General cards in
+ * their canonical order under quiet uppercase section headers:
  *
- *   Startup → Notifications → Updates → Privacy → Attribution
+ *   Startup → Window → Notifications → Updates → Privacy → Attribution
+ *
+ * Window is there on Windows and macOS only: on Linux closing the window
+ * always quits, so it has nothing to switch.
  *
  * Each card owns its own persistence; this file is purely visual
  * arrangement. Adding another card is a one-import addition.
  */
 import { StartupCard } from "./startup-card";
+import { WindowCard, keepRunningDescription } from "./window-card";
 import { NotificationsCard } from "./notifications-card";
 import { UpdatesCard } from "./updates-card";
 import { PrivacyCard } from "./privacy-card";
 import { AttributionCard } from "./attribution-card";
+import { getPlatform } from "@/lib/utils";
 
 const sectionHeader: React.CSSProperties = {
   fontSize: 10.5, fontWeight: 600, letterSpacing: "0.10em",
@@ -26,6 +31,13 @@ export function GeneralSection() {
     <>
       <div style={sectionHeader}>Startup</div>
       <StartupCard />
+
+      {keepRunningDescription(getPlatform()) !== null && (
+        <>
+          <div style={sectionHeader}>Window</div>
+          <WindowCard />
+        </>
+      )}
 
       <div style={sectionHeader}>Notifications</div>
       <NotificationsCard />

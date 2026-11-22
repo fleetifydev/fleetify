@@ -1,11 +1,11 @@
 /**
  * Shared visual primitives for the General settings cards.
  *
- * Each card (startup, notifications, updates, privacy, attribution)
- * renders a `CardShell` wrapping one or more `Row`s with a `Toggle` (or
- * other control) on the right. Keeping the primitives co-located here
- * means adding a new General card stays a one-import affair and the
- * cards stay visually identical without copy/paste drift.
+ * Each card (startup, window, notifications, updates, privacy,
+ * attribution) renders a `CardShell` wrapping one or more `Row`s with a
+ * `Toggle` (or other control) on the right. Keeping the primitives
+ * co-located here means adding a new General card stays a one-import
+ * affair and the cards stay visually identical without copy/paste drift.
  */
 
 export function CardShell({ children }: { children: React.ReactNode }) {
