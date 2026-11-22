@@ -25,7 +25,10 @@
  * Every workflow pins each action to a commit, with its release in a comment:
  * a tag can be moved to other code. The workflows that make a release
  * (build.yml, smoke.yml, release-dry-run.yml and release.yml) grant only
- * `contents: read` at the top. build.yml builds release-assets.mjs's TARGETS. Its jobs
+ * `contents: read` at the top. build.yml builds release-assets.mjs's TARGETS,
+ * Linux in the Ubuntu 22.04 container they pin by digest, on a newer runner,
+ * which it reaches as root, with git, curl and a checked rustup installed
+ * before the steps that need them. Its jobs
  * that hold the signing keys run only GitHub's own actions, the lockfile's
  * Tauri CLI, system tools and the repository's scripts, get the release
  * secrets only in release-only steps, which first fail on each one that
@@ -79,6 +82,7 @@ import { isDeepStrictEqual } from "node:util";
 
 import { compiledFiles } from "../release/compiled-tar.mjs";
 import { dryRunConfig } from "../release/dry-run-config.mjs";
+import { GLIBC_FLOOR } from "../release/glibc-floor.mjs";
 import { INSTALL_SCRIPTS, TARGETS, UPDATER_KEY_ID, expectedAssets, unsignedAssets, updaterAssets } from "../release/release-assets.mjs";
 
 const ROOT = fileURLToPath(new URL("../../", import.meta.url));
@@ -1294,7 +1298,13 @@ describe("build.yml", () => {
   });
 
   yamlTest("each job's matrix is its share of release-assets.mjs's TARGETS, and the job's name gives the target's label", () => {
-    const full = ({ triple, runner, bundles, label }) => ({ triple, runner, bundles: [...bundles], label });
+    const full = ({ triple, runner, container, bundles, label }) => ({
+      triple,
+      runner,
+      ...(container === undefined ? {} : { container }),
+      bundles: [...bundles],
+      label,
+    });
     const shares = {
       compile: TARGETS.map(full),
       sign: TARGETS.filter((target) => !isMacOS(target)).map(({ triple, label }) => ({ triple, label })),
@@ -1308,6 +1318,57 @@ describe("build.yml", () => {
       Object.keys(shares).map((id) => jobOf(BUILD, id).name),
       ["Compile (${{ matrix.label }})", "Sign (${{ matrix.label }})", "Bundle (${{ matrix.label }})"],
     );
+  });
+
+  yamlTest("the Linux leg builds in its target's container: Ubuntu 22.04's image, pinned by digest, whose glibc is the floor", () => {
+    // On a newer runner itself, the bundles would need its newer glibc and
+    // stop starting on the oldest Linux that docs/INSTALL.md promises. The
+    // container keeps them at Ubuntu 22.04's, which glibc-floor.mjs checks.
+    assert.equal(jobOf(BUILD, "compile").container, "${{ matrix.container }}", "the compile job must build in its target's container");
+    const contained = TARGETS.filter((target) => target.container !== undefined);
+    assert.deepEqual(
+      contained.map(({ triple }) => triple),
+      ["x86_64-unknown-linux-gnu"],
+      "only the Linux target builds in a container",
+    );
+    const image = contained[0].container.match(/^ubuntu:(\d+\.\d+)@sha256:[0-9a-f]{64}$/);
+    assert.ok(image, `${contained[0].container} must be an Ubuntu image pinned by the digest of its image index`);
+    const glibcOf = { "22.04": "2.35", "24.04": "2.39", "26.04": "2.43" };
+    assert.equal(glibcOf[image[1]], GLIBC_FLOOR, `Ubuntu ${image[1]}'s glibc must be glibc-floor.mjs's GLIBC_FLOOR; raise both, and INSTALL.md, together`);
+  });
+
+  yamlTest("in the container, git and the download tools come before checkout, and rustup from its pinned, checked installer before the toolchain", () => {
+    // Ubuntu's base image has none of what the runner images bring.
+    const steps = stepsOf("compile");
+    const indexOf = (find, what) => {
+      const i = steps.findIndex(find);
+      assert.notEqual(i, -1, `the compile job has no step that ${what}`);
+      return i;
+    };
+    const base = indexOf((step) => step.name === "Base packages (Linux container)", "installs the container's base packages");
+    const checkout = indexOf((step) => usesAction(step, "actions/checkout"), "checks out the code");
+    const rustup = indexOf((step) => step.name === "rustup (Linux container)", "installs rustup");
+    const toolchain = indexOf((step) => step.name === "Rust toolchain (rust-toolchain.toml)", "installs the Rust toolchain");
+    assert.ok(base < checkout, "the base packages must come before checkout, which clones with git");
+    assert.ok(rustup < toolchain, "rustup must come before the step that installs the toolchain with it");
+    for (const i of [base, rustup]) assert.equal(steps[i].if, "matrix.container", `${steps[i].name} must run only in a container`);
+    assert.deepEqual(aptPackages(scriptOf(steps[base])), ["ca-certificates", "curl", "git", "xz-utils"]);
+    const env = steps[rustup].env ?? {};
+    assert.match(String(env.RUSTUP_VERSION), /^\d+\.\d+\.\d+$/, "rustup's installer must be pinned to a release");
+    assert.match(String(env.RUSTUP_INIT_SHA256), /^[0-9a-f]{64}$/, "rustup's installer must be pinned by its SHA-256");
+    const script = scriptOf(steps[rustup]);
+    assert.ok(
+      script.includes("https://static.rust-lang.org/rustup/archive/$RUSTUP_VERSION/x86_64-unknown-linux-gnu/rustup-init"),
+      "rustup's installer must come from its release archive",
+    );
+    const check = script.indexOf("sha256sum --check --strict");
+    assert.ok(check !== -1 && check < script.indexOf('"$init" -y'), "the installer's SHA-256 must be checked before it runs");
+    assert.ok(script.includes("--default-toolchain none"), "the installer must leave the toolchain to rust-toolchain.toml");
+  });
+
+  yamlTest("no compile step runs sudo: the Linux leg runs as root in its container, which has none", () => {
+    const sudo = stepsOf("compile").flatMap((step, i) => (/\bsudo\b/.test(scriptOf(step)) ? [stepLabel(step, i)] : []));
+    assert.deepEqual(sudo, [], `these compile steps run sudo: ${sudo.join(", ")}`);
   });
 
   yamlTest("no build uses a cache, so a dry run rehearses the release build", () => {
@@ -1822,7 +1883,9 @@ capture() {
     for (const step of [unsigned.release, unsigned.dryRun]) {
       assert.ok(requires(step.if, NOT_MACOS), `${step.name} runs on macOS too`);
       assert.match(scriptOf(step), /(^|\s)tauri bundle --no-sign\s/, `${step.name} doesn't pass --no-sign`);
-      assert.equal(step.env, undefined, `${step.name} gets an environment`);
+      // No key, only what lets the AppImage tools run in the Linux
+      // container, which has no FUSE to mount them with.
+      assert.deepEqual(step.env, { APPIMAGE_EXTRACT_AND_RUN: "1" }, `${step.name} must get no key, only APPIMAGE_EXTRACT_AND_RUN`);
     }
     for (const step of [macOS.release, macOS.dryRun]) assert.doesNotMatch(scriptOf(step), /--no-sign/, `${step.name} doesn't sign`);
     assert.deepEqual(macOS.release.env, {

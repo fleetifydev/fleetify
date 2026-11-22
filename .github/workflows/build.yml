@@ -141,6 +141,10 @@ jobs:
     name: Compile (${{ matrix.label }})
     needs: notices
     runs-on: ${{ matrix.runner }}
+    # The Linux leg builds in an Ubuntu 22.04 container on a newer runner, so
+    # that its bundles need no glibc newer than 2.35, which the glibc check
+    # below enforces. The others name no container and build on the runner.
+    container: ${{ matrix.container }}
     # A cold build compiles the whole workspace in release mode, whisper.cpp
     # and the fat LTO link included.
     timeout-minutes: 120
@@ -151,7 +155,9 @@ jobs:
       matrix:
         include:
           - triple: x86_64-unknown-linux-gnu
-            runner: ubuntu-22.04
+            runner: ubuntu-24.04
+            # ubuntu:22.04's image index, as published on 2026-11-17.
+            container: ubuntu:22.04@sha256:f64b2ffc2f10ab8f8505aa56b2664bd846cbb9df87c7e2532e30f7667021c0e6
             bundles: [appimage, deb, rpm]
             label: Linux x64
           - triple: x86_64-pc-windows-msvc
@@ -172,6 +178,15 @@ jobs:
       TRIPLE: ${{ matrix.triple }}
       BUNDLES: ${{ join(matrix.bundles, ',') }}
     steps:
+      # The container starts as Ubuntu's base system, without git, which
+      # checkout clones with, or the tools that the next steps fetch with.
+      - name: Base packages (Linux container)
+        if: matrix.container
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates curl git xz-utils
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.ref }}
@@ -180,6 +195,23 @@ jobs:
         with:
           node-version-file: .nvmrc
           package-manager-cache: false
+      # The runner images come with rustup and the container doesn't. This
+      # is rustup's own installer at a pinned release, checked against its
+      # SHA-256 before it runs, and it installs no toolchain: the next step
+      # installs rust-toolchain.toml's.
+      - name: rustup (Linux container)
+        if: matrix.container
+        env:
+          RUSTUP_VERSION: "1.29.3"
+          RUSTUP_INIT_SHA256: b1c8cb14e30889e7e2999e6b69e62d9e9b9ffc0f4df8180564d306d9680e6c55
+        run: |
+          init="$RUNNER_TEMP/rustup-init"
+          curl --proto '=https' --tlsv1.2 -fsSL --retry 3 -o "$init" "https://static.rust-lang.org/rustup/archive/$RUSTUP_VERSION/x86_64-unknown-linux-gnu/rustup-init"
+          echo "$RUSTUP_INIT_SHA256  $init" | sha256sum --check --strict -
+          chmod +x "$init"
+          "$init" -y --no-modify-path --profile minimal --default-toolchain none
+          rm "$init"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
       # No Rust cache, in a dry run either: a release builds from a clean
       # target folder, with no cache to trust, and the dry run rehearses it.
       - name: Rust toolchain (rust-toolchain.toml)
@@ -188,12 +220,15 @@ jobs:
           rustup show active-toolchain
       # CONTRIBUTING.md's Linux packages, which a script test keeps in step
       # with this list. The AppImage carries the libraries the app links to,
-      # which linuxdeploy copies from this system.
+      # which linuxdeploy copies from this system: the container's Ubuntu
+      # 22.04, where the job runs as root, with no sudo.
       - name: System packages (Linux)
         if: runner.os == 'Linux'
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential curl wget file pkg-config cmake libclang-dev \
+          apt-get update
+          apt-get install -y build-essential curl wget file pkg-config cmake libclang-dev \
             libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libasound2-dev libdbus-1-dev patchelf
       # No install script runs: none of the build needs one.
       - name: npm packages
@@ -292,12 +327,18 @@ jobs:
       # Linux and Windows bundles carry no signature inside, so they're made
       # here, with no key: --no-sign leaves out the updater signatures, which
       # the sign job adds. --verbose logs each command the bundler runs
-      # (linuxdeploy, makensis).
+      # (linuxdeploy, makensis). The Linux container has no FUSE to mount an
+      # AppImage with, so linuxdeploy and its plugins, AppImages themselves,
+      # extract themselves and run from there.
       - name: Bundle without signing (Linux and Windows release)
         if: runner.os != 'macOS' && inputs.environment == 'release'
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
         run: npx --no -- tauri bundle --no-sign --verbose --ci --target "$TRIPLE" --bundles "$BUNDLES" --config src-tauri/tauri.release.conf.json
       - name: Bundle without signing (Linux and Windows dry run)
         if: runner.os != 'macOS' && inputs.environment == 'dry-run'
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
         run: >-
           npx --no -- tauri bundle --no-sign --verbose --ci --target "$TRIPLE" --bundles "$BUNDLES"
           --config src-tauri/tauri.release.conf.json --config "$RUNNER_TEMP/dry-run-config/dry-run.json"
@@ -311,8 +352,9 @@ jobs:
         run: node scripts/release/appimage-exclude.mjs --dir "target/$TRIPLE/release/bundle/appimage"
       # docs/INSTALL.md promises Ubuntu 22.04, whose glibc is 2.35. A file
       # built here, or a library the AppImage copies from this system, may
-      # need any glibc up to this system's, so a runner with a newer one
-      # could make bundles that don't start there, with nothing else failing.
+      # need any glibc up to this system's, so a newer system, runner or
+      # container, could make bundles that don't start there, with nothing
+      # else failing.
       # glibc-floor.mjs fails on any ELF file that needs a glibc newer than
       # 2.35 or glibc's private interface, or isn't x86-64: the app and the
       # sidecars, which the .deb and the .rpm carry too, and each one inside

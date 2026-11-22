@@ -47,12 +47,22 @@ export const INSTALL_SCRIPTS = Object.freeze(["install.sh", "install.ps1"]);
 
 /**
  * The release targets: the Rust target triple, the GitHub runner that builds
- * it, the Tauri bundles it ships (`tauri build --bundles`), and the label its
- * jobs are named with.
+ * it, the container it builds in, if any, the Tauri bundles it ships
+ * (`tauri build --bundles`), and the label its jobs are named with.
+ *
+ * Linux builds in Ubuntu 22.04's image, pinned by the digest of its image
+ * index, on a newer runner: the bundles then need glibc 2.35 at most, the
+ * oldest that docs/INSTALL.md promises, which glibc-floor.mjs checks.
  */
 export const TARGETS = Object.freeze(
   [
-    { triple: "x86_64-unknown-linux-gnu", runner: "ubuntu-22.04", bundles: ["appimage", "deb", "rpm"], label: "Linux x64" },
+    {
+      triple: "x86_64-unknown-linux-gnu",
+      runner: "ubuntu-24.04",
+      container: "ubuntu:22.04@sha256:f64b2ffc2f10ab8f8505aa56b2664bd846cbb9df87c7e2532e30f7667021c0e6",
+      bundles: ["appimage", "deb", "rpm"],
+      label: "Linux x64",
+    },
     { triple: "x86_64-pc-windows-msvc", runner: "windows-2025", bundles: ["nsis"], label: "Windows x64" },
     { triple: "aarch64-apple-darwin", runner: "macos-15", bundles: ["app", "dmg"], label: "macOS Apple Silicon" },
     { triple: "x86_64-apple-darwin", runner: "macos-15-intel", bundles: ["app", "dmg"], label: "macOS Intel" },

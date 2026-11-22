@@ -69,9 +69,9 @@ describe("the release's constants", () => {
     assert.equal(UPDATER_KEY_ID, "44C694713A20D751");
   });
 
-  test("TARGETS: the four release targets, each with its runner, its bundles and its label", () => {
+  test("TARGETS: the four release targets, each with its runner, its container if any, its bundles and its label", () => {
     assert.deepEqual(TARGETS, [
-      { triple: LINUX, runner: "ubuntu-22.04", bundles: ["appimage", "deb", "rpm"], label: "Linux x64" },
+      { triple: LINUX, runner: "ubuntu-24.04", container: "ubuntu:22.04@sha256:f64b2ffc2f10ab8f8505aa56b2664bd846cbb9df87c7e2532e30f7667021c0e6", bundles: ["appimage", "deb", "rpm"], label: "Linux x64" },
       { triple: WINDOWS, runner: "windows-2025", bundles: ["nsis"], label: "Windows x64" },
       { triple: ARM_MAC, runner: "macos-15", bundles: ["app", "dmg"], label: "macOS Apple Silicon" },
       { triple: INTEL_MAC, runner: "macos-15-intel", bundles: ["app", "dmg"], label: "macOS Intel" },
