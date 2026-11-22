@@ -91,7 +91,7 @@ pub fn content_security_policy(port: u16, posthog_origin: &str) -> String {
         // allows WebAssembly only, not eval.
         "script-src 'self' 'wasm-unsafe-eval'".to_string(),
         // 'unsafe-inline': React's style attributes, and the <style>
-        // elements sonner, xterm and KaTeX add.
+        // elements xterm and KaTeX add.
         "style-src 'self' 'unsafe-inline'".to_string(),
         "img-src 'self' data: https:".to_string(),
         "font-src 'self' data:".to_string(),
