@@ -116,11 +116,12 @@ USE OR OTHER DEALINGS IN THE SOFTWARE.
  * at before it ships.
  */
 export const NO_LICENCE_FILE = Object.freeze({
-  // From the posthog-js repository (packages/core). Its files name no
-  // copyright holder for its own code, and the LICENSE in the posthog-js
-  // package is the Apache License, which doesn't cover it: the standard text
-  // stays as it is.
-  "@posthog/core": { licence: "MIT" },
+  // From the posthog-js repository (packages/browser-common). Its files name
+  // no copyright holder, and the LICENSE that posthog-js and @posthog/core
+  // ship puts the repository under the Apache License and gives the MIT
+  // licence, with its holder, to packages/core only: the standard text stays
+  // as it is.
+  "@posthog/browser-common": { licence: "MIT" },
   // Both from the remark-math repository, whose licence file isn't published
   // with them. Each one's readme.md ends "[MIT][license] © [Junyoung Choi]".
   "rehype-katex": { licence: "MIT", holder: "Junyoung Choi", source: "readme.md" },

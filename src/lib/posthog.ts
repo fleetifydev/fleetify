@@ -176,15 +176,17 @@ function start(): Promise<void> {
 
 /**
  * posthog-js's own opt-out stops new captures, but it still flushes the
- * events it has queued and retries failed sends. Every request it makes
- * goes through `_send_request` (posthog-js 1.376), so drop them there while
- * the user has product analytics off.
+ * events it has queued and retries failed sends. Its retry queue, which
+ * sends the queued batches and the retries, no longer goes through
+ * `_send_request` (posthog-js 1.447), but every request still reaches one
+ * internal dispatcher, which drops a request while the rate limiter reports
+ * its batch as limited. So while the user has product analytics off, every
+ * batch is reported as limited.
  */
 function guardRequests(posthog: PostHog): void {
-  const send = posthog._send_request.bind(posthog);
-  posthog._send_request = (options) => {
-    if (enabled) send(options);
-  };
+  const limiter = posthog.rateLimiter;
+  const isLimited = limiter.isServerRateLimited.bind(limiter);
+  limiter.isServerRateLimited = (batchKey) => !enabled || isLimited(batchKey);
 }
 
 function identifyPending(): void {

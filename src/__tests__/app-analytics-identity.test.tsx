@@ -14,7 +14,7 @@ const ph = vi.hoisted(() => ({
   opt_out_capturing: vi.fn(),
   has_opted_out_capturing: vi.fn(() => false),
   resetPersonPropertiesForFlags: vi.fn(),
-  _send_request: vi.fn(),
+  rateLimiter: { isServerRateLimited: vi.fn(() => false) },
 }));
 vi.mock("posthog-js", () => ({ default: ph }));
 

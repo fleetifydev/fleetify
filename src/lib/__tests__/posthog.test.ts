@@ -24,7 +24,7 @@ const ph = vi.hoisted(() => ({
   has_opted_out_capturing: vi.fn(),
   resetPersonPropertiesForFlags: vi.fn(),
   reset: vi.fn(),
-  _send_request: vi.fn(),
+  rateLimiter: { isServerRateLimited: vi.fn() },
 }));
 /** How many times posthog-js was loaded (once per fresh module registry). */
 const loads = vi.hoisted(() => ({ count: 0 }));
@@ -34,8 +34,13 @@ vi.mock("posthog-js", () => {
 });
 
 let analytics: typeof import("@/lib/posthog");
-/** posthog-js's own request function, which every request goes through. */
-let send: ReturnType<typeof vi.fn>;
+/**
+ * posthog-js's own rate limit check, which its dispatcher makes before it
+ * sends any request, and drops the request when it answers true.
+ */
+let limited: ReturnType<typeof vi.fn>;
+/** Whether posthog-js's dispatcher would now drop a request for `batchKey`. */
+const dropped = (batchKey?: string) => ph.rateLimiter.isServerRateLimited(batchKey);
 
 const EXPECTED_OPTIONS = {
   api_host: "https://eu.i.posthog.com",
@@ -74,8 +79,8 @@ beforeEach(async () => {
     config.loaded?.(ph);
     return ph;
   });
-  send = vi.fn();
-  ph._send_request = send;
+  limited = vi.fn(() => false);
+  ph.rateLimiter = { isServerRateLimited: limited };
   vi.stubEnv("VITE_POSTHOG_KEY", "phc_test");
   vi.stubEnv("VITE_POSTHOG_HOST", "");
   analytics = await import("@/lib/posthog");
@@ -250,18 +255,20 @@ describe("identify", () => {
 describe("opting out in the same session", () => {
   it("stops capturing, and no queued or retried request gets through", async () => {
     await analytics.initPostHog({ distinctId: "device-1", enabled: true });
-    ph._send_request({ url: "/e/", data: {} });
-    expect(send).toHaveBeenCalledTimes(1);
+    // While it is on, posthog-js's own answer stands.
+    expect(dropped("events")).toBe(false);
+    limited.mockReturnValueOnce(true);
+    expect(dropped("events")).toBe(true);
+    expect(limited).toHaveBeenLastCalledWith("events");
 
     analytics.optOut();
     expect(ph.opt_out_capturing).toHaveBeenCalledTimes(1);
     // What posthog-js still had queued, or was retrying, goes nowhere.
-    ph._send_request({ url: "/e/", data: {} });
-    ph._send_request({ url: "/flags/?v=2", data: {} });
+    expect(dropped("events")).toBe(true);
+    expect(dropped(undefined)).toBe(true);
     analytics.capture("message_sent", { text_length: 3 });
     analytics.pageview("/main", "main");
     analytics.identifyUser("user-1");
-    expect(send).toHaveBeenCalledTimes(1);
     expect(ph.capture).not.toHaveBeenCalled();
     expect(ph.identify).not.toHaveBeenCalled();
     expect(analytics.isReady()).toBe(false);
@@ -272,8 +279,7 @@ describe("opting out in the same session", () => {
     analytics.optOut();
     analytics.optIn();
     expect(ph.opt_in_capturing).toHaveBeenLastCalledWith({ captureEventName: false });
-    ph._send_request({ url: "/e/", data: {} });
-    expect(send).toHaveBeenCalledTimes(1);
+    expect(dropped("events")).toBe(false);
     expect(ph.init).toHaveBeenCalledTimes(1);
   });
 });
