@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.1](https://github.com/fleetifydev/fleetify/compare/v0.2.0...v0.2.1) (2026-11-22)
+
+
+### Bug Fixes
+
+* **branding:** make the app icon visible on dark and light backgrounds ([#35](https://github.com/fleetifydev/fleetify/issues/35)) ([d3d4d04](https://github.com/fleetifydev/fleetify/commit/d3d4d04ecdaf21fe4d8248885f89d35ce106b2a7))
+* **windows:** stop opening a console window for each background command ([#34](https://github.com/fleetifydev/fleetify/issues/34)) ([a1a9f65](https://github.com/fleetifydev/fleetify/commit/a1a9f6590b15174d49c954461be916ac9522cf53))
+
 ## [0.2.0](https://github.com/fleetifydev/fleetify/releases/tag/v0.2.0) (2026-11-22)
 
 The first public release of Fleetify, a command center for AI agents: run Claude Code, Codex, OpenCode and more side by side from one desktop app, follow every session from the Fleet hub, and keep parallel work apart with git worktrees. Fleetify is open source under the Apache License 2.0.
