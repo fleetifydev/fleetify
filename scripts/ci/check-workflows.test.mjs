@@ -1690,6 +1690,21 @@ capture() {
     assert.ok(bundles.length > 0 && bundles.every((i) => i > tools), "a tauri bundle runs before the AppImage tools are installed");
   });
 
+  yamlTest("the Linux compile leg takes the excluded libraries out of the AppImage after both bundle steps, before it collects the bundles and lists the AppImage's libraries", () => {
+    // The collected AppImage, its signature and LINUX-APPIMAGE-LIBRARIES.txt
+    // must all be the repacked one; dry runs and release builds alike.
+    const steps = stepsOf("compile");
+    const exclude = steps.findIndex((step) => commandLines(step).includes('node scripts/release/appimage-exclude.mjs --dir "target/$TRIPLE/release/bundle/appimage"'));
+    assert.ok(exclude !== -1, "the compile job doesn't run appimage-exclude.mjs on the AppImage's folder");
+    assert.deepEqual([steps[exclude].if, steps[exclude].env], ["runner.os == 'Linux'", undefined], "appimage-exclude.mjs must run on Linux in every build, with no environment of its own");
+    const bundles = steps.map((step, i) => (isTauriBundle(step) ? i : -1)).filter((i) => i !== -1);
+    assert.ok(bundles.length === 2 && bundles.every((i) => i < exclude), "a tauri bundle runs after appimage-exclude.mjs");
+    const collect = steps.findIndex((step) => scriptOf(step).includes("collect-bundles.mjs"));
+    const libraries = steps.findIndex((step) => scriptOf(step).includes("appimage-libraries.mjs"));
+    assert.ok(collect !== -1 && libraries !== -1, "the compile job doesn't collect the bundles or list the AppImage's libraries");
+    assert.ok(exclude < collect && exclude < libraries, "the bundles are collected, or the AppImage's libraries listed, before appimage-exclude.mjs runs");
+  });
+
   yamlTest("the macOS compile legs pack exactly compiled-tar.mjs's list, in ustar without macOS metadata, and check the archive", () => {
     const steps = stepsOf("compile");
     const pack = steps.find((step) => /(^|\s)tar\s/m.test(scriptOf(step)));

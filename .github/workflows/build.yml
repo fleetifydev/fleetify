@@ -300,6 +300,14 @@ jobs:
         run: >-
           npx --no -- tauri bundle --no-sign --verbose --ci --target "$TRIPLE" --bundles "$BUNDLES"
           --config src-tauri/tauri.release.conf.json --config "$RUNNER_TEMP/dry-run-config/dry-run.json"
+      # The pinned linuxdeploy copies in libwayland-client, which a newer
+      # system's Mesa needs its own copy of: with the AppImage's loaded,
+      # WebKit can't draw and the window stays blank. This takes the
+      # libraries the system must provide out of the AppImage and repacks
+      # it, before anything collects, signs or lists it.
+      - name: Take the system's libraries out of the AppImage (Linux)
+        if: runner.os == 'Linux'
+        run: node scripts/release/appimage-exclude.mjs --dir "target/$TRIPLE/release/bundle/appimage"
       # Into a folder of its own first: collect-bundles.mjs fills only an
       # empty one, so the artifact holds only this build's files.
       - name: Collect the unsigned bundles (Linux and Windows)

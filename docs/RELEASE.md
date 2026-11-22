@@ -441,6 +441,8 @@ Every release has these 20 assets. `expectedAssets()` in [`release-assets.mjs`](
 
 The weekly dry run also re-checks the AppImage tools that `appimage-tools.json` pins. Three of them are release assets that upstream can replace, and linuxdeploy-plugin-appimage comes from a `continuous` release that is rebuilt from time to time; the two plugin scripts are pinned to a commit. A SHA-256 that no longer matches fails the build on purpose. Download the new file, inspect it, and update its hash in appimage-tools.json in a `build:` pull request of its own.
 
+The pinned linuxdeploy was built in July 2024, before AppImage's excludelist left `libwayland-client.so.0` to the system in November 2024, so it copies the one from Ubuntu 22.04, where the Linux build runs, into the AppImage. A newer system's Mesa needs its own, newer one: with the AppImage's loaded first, WebKit can't create its EGL display, and the window stays blank. So right after bundling, before the AppImage is collected, signed or listed, build.yml runs [`appimage-exclude.mjs`](../scripts/release/appimage-exclude.mjs). It takes each library its `EXCLUDED_LIBRARIES` lists out of the AppImage, and repacks the rest with the pinned linuxdeploy-plugin-appimage and the AppImage's own runtime. Every system with Mesa's EGL has libwayland-client, as Mesa's EGL needs it. Once a newer pinned linuxdeploy leaves the library out itself, the step's log says the AppImage holds none of it: drop the entry then, and the step once the list is empty.
+
 ### Tauri
 
 Tauri stays on 2.11.2 until an upgrade is planned:
