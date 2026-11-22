@@ -22,9 +22,10 @@
  * the files holding the version agree (check-versions.mjs) right after the
  * script tests, and the documented gate lists say so.
  *
- * The workflows that make a release (build.yml, smoke.yml, release-dry-run.yml
- * and release.yml) pin each action to a commit and grant only `contents:
- * read` at the top. build.yml builds release-assets.mjs's TARGETS. Its jobs
+ * Every workflow pins each action to a commit, with its release in a comment:
+ * a tag can be moved to other code. The workflows that make a release
+ * (build.yml, smoke.yml, release-dry-run.yml and release.yml) grant only
+ * `contents: read` at the top. build.yml builds release-assets.mjs's TARGETS. Its jobs
  * that hold the signing keys run only GitHub's own actions, the lockfile's
  * Tauri CLI, system tools and the repository's scripts, get the release
  * secrets only in release-only steps, and check every artifact they take
@@ -575,10 +576,7 @@ const RELEASE = `${WORKFLOWS}/release.yml`;
  */
 const DR_FILE = "scripts/release/macos-designated-requirement.txt";
 
-/**
- * The workflows a release is made by. Their actions run next to the signing
- * keys, so each is pinned to a commit: a tag can be moved to other code.
- */
+/** The workflows a release is made by. Their actions run next to the signing keys. */
 const RELEASE_PATH = ["pr-title.yml", "build.yml", "smoke.yml", "release-dry-run.yml", "release.yml"];
 
 /** The pull request paths that run the dry run: what a release build reads. */
@@ -709,15 +707,21 @@ function inTempDir(fn) {
 }
 
 describe("release workflows", () => {
-  yamlTest("the release workflows pin each action to a commit, with its release beside it", () => {
+  yamlTest("every workflow pins each action to a commit, with its release beside it", () => {
+    // A tag can be moved to other code; a commit can't. The release
+    // workflows' actions run next to the signing keys, and the others'
+    // results gate what reaches main.
     const problems = [];
     let pinned = 0;
-    for (const { rel, workflow: flow } of workflows().filter(({ rel }) => RELEASE_PATH.includes(basename(rel)))) {
+    for (const { rel, workflow: flow } of workflows()) {
       const jobs = Object.values(flow.jobs ?? {});
       const refs = [...jobs.map((job) => job.uses), ...jobs.flatMap((job) => (job.steps ?? []).map((step) => step.uses))];
       for (const ref of refs.filter((uses) => typeof uses === "string" && !uses.startsWith("./"))) {
         pinned += 1;
-        if (!/^[\w.-]+\/[\w./-]+@[0-9a-f]{40}$/.test(ref)) problems.push(`${rel}: ${ref} is not pinned to a full commit SHA`);
+        // A container image is pinned by its digest, which can't be moved either.
+        const atCommit = /^[\w.-]+\/[\w./-]+@[0-9a-f]{40}$/.test(ref);
+        const atDigest = /^docker:\/\/[\w./:-]+@sha256:[0-9a-f]{64}$/.test(ref);
+        if (!atCommit && !atDigest) problems.push(`${rel}: ${ref} is not pinned to a full commit SHA or an image digest`);
       }
       // The comment says which release the SHA is; YAML drops comments, so the text is read.
       for (const [i, line] of read(rel).split(/\r?\n/).entries()) {
@@ -728,7 +732,7 @@ describe("release workflows", () => {
         }
       }
     }
-    assert.ok(pinned > 0, "no release workflow uses an action, so there was nothing to check");
+    assert.ok(pinned > 0, "no workflow uses an action, so there was nothing to check");
     assert.deepEqual(problems, [], problems.join("\n"));
   });
 

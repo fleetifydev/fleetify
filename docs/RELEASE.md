@@ -435,7 +435,7 @@ Every release has these 20 assets. `expectedAssets()` in [`release-assets.mjs`](
 
 - [`rust-toolchain.toml`](../rust-toolchain.toml) pins Rust 1.100.0, and [`.nvmrc`](../.nvmrc) Node 22. Move either one in a `build:` pull request of its own; both files are among the dry run's paths, so the pull request runs one.
 - build.yml's notices job installs cargo-about 0.9.3. To write `THIRD-PARTY-NOTICES` locally, install cargo-about from crates.io with its `cli` feature, `cargo install cargo-about --locked --version 0.9.3 --features cli`, then run `npm ci`, `cargo fetch --locked` and `node scripts/release/third-party-notices.mjs --out THIRD-PARTY-NOTICES`. The file is gitignored, so never commit it.
-- The release workflows pin every action to a full commit, of a release at least 14 days old. Dependabot proposes updates with the same 14-day wait.
+- Every workflow pins every action to a full commit, of a release at least 14 days old, with the release's version in a comment beside it. Dependabot proposes updates with the same 14-day wait and keeps the comment in step.
 
 ### The AppImage tool pins
 
