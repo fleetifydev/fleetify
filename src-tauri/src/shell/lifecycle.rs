@@ -212,68 +212,69 @@ mod tests {
 
     #[test]
     fn the_opt_out_survives_a_save_and_a_reload() {
+        // Saved as Settings saves it: config_set replaces the file through
+        // replace_config_keeping_telemetry.
         let tmp = tempfile::tempdir().unwrap();
-        crate::shell::config::save_config_to(
+        crate::shell::config::replace_config_keeping_telemetry(
             tmp.path(),
-            &json!({ "theme": "dark", "keepRunningOnClose": false }),
+            json!({ "theme": "dark", "keepRunningOnClose": false }),
         )
         .unwrap();
         let cfg = crate::shell::config::load_config_from(tmp.path());
         assert!(!keep_running_from(&cfg));
+        assert_eq!(cfg["theme"], "dark");
     }
 
     #[test]
-    fn on_windows_closing_the_main_window_hides_it_while_the_tray_icon_is_there() {
-        assert_eq!(
-            close_action(true, Platform::Windows, true, true),
-            CloseAction::Hide
-        );
-    }
-
-    #[test]
-    fn on_windows_closing_quits_when_the_setting_is_off() {
-        assert_eq!(
-            close_action(true, Platform::Windows, false, true),
-            CloseAction::Close
-        );
-    }
-
-    #[test]
-    fn on_windows_closing_quits_without_the_tray_icon() {
-        // Nothing would open a hidden window again, or quit Fleetify.
-        assert_eq!(
-            close_action(true, Platform::Windows, true, false),
-            CloseAction::Close
-        );
-    }
-
-    #[test]
-    fn on_macos_closing_the_main_window_hides_it_while_the_setting_is_on() {
-        // The Dock opens it again and quits: no tray icon involved.
-        assert_eq!(
-            close_action(true, Platform::MacOs, true, false),
-            CloseAction::Hide
-        );
-        assert_eq!(
-            close_action(true, Platform::MacOs, true, true),
-            CloseAction::Hide
-        );
-        assert_eq!(
-            close_action(true, Platform::MacOs, false, false),
-            CloseAction::Close
-        );
-    }
-
-    #[test]
-    fn on_linux_closing_the_main_window_always_quits() {
-        for keep_running in [true, false] {
-            for tray_ready in [true, false] {
-                assert_eq!(
-                    close_action(true, Platform::Linux, keep_running, tray_ready),
-                    CloseAction::Close,
-                    "keep_running {keep_running}, tray_ready {tray_ready}"
-                );
-            }
+    fn every_close_action_combination() {
+        use CloseAction::{Close, Hide};
+        use Platform::{Linux, MacOs, Windows};
+        // (main window, platform, keep running, tray ready) → what a close
+        // does. Every combination, once.
+        let cases = [
+            // Windows: hides only while the setting is on and the tray icon
+            // is there; without the icon, nothing would open a hidden window
+            // again or quit Fleetify.
+            (true, Windows, true, true, Hide),
+            (true, Windows, true, false, Close),
+            (true, Windows, false, true, Close),
+            (true, Windows, false, false, Close),
+            // macOS: the Dock opens the window again and quits, so the tray
+            // icon doesn't count.
+            (true, MacOs, true, true, Hide),
+            (true, MacOs, true, false, Hide),
+            (true, MacOs, false, true, Close),
+            (true, MacOs, false, false, Close),
+            // Linux: closing the window always quits.
+            (true, Linux, true, true, Close),
+            (true, Linux, true, false, Close),
+            (true, Linux, false, true, Close),
+            (true, Linux, false, false, Close),
+            // Any window but the main one closes, everywhere.
+            (false, Windows, true, true, Close),
+            (false, Windows, true, false, Close),
+            (false, Windows, false, true, Close),
+            (false, Windows, false, false, Close),
+            (false, MacOs, true, true, Close),
+            (false, MacOs, true, false, Close),
+            (false, MacOs, false, true, Close),
+            (false, MacOs, false, false, Close),
+            (false, Linux, true, true, Close),
+            (false, Linux, true, false, Close),
+            (false, Linux, false, true, Close),
+            (false, Linux, false, false, Close),
+        ];
+        let inputs: std::collections::HashSet<_> = cases
+            .iter()
+            .map(|&(main, platform, keep, tray, _)| (main, platform as u8, keep, tray))
+            .collect();
+        assert_eq!(inputs.len(), 24, "each of the 24 combinations once");
+        for (main_window, platform, keep_running, tray_ready, expected) in cases {
+            assert_eq!(
+                close_action(main_window, platform, keep_running, tray_ready),
+                expected,
+                "main window {main_window}, {platform:?}, keep running {keep_running}, tray ready {tray_ready}"
+            );
         }
     }
 
@@ -361,16 +362,5 @@ mod tests {
         }
         assert!(walked > 10, "the walk found only {walked} source files");
         assert!(hits.is_empty(), "{hits:#?} prevent an exit request");
-    }
-
-    #[test]
-    fn any_other_window_closes() {
-        for platform in [Platform::Windows, Platform::MacOs, Platform::Linux] {
-            assert_eq!(
-                close_action(false, platform, true, true),
-                CloseAction::Close,
-                "{platform:?}"
-            );
-        }
     }
 }
