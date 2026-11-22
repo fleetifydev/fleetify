@@ -19,6 +19,14 @@
  * later changes three bytes of the cached linuxdeploy in place, so it is the
  * download that is checked, not the cache afterwards.
  *
+ * A download that fails in a way that can pass is tried again, three tries in
+ * all, 2 s and then 5 s apart: a network error or a timeout, while fetching
+ * or while reading the body, or HTTP 429 or 5xx. Each retry is reported on
+ * stderr with the tool, the try and the reason. Any other HTTP status fails at
+ * once, and so does a SHA-256 that doesn't match: upstream replaced the file,
+ * which another try wouldn't change (appimage-tools.json's note says what to
+ * do then).
+ *
  * URLs must be https; plain http is accepted from the loopback address
  * only, which the tests use.
  *
@@ -35,6 +43,10 @@ const USAGE = "usage: node scripts/release/appimage-tools.mjs [--manifest <file>
 const DEFAULT_MANIFEST = fileURLToPath(new URL("./appimage-tools.json", import.meta.url));
 const LOOPBACK = new Set(["127.0.0.1", "localhost", "[::1]"]);
 const DOWNLOAD_TIMEOUT_MS = 180_000;
+/** The waits before a download's second and third tries, after a failure that can pass. */
+const RETRY_DELAYS_MS = [2_000, 5_000];
+
+const pause = (ms) => new Promise((done) => setTimeout(done, ms));
 
 /** Where tauri-bundler caches its AppImage tools: dirs::cache_dir()/tauri. */
 export function defaultCacheDir(env = process.env) {
@@ -74,28 +86,78 @@ export function parseManifest(manifest) {
   return tools.map(({ file, url, sha256 }) => ({ file, url, sha256 }));
 }
 
-/** Download one tool; resolves with its bytes, or rejects with an Error naming the HTTP status. */
-async function download(url) {
-  const response = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) });
-  if (!response.ok) throw new Error(`HTTP ${response.status} from ${url}`);
-  return Buffer.from(await response.arrayBuffer());
+/** An Error with `message`, whose `retry` says whether another try could succeed. */
+const failure = (message, retry) => Object.assign(new Error(message), { retry });
+
+/** Why fetch failed: its message, and its cause's code or message, as its own message says only "fetch failed". */
+function reason(err) {
+  const cause = err?.cause?.code ?? err?.cause?.message;
+  return cause ? `${err.message} (${cause})` : String(err?.message ?? err);
 }
 
 /**
- * Download and check every tool, then install them all, or none.
+ * Download one tool, once; resolves with its bytes, or rejects with a
+ * failure() that says whether another try could succeed. Any error while
+ * fetching it or reading its body can pass, the timeout's included, and so
+ * can HTTP 429 and 5xx; any other HTTP status can't.
+ */
+async function download(url, fetch) {
+  let response;
+  try {
+    response = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) });
+  } catch (err) {
+    throw failure(reason(err), true);
+  }
+  if (!response.ok) {
+    // Dropped unread, which frees the connection for the next try.
+    await response.body?.cancel().catch(() => {});
+    throw failure(`HTTP ${response.status} from ${url}`, response.status === 429 || response.status >= 500);
+  }
+  try {
+    return Buffer.from(await response.arrayBuffer());
+  } catch (err) {
+    throw failure(reason(err), true);
+  }
+}
+
+/**
+ * Download one tool, trying again after each of RETRY_DELAYS_MS while the
+ * failure is one that can pass, and reporting each retry to `warn`. Resolves
+ * with its bytes, or rejects with the last failure, whose `attempts` says
+ * how many tries were made.
+ */
+async function downloadTool({ file, url }, { fetch, sleep, warn }) {
+  const attempts = RETRY_DELAYS_MS.length + 1;
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await download(url, fetch);
+    } catch (err) {
+      if (!err.retry || attempt === attempts) throw Object.assign(err, { attempts: attempt });
+      const wait = RETRY_DELAYS_MS[attempt - 1];
+      warn(`${file}: attempt ${attempt} of ${attempts} failed: ${err.message}; trying again in ${wait / 1000} s`);
+      await sleep(wait);
+    }
+  }
+}
+
+/**
+ * Download and check every tool, then install them all, or none. `fetch` and
+ * `sleep` stand in for the global fetch and a real wait in the tests; `warn`
+ * gets a line for each retry.
  *
- * @param {{ tools: { file: string, url: string, sha256: string }[], cacheDir: string, log?: (line: string) => void }} options
+ * @param {{ tools: { file: string, url: string, sha256: string }[], cacheDir: string, log?: (line: string) => void, warn?: (line: string) => void, fetch?: typeof globalThis.fetch, sleep?: (ms: number) => Promise<void> }} options
  * @returns {Promise<string[]>} the problems; empty when every tool was installed
  */
-export async function installTools({ tools, cacheDir, log = () => {} }) {
+export async function installTools({ tools, cacheDir, log = () => {}, warn = () => {}, fetch = globalThis.fetch, sleep = pause }) {
   const problems = [];
   const checked = [];
   for (const { file, url, sha256 } of tools) {
     let bytes;
     try {
-      bytes = await download(url);
+      bytes = await downloadTool({ file, url }, { fetch, sleep, warn });
     } catch (err) {
-      problems.push(`${file}: download failed: ${err.message}`);
+      const tries = err.attempts > 1 ? ` after ${err.attempts} attempts` : "";
+      problems.push(`${file}: download failed${tries}: ${err.message}`);
       continue;
     }
     const actual = createHash("sha256").update(bytes).digest("hex");
@@ -152,7 +214,12 @@ async function main(argv) {
     process.stderr.write(`appimage-tools: bad manifest ${args.manifest}: ${err.message}\n`);
     return 1;
   }
-  const problems = await installTools({ tools, cacheDir: args.cacheDir, log: (line) => process.stdout.write(`appimage-tools: ${line}\n`) });
+  const problems = await installTools({
+    tools,
+    cacheDir: args.cacheDir,
+    log: (line) => process.stdout.write(`appimage-tools: ${line}\n`),
+    warn: (line) => process.stderr.write(`appimage-tools: ${line}\n`),
+  });
   if (problems.length > 0) {
     for (const problem of problems) process.stderr.write(`appimage-tools: ${problem}\n`);
     process.stderr.write(`appimage-tools: nothing was installed into ${args.cacheDir}\n`);

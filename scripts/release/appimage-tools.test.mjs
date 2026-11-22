@@ -4,8 +4,9 @@
  *
  *   node --test scripts/release/appimage-tools.test.mjs
  *
- * The installs run against a server on 127.0.0.1; nothing here touches the
- * network.
+ * The installs run against a server on 127.0.0.1, and the retries against a
+ * stand-in fetch, with a stand-in sleep that doesn't wait; nothing here
+ * touches the network.
  */
 import { after, describe, test } from "node:test";
 import assert from "node:assert/strict";
@@ -16,6 +17,8 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { installTools } from "./appimage-tools.mjs";
 
 const SCRIPT = fileURLToPath(new URL("./appimage-tools.mjs", import.meta.url));
 const MANIFEST = JSON.parse(readFileSync(new URL("./appimage-tools.json", import.meta.url), "utf8"));
@@ -237,5 +240,130 @@ describe("appimage-tools.mjs", () => {
       assert.equal(result.status, 2, `${args.join(" ")}: ${result.stderr}`);
       assert.match(result.stderr, /usage:/);
     }
+  });
+});
+
+describe("appimage-tools.mjs's retries", () => {
+  const bytes = Buffer.from("#!/bin/sh\necho one\n");
+  // Never fetched: the stand-in fetch answers in its place.
+  const tool = { file: "one.sh", url: "http://127.0.0.1:9/one.sh", sha256: sha256(bytes) };
+
+  /** fetch's own rejection when a connection drops: "fetch failed", with the reason as its cause. */
+  const reset = () => {
+    throw new TypeError("fetch failed", { cause: Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" }) });
+  };
+  /** fetch's rejection when the download's AbortSignal.timeout() fires. */
+  const timeout = () => {
+    throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+  };
+  const ok = (body) => () => new Response(body);
+  const status = (code) => () => new Response(`status ${code}`, { status: code });
+  /** A response whose body breaks off before its end, as when the connection drops part-way. */
+  const cut = () =>
+    new Response(
+      new ReadableStream({
+        pull(controller) {
+          controller.error(new TypeError("terminated"));
+        },
+      }),
+    );
+
+  /**
+   * Install `tool` with a stand-in fetch whose nth call takes the nth of
+   * `answers` (the last one again once they run out), and a stand-in sleep
+   * that only notes how long it was asked to wait.
+   */
+  async function install(answers) {
+    const cache = fresh("cache");
+    const calls = [];
+    const waits = [];
+    const warnings = [];
+    const problems = await installTools({
+      tools: [tool],
+      cacheDir: cache,
+      fetch: async (url, options) => {
+        calls.push({ url, options });
+        return answers[Math.min(calls.length, answers.length) - 1]();
+      },
+      sleep: async (ms) => {
+        waits.push(ms);
+      },
+      warn: (line) => warnings.push(line),
+    });
+    return { problems, calls, waits, warnings, cache };
+  }
+
+  test("two network failures, a dropped connection and a timeout, then the download: the tool is installed, after waits of 2 s and 5 s", async () => {
+    const result = await install([reset, timeout, ok(bytes)]);
+    assert.deepEqual(result.problems, []);
+    assert.ok(readFileSync(join(result.cache, "one.sh")).equals(bytes));
+    assert.deepEqual(result.waits, [2000, 5000]);
+    assert.deepEqual(result.warnings, [
+      "one.sh: attempt 1 of 3 failed: fetch failed (ECONNRESET); trying again in 2 s",
+      "one.sh: attempt 2 of 3 failed: The operation was aborted due to timeout; trying again in 5 s",
+    ]);
+    // Each try is a fresh request, with its own timeout.
+    assert.equal(result.calls.length, 3);
+    for (const { url, options } of result.calls) {
+      assert.equal(url, tool.url);
+      assert.equal(options.redirect, "follow");
+      assert.ok(options.signal instanceof AbortSignal, "the request has no timeout");
+    }
+    assert.notEqual(result.calls[0].options.signal, result.calls[1].options.signal, "the tries share one timeout");
+  });
+
+  test("a download whose body breaks off part-way is tried again", async () => {
+    const result = await install([cut, ok(bytes)]);
+    assert.deepEqual(result.problems, []);
+    assert.ok(readFileSync(join(result.cache, "one.sh")).equals(bytes));
+    assert.deepEqual(result.waits, [2000]);
+    assert.deepEqual(result.warnings, ["one.sh: attempt 1 of 3 failed: terminated; trying again in 2 s"]);
+  });
+
+  for (const code of [429, 500, 502, 503, 504]) {
+    test(`HTTP ${code}, then the download: tried again, and installed`, async () => {
+      const result = await install([status(code), ok(bytes)]);
+      assert.deepEqual(result.problems, []);
+      assert.ok(readFileSync(join(result.cache, "one.sh")).equals(bytes));
+      assert.equal(result.calls.length, 2);
+      assert.deepEqual(result.waits, [2000]);
+      assert.deepEqual(result.warnings, [`one.sh: attempt 1 of 3 failed: HTTP ${code} from ${tool.url}; trying again in 2 s`]);
+    });
+  }
+
+  for (const code of [403, 404]) {
+    test(`HTTP ${code} fails at once, without another try, and nothing is installed`, async () => {
+      const result = await install([status(code), ok(bytes)]);
+      assert.deepEqual(result.problems, [`one.sh: download failed: HTTP ${code} from ${tool.url}`]);
+      assert.equal(result.calls.length, 1);
+      assert.deepEqual([result.waits, result.warnings], [[], []]);
+      assert.ok(!existsSync(result.cache), "something was installed");
+    });
+  }
+
+  test("a SHA-256 that doesn't match fails at once, without another try: upstream replaced the file", async () => {
+    const result = await install([ok(Buffer.from("something else")), ok(bytes)]);
+    assert.equal(result.problems.length, 1, result.problems.join("\n"));
+    assert.match(result.problems[0], /^one\.sh: SHA-256 [0-9a-f]{64}, expected [0-9a-f]{64} \(from http:\/\/127\.0\.0\.1:9\/one\.sh\)$/);
+    assert.equal(result.calls.length, 1);
+    assert.deepEqual([result.waits, result.warnings], [[], []]);
+    assert.ok(!existsSync(result.cache), "something was installed");
+  });
+
+  test("three network failures fail, naming the tool, the tries and the last failure, and nothing is installed", async () => {
+    const result = await install([reset]);
+    assert.deepEqual(result.problems, ["one.sh: download failed after 3 attempts: fetch failed (ECONNRESET)"]);
+    assert.equal(result.calls.length, 3);
+    assert.deepEqual(result.waits, [2000, 5000]);
+    assert.equal(result.warnings.length, 2);
+    assert.ok(!existsSync(result.cache), "something was installed");
+  });
+
+  test("a failure that can pass, then one that can't: it stops there, and says how many tries it took", async () => {
+    const result = await install([status(503), status(404), ok(bytes)]);
+    assert.deepEqual(result.problems, [`one.sh: download failed after 2 attempts: HTTP 404 from ${tool.url}`]);
+    assert.equal(result.calls.length, 2);
+    assert.deepEqual(result.waits, [2000]);
+    assert.ok(!existsSync(result.cache), "something was installed");
   });
 });
