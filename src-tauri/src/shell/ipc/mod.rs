@@ -1475,10 +1475,9 @@ pub async fn window_set_size(
 // dark)")` and calls this on mount + on change.
 //
 // PNGs are embedded at compile time so the swap doesn't depend on
-// the app's working directory or the bundle's resource layout. The
-// Windows notification-area icon uses them too (shell::tray).
-pub(crate) const ICON_LIGHT_PNG: &[u8] = include_bytes!("../../../icons/logo-mark-light.png");
-pub(crate) const ICON_DARK_PNG: &[u8] = include_bytes!("../../../icons/logo-mark-dark.png");
+// the app's working directory or the bundle's resource layout.
+const ICON_LIGHT_PNG: &[u8] = include_bytes!("../../../icons/logo-mark-light.png");
+const ICON_DARK_PNG: &[u8] = include_bytes!("../../../icons/logo-mark-dark.png");
 
 #[tauri::command]
 pub async fn window_set_taskbar_icon(app: tauri::AppHandle, variant: String) -> serde_json::Value {

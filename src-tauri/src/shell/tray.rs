@@ -13,7 +13,12 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::shell::ipc::{ICON_DARK_PNG, ICON_LIGHT_PNG};
+/// The icon's two marks, white and dark, at 32 px: scripts/icons.mjs makes
+/// them from public/logo-mark-light.svg and public/logo-mark-dark.svg.
+/// Windows draws the icon at 16 to 24 px on most screens, and a 32 px image
+/// scales down to that more cleanly than the 256 px taskbar glyphs.
+const TRAY_LIGHT_PNG: &[u8] = include_bytes!("../../icons/tray-mark-light.png");
+const TRAY_DARK_PNG: &[u8] = include_bytes!("../../icons/tray-mark-dark.png");
 
 /// Set once the icon is in the notification area. A close hides the main
 /// window on Windows only then: without the icon, nothing would open the
@@ -33,15 +38,15 @@ pub const QUIT_LABEL: &str = "Quit Fleetify";
 /// `SystemUsesLightTheme` value under
 /// `HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize` (the
 /// taskbar's setting, not the apps' `AppsUseLightTheme`), or `None` when
-/// there is none: the dark mark (`logo-mark-dark.png`) on a light taskbar,
+/// there is none: the dark mark (`tray-mark-dark.png`) on a light taskbar,
 /// any value but 0, as Windows reads its switches, and the white mark
-/// (`logo-mark-light.png`) on a dark one, 0 or no value. Windows scales the
+/// (`tray-mark-light.png`) on a dark one, 0 or no value. Windows scales the
 /// image to the notification area's size.
 #[cfg_attr(not(windows), allow(dead_code))]
 pub fn tray_icon_png(system_uses_light_theme: Option<u32>) -> &'static [u8] {
     match system_uses_light_theme {
-        Some(value) if value != 0 => ICON_DARK_PNG,
-        _ => ICON_LIGHT_PNG,
+        Some(value) if value != 0 => TRAY_DARK_PNG,
+        _ => TRAY_LIGHT_PNG,
     }
 }
 
@@ -298,9 +303,9 @@ mod tests {
 
     /// Which mark `png` is, for readable failures.
     fn mark(png: &[u8]) -> &'static str {
-        if png == ICON_DARK_PNG {
+        if png == TRAY_DARK_PNG {
             "dark"
-        } else if png == ICON_LIGHT_PNG {
+        } else if png == TRAY_LIGHT_PNG {
             "white"
         } else {
             "neither"
@@ -331,7 +336,35 @@ mod tests {
 
     #[test]
     fn the_two_marks_are_different_images() {
-        assert_ne!(ICON_LIGHT_PNG, ICON_DARK_PNG);
+        assert_ne!(TRAY_LIGHT_PNG, TRAY_DARK_PNG);
+    }
+
+    #[test]
+    fn each_mark_is_32_px_and_its_colour() {
+        // 32 px, not the 256 px taskbar glyphs: Windows scales the image to
+        // the notification area's 16 to 24 px. The white mark is white and
+        // the dark one dark, so neither was swapped for the other.
+        for (png, name, colour) in [
+            (TRAY_LIGHT_PNG, "white", 255u8),
+            (TRAY_DARK_PNG, "dark", 10u8),
+        ] {
+            let image = tauri::image::Image::from_bytes(png).expect("a PNG");
+            assert_eq!((image.width(), image.height()), (32, 32), "{name}");
+            let opaque: Vec<&[u8]> = image
+                .rgba()
+                .chunks(4)
+                .filter(|pixel| pixel[3] == 255)
+                .collect();
+            assert!(opaque.len() > 50, "the {name} mark has no solid bars");
+            for pixel in opaque {
+                for channel in &pixel[..3] {
+                    assert!(
+                        channel.abs_diff(colour) <= 8,
+                        "the {name} mark has a pixel {pixel:?}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
