@@ -14,7 +14,7 @@
  * which print unsignedAssets(), updaterAssets() and expectedAssets(), one
  * name a line (exit 0; 1 for an unknown triple or a bad version; 2 usage).
  *
- * Asset names are the Tauri CLI's own (tauri-cli 2.11.2), with one exception:
+ * Asset names are the Tauri CLI's own (tauri-cli 2.11.5), with one exception:
  * both macOS builds write macos/Fleetify.app.tar.gz, so the updater archive is
  * published with the version and arch added.
  */

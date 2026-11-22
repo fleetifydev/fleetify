@@ -15,7 +15,9 @@
  *
  * The CLI merges the overlay into the config as a JSON merge patch: the
  * endpoints list replaces the shipped one as a whole, and the updater's other
- * settings stay as shipped.
+ * settings stay as shipped. requireSignedVersion is one of them, so the
+ * rehearsal's update must pass the check a released build makes: its
+ * signature must name the version the update server announces.
  *
  * The key file is `tauri signer generate`'s .pub output, read with
  * surrounding whitespace trimmed: the updater decodes the configured key as

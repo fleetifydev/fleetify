@@ -158,6 +158,15 @@ describe("release config", () => {
     assert.deepEqual(problems, [], problems.join("\n"));
   });
 
+  test("the shipped updater takes only a signature made for the version the update endpoint announces", () => {
+    // tauri-plugin-updater's requireSignedVersion, in its camelCase name: the
+    // plugin ignores a key it doesn't know. The check above keeps every
+    // overlay away from plugins.updater, so a release build has it too.
+    const updater = JSON.parse(read("src-tauri/tauri.conf.json")).plugins?.updater ?? {};
+    assert.equal(updater.requireSignedVersion, true);
+    assert.equal(updater["require-signed-version"], undefined, "the kebab-case alias would be a second spelling of the same key");
+  });
+
   test("src-tauri holds no Tauri config in JSON5 or TOML, which the check above doesn't read", () => {
     const others = readdirSync(new URL("../../src-tauri/", import.meta.url))
       .filter((name) => /^tauri.*\.conf\.json5$/i.test(name) || /^tauri.*\.toml$/i.test(name))

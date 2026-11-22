@@ -5,9 +5,10 @@
 //! (`updatesAuto` in `fleet.config.json`, see [`auto_updates_enabled`]). The
 //! renderer can ask for a check at any time (`updater_check`). A newer
 //! version downloads in the background, and the plugin checks its signature
-//! against the release key (`plugins.updater.pubkey` in `tauri.conf.json`).
-//! It installs only when the user picks Restart to update
-//! (`updater_restart`). Debug builds never check.
+//! against the release key (`plugins.updater.pubkey` in `tauri.conf.json`),
+//! and that the signature names the version the endpoint announced
+//! (`requireSignedVersion`). It installs only when the user picks Restart to
+//! update (`updater_restart`). Debug builds never check.
 //!
 //! Every status change goes to the renderer as [`UPDATE_EVENT`], and
 //! `updater_status` answers with the current one. `tauri-plugin-updater` makes
@@ -797,6 +798,21 @@ mod tests {
             "untrusted comment: minisign public key: 44C694713A20D751"
         );
         assert_eq!(plugin_config().pubkey, pubkey);
+    }
+
+    #[test]
+    fn the_updater_takes_only_a_signature_made_for_the_version_announced() {
+        // The update endpoint's answer isn't signed. The plugin compares the
+        // version in the signature's trusted comment, which the signature
+        // covers, with the version the answer announces, and refuses a
+        // mismatch; requireSignedVersion also refuses a signature that names
+        // no version. The plugin ignores a key it doesn't know, so it is
+        // read here as the plugin reads it.
+        assert_eq!(
+            shipped_updater_config()["requireSignedVersion"],
+            json!(true)
+        );
+        assert!(plugin_config().require_signed_version);
     }
 
     #[test]

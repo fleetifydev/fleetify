@@ -73,11 +73,12 @@ const extraArgs = () => EXTRAS.flatMap((path) => ["--extra", path]);
  * A complete --in tree: each target's bundles, the Linux library list and the
  * notices. A fake bundle holds "fake <name>\n". Its .sig holds "sig:<name>\n",
  * which stubVerify accepts, or, with `keys` ({ [triple]: test key }), a real
- * signature by that target's key, whose trusted comment is `comment(name)`.
- * `pubkeyFiles` adds each bundle folder's updater-pubkey.txt, as a dry run has
- * them: the target's key, or else fixture.pub.
+ * signature by that target's key, whose trusted comment is `comment(name)`:
+ * by default the one tauri-cli 2.11.5 writes for version 0.2.0. `pubkeyFiles`
+ * adds each bundle folder's updater-pubkey.txt, as a dry run has them: the
+ * target's key, or else fixture.pub.
  */
-function inputTree({ keys = null, pubkeyFiles = false, comment = (name) => `timestamp:1795238472\tfile:${name}` } = {}) {
+function inputTree({ keys = null, pubkeyFiles = false, comment = (name) => `timestamp:1795238472\tfile:${name}\tversion:${V}` } = {}) {
   const dir = fresh("in");
   for (const { triple } of TARGETS) {
     const folder = join(dir, `bundles-${triple}`);
@@ -447,16 +448,34 @@ describe("assemble, with the real signature check and keys from the test run", (
     assert.equal(problems.length, 1);
   });
 
-  test("a version: field in a trusted comment: the release version passes, any other is a problem, none is fine", () => {
+  test("the trusted comment's version: field must name the release version: any other, or none, is a problem", () => {
     const signed = (comment) => {
       const inDir = inputTree({ keys: perTargetKeys(), pubkeyFiles: true, comment });
       return assemble({ inDir, outDir: fresh("out"), version: V, pubkeys: { perTarget: true }, extras: EXTRAS, now: NOW });
     };
     const base = (name) => `timestamp:1795238472\tfile:${name}`;
-    assert.deepEqual(signed((name) => `${base(name)}\tversion:0.2.0`).problems, []);
-    assert.deepEqual(signed(base).problems, []);
-    const { assets, problems } = signed((name) => (name === DEB ? `${base(name)}\tversion:0.1.0` : base(name)));
-    assert.deepEqual(problems, [`bad signature for ${DEB}: signed for version "0.1.0", not 0.2.0`]);
+    const release = (name) => `${base(name)}\tversion:0.2.0`;
+    assert.deepEqual(signed(release).problems, []);
+    const other = signed((name) => (name === DEB ? `${base(name)}\tversion:0.1.0` : release(name)));
+    assert.deepEqual(other.problems, [`bad signature for ${DEB}: signed for version "0.1.0", not 0.2.0`]);
+    assert.deepEqual(other.assets, []);
+    // As tauri-cli 2.11.2 signed, and tauri signer sign without --app-version.
+    const none = signed((name) => (name === APPIMAGE ? base(name) : release(name)));
+    assert.equal(none.problems.length, 1, none.problems.join("\n"));
+    assertProblem(none.problems, literal(`bad signature for ${APPIMAGE}: the trusted comment names no version, so the signature isn't bound to 0.2.0`));
+    assert.deepEqual(none.assets, []);
+  });
+
+  test("a release run, against one key from its config: a signature without the version is a problem too", () => {
+    const key = makeTestKey();
+    const keys = Object.fromEntries(TARGETS.map(({ triple }) => [triple, key]));
+    const config = join(fresh("conf"), "tauri.conf.json");
+    mkdirSync(join(config, ".."));
+    writeFileSync(config, JSON.stringify({ plugins: { updater: { pubkey: key.tauriPublicKey } } }));
+    const inDir = inputTree({ keys, comment: (name) => `timestamp:1795238472\tfile:${name}` });
+    const { assets, problems } = assemble({ inDir, outDir: fresh("out"), version: V, pubkeys: { config, expectKeyId: key.keyId }, extras: EXTRAS, now: NOW });
+    assert.equal(problems.length, updaterArtifacts(V).length, problems.join("\n"));
+    for (const { asset } of updaterArtifacts(V)) assertProblem(problems, literal(`bad signature for ${asset}: the trusted comment names no version`));
     assert.deepEqual(assets, []);
   });
 
@@ -483,7 +502,7 @@ describe("assemble, with the real signature check and keys from the test run", (
 describe("the CLI", () => {
   const cli = (...args) => spawnSync(process.execPath, [SCRIPT, ...args], { encoding: "utf8" });
 
-  test("a signed dry-run tree: exit 0, listing the assets and each key that verified them", () => {
+  test("a signed dry-run tree: exit 0, listing the assets and each key and version that verified them", () => {
     const keys = Object.fromEntries(TARGETS.map(({ triple }) => [triple, makeTestKey()]));
     const inDir = inputTree({ keys, pubkeyFiles: true });
     const outDir = fresh("out");
@@ -491,6 +510,9 @@ describe("the CLI", () => {
     assert.equal(result.status, 0, result.stderr);
     for (const asset of expectedAssets(V)) assert.ok(result.stdout.includes(asset), result.stdout);
     for (const key of Object.values(keys)) assert.ok(result.stdout.includes(key.keyId), result.stdout);
+    for (const { asset } of updaterArtifacts(V)) {
+      assert.match(result.stdout, new RegExp(`signature ok, key [0-9A-F]{16}, version 0\\.2\\.0: ${asset.replaceAll(".", "\\.")} `), asset);
+    }
     assert.deepEqual(readdirSync(outDir).sort(), expectedAssets(V));
   });
 

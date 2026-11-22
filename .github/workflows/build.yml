@@ -16,7 +16,9 @@
 #   uses one; bundle-macos also reads compiled.tar member by member before
 #   it copies the listed files into the checkout. sign signs the updater
 #   artifacts with the Tauri CLI's signer; bundle-macos bundles and signs
-#   the app, and is the only job with the macOS identity.
+#   the app, and is the only job with the macOS identity. Each updater
+#   signature names the release's version, which the signature covers and
+#   the updater compares with the version it is offered.
 # npm installs everywhere with --ignore-scripts: no install script runs.
 # Each of the two uploads bundles-<triple>: that target's files under their
 # release names (scripts/release/release-assets.mjs), which assemble.mjs
@@ -498,12 +500,16 @@ jobs:
         if: inputs.environment == 'dry-run'
         run: node scripts/release/check-artifact.mjs "$RUNNER_TEMP/dry-run" updater.key updater.key.pub
       # The Tauri CLI's signer writes each <file>.sig as the bundler would,
-      # with the same function and trusted comment. The release key reaches
-      # it through the environment, never as an argument. Each call gets
-      # /dev/null for input, so nothing reads the loop's list. A key arrives
-      # empty when the release environment lacks it or the caller doesn't
-      # pass it, which the signer reports as a bad password, so the step
-      # first names each empty one, never a value.
+      # with the same function and trusted comment: --app-version adds the
+      # release's version to that comment, which the signature covers, as
+      # tauri bundle does on its own. The updater refuses a signature whose
+      # version isn't the one the update endpoint announces, and the shipped
+      # config (requireSignedVersion) one that names no version. The release
+      # key reaches the signer through the environment, never as an
+      # argument. Each call gets /dev/null for input, so nothing reads the
+      # loop's list. A key arrives empty when the release environment lacks
+      # it or the caller doesn't pass it, which the signer reports as a bad
+      # password, so the step first names each empty one, never a value.
       - name: Sign the updater artifacts (release)
         if: inputs.environment == 'release'
         env:
@@ -520,31 +526,31 @@ jobs:
           if [ "$missing" = 1 ]; then exit 1; fi
           updaters=$(node scripts/release/release-assets.mjs updaters "$TRIPLE" "$VERSION")
           while IFS= read -r name; do
-            npx --no -- tauri signer sign "$RUNNER_TEMP/bundles/$name" < /dev/null
+            npx --no -- tauri signer sign --app-version "$VERSION" "$RUNNER_TEMP/bundles/$name" < /dev/null
           done <<< "$updaters"
       - name: Sign the updater artifacts (dry run)
         if: inputs.environment == 'dry-run'
         run: |
           updaters=$(node scripts/release/release-assets.mjs updaters "$TRIPLE" "$VERSION")
           while IFS= read -r name; do
-            npx --no -- tauri signer sign -f "$RUNNER_TEMP/dry-run/updater.key" -p "" "$RUNNER_TEMP/bundles/$name" < /dev/null
+            npx --no -- tauri signer sign -f "$RUNNER_TEMP/dry-run/updater.key" -p "" --app-version "$VERSION" "$RUNNER_TEMP/bundles/$name" < /dev/null
           done <<< "$updaters"
       # Each signature verifies against the key the release's updater trusts,
-      # or in a dry run the run's own.
+      # or in a dry run the run's own, and names the release's version.
       - name: Check the updater signatures (release)
         if: inputs.environment == 'release'
         run: |
           updaters=$(node scripts/release/release-assets.mjs updaters "$TRIPLE" "$VERSION")
           files=()
           while IFS= read -r name; do files+=("$RUNNER_TEMP/bundles/$name"); done <<< "$updaters"
-          node scripts/release/minisign.mjs verify --pubkey-config src-tauri/tauri.conf.json --expect-key-id 44C694713A20D751 "${files[@]}"
+          node scripts/release/minisign.mjs verify --pubkey-config src-tauri/tauri.conf.json --expect-key-id 44C694713A20D751 --version "$VERSION" "${files[@]}"
       - name: Check the updater signatures (dry run)
         if: inputs.environment == 'dry-run'
         run: |
           updaters=$(node scripts/release/release-assets.mjs updaters "$TRIPLE" "$VERSION")
           files=()
           while IFS= read -r name; do files+=("$RUNNER_TEMP/bundles/$name"); done <<< "$updaters"
-          node scripts/release/minisign.mjs verify --pubkey-file "$RUNNER_TEMP/dry-run/updater.key.pub" "${files[@]}"
+          node scripts/release/minisign.mjs verify --pubkey-file "$RUNNER_TEMP/dry-run/updater.key.pub" --version "$VERSION" "${files[@]}"
       # assemble.mjs checks each dry-run build's signatures against its own key.
       - name: Add the run's updater public key (dry run)
         if: inputs.environment == 'dry-run'
@@ -682,7 +688,7 @@ jobs:
       # through APPLE_CERTIFICATE, looks only for certificates named like
       # Apple's ("Developer ID Application: …", with an organizational unit),
       # so it can't find a self-signed one (tauri-macos-sign 2.3.4, which
-      # tauri-cli 2.11.2 uses). A self-signed certificate is valid only where
+      # tauri-cli 2.11.5 uses). A self-signed certificate is valid only where
       # it is trusted, so the script trusts it for code signing in the
       # System keychain. That setting stays: GitHub discards a hosted
       # runner's VM after the job, and removing the setting waits for an
@@ -735,9 +741,10 @@ jobs:
           printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$dir/release.p12"
           P12="$dir/release.p12" bash scripts/release/macos-keychain.sh import
           rm -f "$dir/release.p12"
-      # The release keys: the updater key signs the updater artifact, and the
-      # identity the step above set up signs the app. tauri bundle bundles
-      # the binaries the compile job built; it doesn't rebuild them.
+      # The release keys: the updater key signs the updater artifact, for the
+      # version in tauri.conf.json, and the identity the step above set up
+      # signs the app. tauri bundle bundles the binaries the compile job
+      # built; it doesn't rebuild them.
       # --verbose logs each command the bundler runs (codesign, hdiutil).
       # None takes a secret as an argument: the updater key reaches the CLI
       # through the environment, and the identity is a certificate's name.
@@ -826,21 +833,23 @@ jobs:
       - name: Collect the bundles
         run: node scripts/release/collect-bundles.mjs --target "$TRIPLE" --version "$VERSION" --out "$RUNNER_TEMP/bundles"
       # The updater artifact's signature verifies against the key the
-      # release's updater trusts, or in a dry run the run's own.
+      # release's updater trusts, or in a dry run the run's own, and names
+      # the release's version: tauri bundle signs it for the version in
+      # tauri.conf.json, which check-versions.mjs keeps equal to it.
       - name: Check the updater signature (release)
         if: inputs.environment == 'release'
         run: |
           updaters=$(node scripts/release/release-assets.mjs updaters "$TRIPLE" "$VERSION")
           files=()
           while IFS= read -r name; do files+=("$RUNNER_TEMP/bundles/$name"); done <<< "$updaters"
-          node scripts/release/minisign.mjs verify --pubkey-config src-tauri/tauri.conf.json --expect-key-id 44C694713A20D751 "${files[@]}"
+          node scripts/release/minisign.mjs verify --pubkey-config src-tauri/tauri.conf.json --expect-key-id 44C694713A20D751 --version "$VERSION" "${files[@]}"
       - name: Check the updater signature (dry run)
         if: inputs.environment == 'dry-run'
         run: |
           updaters=$(node scripts/release/release-assets.mjs updaters "$TRIPLE" "$VERSION")
           files=()
           while IFS= read -r name; do files+=("$RUNNER_TEMP/bundles/$name"); done <<< "$updaters"
-          node scripts/release/minisign.mjs verify --pubkey-file "$RUNNER_TEMP/dry-run/updater.key.pub" "${files[@]}"
+          node scripts/release/minisign.mjs verify --pubkey-file "$RUNNER_TEMP/dry-run/updater.key.pub" --version "$VERSION" "${files[@]}"
       # assemble.mjs checks each dry-run build's signatures against its own key.
       - name: Add the run's updater public key (dry run)
         if: inputs.environment == 'dry-run'

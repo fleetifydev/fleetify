@@ -22,14 +22,15 @@
  *   - a missing file, and an unexpected one: --in holds exactly those files,
  *     each a non-empty regular file (symlinks aren't followed);
  *   - a signature that doesn't verify: each updater artifact's .sig is checked
- *     (minisign.mjs) against the updater public key, and a version: field in
- *     its trusted comment, if there is one, must name the release version, as
- *     the updater requires. With --pubkey-config,
- *     that is the key in the config, which every build embeds, and its key
- *     id must be --expect-key-id; `tauri build` only warns when it signs with
- *     another key. With --per-target-pubkeys (dry runs, where each build
- *     signs with a throwaway key), it is each bundle folder's own
- *     updater-pubkey.txt, which isn't published;
+ *     (minisign.mjs) against the updater public key, and the version: field
+ *     of its trusted comment must name the release version, which latest.json
+ *     announces: the updater refuses a signature made for another version,
+ *     and with requireSignedVersion one that names none. With
+ *     --pubkey-config, that is the key in the config, which every build
+ *     embeds, and its key id must be --expect-key-id; `tauri build` only
+ *     warns when it signs with another key. With --per-target-pubkeys (dry
+ *     runs, where each build signs with a throwaway key), it is each bundle
+ *     folder's own updater-pubkey.txt, which isn't published;
  *   - an out folder that isn't empty.
  *
  * With none, it copies the files, writes latest.json (latestJson: download
@@ -267,7 +268,7 @@ export function assemble({
       continue;
     }
     signatures[asset] = signature;
-    log(`signature ok, key ${key.keyId}: ${asset} (${platformKeys.join(", ")})`);
+    log(`signature ok, key ${key.keyId}, version ${version}: ${asset} (${platformKeys.join(", ")})`);
   }
   if (problems.length > 0) return failed();
 

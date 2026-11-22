@@ -8,7 +8,7 @@
  *
  *   untrusted comment: signature from tauri secret key
  *   <base64: algorithm (2 bytes), key number (8), Ed25519 signature (64)>
- *   trusted comment: timestamp:1795238472<TAB>file:Fleetify_0.2.0_amd64.AppImage
+ *   trusted comment: timestamp:1795238472<TAB>file:Fleetify_0.2.0_amd64.AppImage<TAB>version:0.2.0
  *   <base64: global signature (64 bytes)>
  *
  * A Tauri public key (plugins.updater.pubkey, a .key.pub file) is base64 of
@@ -18,10 +18,18 @@
  *   <base64: "Ed", key number (8 bytes), Ed25519 public key (32)>
  *
  * The algorithm is "ED", where the signature covers the BLAKE2b-512 hash of
- * the data (what tauri-cli 2.11.2 writes), or "Ed", where it covers the data
+ * the data (what tauri-cli 2.11.5 writes), or "Ed", where it covers the data
  * itself (older minisign). The global signature covers the 64 signature
  * bytes followed by the trusted comment's text, so that comment can't be
  * changed without the key. The untrusted comment isn't signed.
+ *
+ * The trusted comment is tab-separated key:value fields. From tauri-cli
+ * 2.11.5 on, its version: field names the version the artifact was released
+ * as: `tauri build` and `tauri bundle` write the app's version, and
+ * `tauri signer sign` the one --app-version gives (none without it). The
+ * updater compares that field with the version the update endpoint
+ * announces, and refuses a mismatch; with requireSignedVersion, which the
+ * shipped config sets, it refuses a signature without the field too.
  *
  * What verifySignature checks, in order:
  *   - the base64 wrapping and the base64 lines inside it are canonical and
@@ -30,28 +38,32 @@
  *   - the key number is the public key's;
  *   - the signature covers the data, and the global signature covers the
  *     trusted comment;
- *   - when given the release version: a version: field in the trusted
- *     comment, if there is one, names that version, compared the way the
- *     updater compares them.
+ *   - when given a version: the trusted comment's version: field names it,
+ *     compared the way the updater compares them, and a comment without the
+ *     field is refused, as the updater refuses it with requireSignedVersion.
  * The public key must be two lines, 42 bytes of "Ed" key, and not one of the
  * two degenerate keys minisign-verify refuses. A few things the CLI never
  * writes are refused although the updater would read past them: a carriage
  * return, a line after the global signature, a first line without
  * "untrusted comment: ".
  *
- * The CLI checks files against their .sig files, as the job that signs the
- * updater artifacts does before it hands them on:
+ * The CLI checks files against their signatures, and the version each one
+ * must be bound to, as the jobs that sign the updater artifacts do before
+ * they hand them on:
  *
- *   node scripts/release/minisign.mjs verify --pubkey-file <file> <file>...
- *   node scripts/release/minisign.mjs verify --pubkey-config <tauri.conf.json> --expect-key-id <16 hex digits> <file>...
+ *   node scripts/release/minisign.mjs verify --pubkey-file <file> --version <v> [--sig-dir <dir>] <file>...
+ *   node scripts/release/minisign.mjs verify --pubkey-config <tauri.conf.json> --expect-key-id <16 hex digits> --version <v> [--sig-dir <dir>] <file>...
  *
- * Each <file> is checked against <file>.sig, with the key in the public key
- * file, or with plugins.updater.pubkey in the config, whose key id must be
- * the one expected. Exit codes: 0 every signature verifies; 1 one doesn't,
- * each named on stderr; 2 usage.
+ * Each <file> is checked against <file>.sig, or with --sig-dir against
+ * <dir>/<the file's name>.sig, with the key in the public key file, or with
+ * plugins.updater.pubkey in the config, whose key id must be the one
+ * expected. --version, MAJOR.MINOR.PATCH, is the version every signature
+ * must name. Exit codes: 0 every signature verifies; 1 one doesn't, each
+ * named on stderr; 2 usage.
  */
 import { createHash, createPublicKey, verify as verifyEd25519 } from "node:crypto";
 import { readFileSync, realpathSync } from "node:fs";
+import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /** The DER prefix that makes 32 raw bytes an Ed25519 SubjectPublicKeyInfo. */
@@ -183,11 +195,13 @@ const isParsedKey = (value) =>
  *   signature does not match the data   the data, or the signature, changed
  *   trusted comment …                   the comment, or the global signature, changed
  *   signed for version …                the trusted comment names another version
+ *   the trusted comment names no version …   it has no version: field
  *
  * @param {{ data: Uint8Array, tauriSignature: string, publicKey: string | ReturnType<typeof parsePublicKey>, version?: string }} options
  *   tauriSignature is a .sig file's text, trimmed; publicKey is in Tauri's
- *   form or already parsed; version, when given, is the release version, in
- *   MAJOR.MINOR.PATCH form.
+ *   form or already parsed; version, when given, is the version the
+ *   signature must be bound to, in MAJOR.MINOR.PATCH form: the release's,
+ *   as the update endpoint announces it.
  * @returns {{ ok: true } | { ok: false, reason: string }}
  */
 export function verifySignature({ data, tauriSignature, publicKey, version }) {
@@ -237,13 +251,20 @@ export function verifySignature({ data, tauriSignature, publicKey, version }) {
     return fail("trusted comment does not match its global signature: one of them was changed");
   }
   // Only now is the comment's text known to be signed, and so worth reading.
-  const signed = version === undefined ? null : signedVersion(comment);
-  if (signed !== null && !namesVersion(signed, version)) return fail(`signed for version ${JSON.stringify(signed)}, not ${version}`);
+  if (version === undefined) return { ok: true };
+  const signed = signedVersion(comment);
+  if (signed === null) {
+    return fail(`the trusted comment names no version, so the signature isn't bound to ${version}: an updater with requireSignedVersion refuses it`);
+  }
+  if (!namesVersion(signed, version)) return fail(`signed for version ${JSON.stringify(signed)}, not ${version}`);
   return { ok: true };
 }
 
-const USAGE = `usage: node scripts/release/minisign.mjs verify --pubkey-file <file> <file>...
-       node scripts/release/minisign.mjs verify --pubkey-config <tauri.conf.json> --expect-key-id <16 hex digits> <file>...`;
+const USAGE = `usage: node scripts/release/minisign.mjs verify --pubkey-file <file> --version <v> [--sig-dir <dir>] <file>...
+       node scripts/release/minisign.mjs verify --pubkey-config <tauri.conf.json> --expect-key-id <16 hex digits> --version <v> [--sig-dir <dir>] <file>...`;
+
+/** The options the verify command takes, each with a value. */
+const VALUED = ["--pubkey-file", "--pubkey-config", "--expect-key-id", "--version", "--sig-dir"];
 
 /** The verify command line. Throws a usage error. */
 function parseArgs(argv) {
@@ -253,7 +274,7 @@ function parseArgs(argv) {
   const files = [];
   for (let i = 0; i < rest.length; i += 1) {
     const arg = rest[i];
-    if (["--pubkey-file", "--pubkey-config", "--expect-key-id"].includes(arg)) {
+    if (VALUED.includes(arg)) {
       const value = rest[i + 1];
       if (value === undefined || value === "" || value.startsWith("-")) throw new Error(`${arg} needs a value`);
       if (values.has(arg)) throw new Error(`${arg} is given twice`);
@@ -268,12 +289,15 @@ function parseArgs(argv) {
   const file = values.get("--pubkey-file");
   const config = values.get("--pubkey-config");
   const expectKeyId = values.get("--expect-key-id");
+  const version = values.get("--version");
   if ((file === undefined) === (config === undefined)) throw new Error("give --pubkey-file, or --pubkey-config with --expect-key-id");
   if (config !== undefined && expectKeyId === undefined) throw new Error("--pubkey-config needs --expect-key-id");
   if (file !== undefined && expectKeyId !== undefined) throw new Error("--expect-key-id goes with --pubkey-config");
   if (expectKeyId !== undefined && !/^[0-9A-Fa-f]{16}$/.test(expectKeyId)) throw new Error(`--expect-key-id must be 16 hex digits, not ${expectKeyId}`);
+  if (version === undefined) throw new Error("--version is required: the version every signature must be bound to");
+  if (!RELEASE_VERSION.test(version)) throw new Error(`--version must be MAJOR.MINOR.PATCH, not ${version}`);
   if (files.length === 0) throw new Error("name the files to check");
-  return { file, config, expectKeyId, files };
+  return { file, config, expectKeyId, version, sigDir: values.get("--sig-dir"), files };
 }
 
 /** The public key the command line names; throws an Error naming what is wrong. */
@@ -312,16 +336,17 @@ function main(argv) {
       failed += 1;
       continue;
     }
+    const sigFile = args.sigDir === undefined ? `${file}.sig` : join(args.sigDir, `${basename(file)}.sig`);
     try {
-      signature = readFileSync(`${file}.sig`, "utf8").trim();
+      signature = readFileSync(sigFile, "utf8").trim();
     } catch (err) {
-      process.stderr.write(`minisign: can't read ${file}.sig: ${err.code ?? err.message}\n`);
+      process.stderr.write(`minisign: can't read ${sigFile}: ${err.code ?? err.message}\n`);
       failed += 1;
       continue;
     }
-    const result = verifySignature({ data, tauriSignature: signature, publicKey: key });
+    const result = verifySignature({ data, tauriSignature: signature, publicKey: key, version: args.version });
     if (result.ok) {
-      process.stdout.write(`minisign: signature ok, key ${key.keyId}: ${file}\n`);
+      process.stdout.write(`minisign: signature ok, key ${key.keyId}, version ${args.version}: ${file}\n`);
     } else {
       process.stderr.write(`minisign: ${file}: ${result.reason}\n`);
       failed += 1;

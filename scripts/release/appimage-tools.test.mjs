@@ -24,7 +24,7 @@ const SCRIPT = fileURLToPath(new URL("./appimage-tools.mjs", import.meta.url));
 const MANIFEST = JSON.parse(readFileSync(new URL("./appimage-tools.json", import.meta.url), "utf8"));
 
 /**
- * The files tauri-bundler 2.9.2 caches for an x86_64 AppImage, and the
+ * The files tauri-bundler 2.9.4 caches for an x86_64 AppImage, and the
  * upstream file each comes from (bundle/linux/appimage/linuxdeploy.rs,
  * prepare_tools). It downloads one only when the cache lacks it, unchecked.
  */
@@ -78,7 +78,7 @@ function manifestFile(tools) {
 }
 
 describe("appimage-tools.json", () => {
-  test("it pins each file tauri-bundler 2.9.2's prepare_tools downloads, and only those", () => {
+  test("it pins each file tauri-bundler 2.9.4's prepare_tools downloads, and only those", () => {
     assert.deepEqual(MANIFEST.tools.map(({ file }) => file).sort(), Object.keys(PREPARE_TOOLS).sort());
   });
 

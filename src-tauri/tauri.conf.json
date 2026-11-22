@@ -27,6 +27,7 @@
         "https://fleetify.dev/api/desktop/update/{{target}}/{{arch}}/{{current_version}}?bundle_type={{bundle_type}}",
         "https://github.com/fleetifydev/fleetify/releases/latest/download/latest.json"
       ],
+      "requireSignedVersion": true,
       "windows": {
         "installMode": "passive"
       }

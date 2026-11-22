@@ -35,8 +35,10 @@ export function makeTestKey() {
 }
 
 /**
- * Sign `data` the way tauri-cli 2.11.2 does (minisign 0.7.3): the prehashed
- * mode "ED" by default, or the raw mode "Ed".
+ * Sign `data` the way tauri-cli 2.11.5 does (minisign 0.7.3): the prehashed
+ * mode "ED" by default, or the raw mode "Ed". The default trusted comment
+ * names no version, as `tauri signer sign` writes it without --app-version;
+ * a test that needs one passes the comment.
  *
  * @param {ReturnType<typeof makeTestKey>} key
  * @param {Buffer} data

@@ -30,7 +30,7 @@ Releases come from release-please. It keeps a release pull request open, titled 
 
 1. **release-please**, in the `release-bot` environment, gets a token for the Fleetify Release Bot, a GitHub App, and runs release-please with it twice. The first run looks for a release pull request that has merged, and creates its release, as a draft whose `v<version>` tag doesn't exist yet. Only when it created none does the second run open or update the release pull request, if anything merged since the last release calls for one. So the push that merges the release pull request makes the release instead. The second run waits, with a warning, while a draft release is pending: release-please finds the last release by its tag, so until the draft is published it would offer a release of every commit it can reach. Events made with the App's token start workflows, unlike those made with the default token, so the release pull request gets its checks like any other.
 2. **build** runs build.yml on the merge commit in the `release` environment, when a release was created.
-3. **assemble**, in the `release-bot` environment, puts the release's 20 files together with `assemble.mjs`, which checks every updater signature against the key in [`src-tauri/tauri.conf.json`](../src-tauri/tauri.conf.json) and requires its key id to be `44C694713A20D751`. It attests the files' build provenance, uploads them to the draft, and checks that the draft holds exactly the assets that `expectedAssets()` in [`release-assets.mjs`](../scripts/release/release-assets.mjs) names.
+3. **assemble**, in the `release-bot` environment, puts the release's 20 files together with `assemble.mjs`, which checks every updater signature against the key in [`src-tauri/tauri.conf.json`](../src-tauri/tauri.conf.json), requires its key id to be `44C694713A20D751`, and requires each signature to name the release's version. It attests the files' build provenance, uploads them to the draft, and checks that the draft holds exactly the assets that `expectedAssets()` in [`release-assets.mjs`](../scripts/release/release-assets.mjs) names.
 4. **smoke** runs smoke.yml on those files. The macOS app's designated requirement must equal the one pinned in [`scripts/release/macos-designated-requirement.txt`](../scripts/release/macos-designated-requirement.txt).
 5. **publish**, in the `release-bot` environment, once assemble and smoke have passed, checks that the draft points at the commit that was built and that its tag doesn't exist yet, as publishing would keep a tag that exists already. Then it publishes the draft and marks it as the latest release. Publishing creates the tag, as the Release Bot. The job then checks that the release is no longer a draft, that the tag exists, and that GitHub's `latest.json` for the latest release names the new version.
 
@@ -46,8 +46,8 @@ The attestation step runs in a job that release.yml defines itself, so the attes
 |---|---|---|---|
 | notices | `ubuntu-24.04` | none | writes `THIRD-PARTY-NOTICES` with cargo-about |
 | compile, ×4 | `ubuntu-24.04` (in an `ubuntu:22.04` container), `windows-2025`, `macos-15`, `macos-15-intel` | none | builds the app, its MCP sidecars and the UI, scans them for secrets, and checks the updater settings built in; on Linux and Windows it also makes the bundles, without signing them (`tauri bundle --no-sign`), and on Linux checks the glibc they need |
-| sign, ×2 | `ubuntu-24.04` | the caller's | signs the Linux and Windows updater artifacts with the Tauri CLI's signer, and checks each signature |
-| bundle-macos, ×2 | `macos-15`, `macos-15-intel` | the caller's | bundles the macOS app and disk image, code-signs the app with the macOS identity and signs its updater archive with the updater key, then checks both signatures |
+| sign, ×2 | `ubuntu-24.04` | the caller's | signs the Linux and Windows updater artifacts with the Tauri CLI's signer, for the release's version (`--app-version`), and checks each signature |
+| bundle-macos, ×2 | `macos-15`, `macos-15-intel` | the caller's | bundles the macOS app and disk image, code-signs the app with the macOS identity and signs its updater archive with the updater key, which `tauri bundle` does for the version in tauri.conf.json, then checks both signatures |
 
 What keeps the keys away from the code that compiles:
 
@@ -99,6 +99,8 @@ Never call build.yml with `secrets: inherit`. It would hand the repository's sec
 | `POSTHOG_API_KEY`, `POSTHOG_HOST`, `VITE_POSTHOG_KEY`, `VITE_POSTHOG_HOST` | variables | repository | the public, write-only PostHog project key and its host, which release builds compile in |
 
 - The updater key's public half is `plugins.updater.pubkey` in tauri.conf.json. Every build embeds it, and an installed copy installs only an update whose signature it verifies.
+- Each updater signature also names the version it was made for. The Tauri CLI writes it into the signature's trusted comment, which the signature covers: `tauri bundle` writes the version in tauri.conf.json, and `tauri signer sign` the one `--app-version` gives. Every check of a signature in the pipeline requires the release's version there, and fails on another one or none. The update endpoint's answer isn't signed, so the updater compares that version with the one the answer announces, and refuses a mismatch: a tampered answer can't pass an older release off as a newer version. With `plugins.updater.requireSignedVersion`, which tauri.conf.json sets, it also refuses a signature that names no version. Copies of 0.2.0 and 0.2.1 were built without that setting: they refuse a mismatch too, but still take a signature that names no version, as 0.2.0's and 0.2.1's do, whatever version the answer announces, until they update to a release that has it.
+- The version check ties an artifact to a version, and to nothing else. It doesn't stop an endpoint from withholding an update, or from offering another bundle type or platform of the same version, which carries a valid signature for that version too; the trusted comment names the file that was signed, which the updater doesn't check.
 - Of all the jobs, only build.yml's sign and bundle-macos reach the `release` environment's keys, and only bundle-macos the macOS identity.
 - The macOS identity is self-signed, and the app is signed with the hardened runtime and isn't notarized. macOS ties the microphone permission and Fleetify's keychain items to the app's designated requirement, which is pinned in [`scripts/release/macos-designated-requirement.txt`](../scripts/release/macos-designated-requirement.txt), so they carry over an update only while it stays the same.
 - The Release Bot's key is in the `release-bot` environment, which only `main` may deploy to and which asks for no approval, as the release-please job runs on every push to `main`. A workflow on any other branch or pull request can't reach it. Only release.yml's release-please, assemble and publish jobs use it, and each makes a token of its own: release-please's can write contents, pull requests and issues, and assemble's and publish's contents only.
@@ -133,7 +135,7 @@ Open the run with `gh run view <run-id> --web`. Once its compile jobs pass, the 
 gh run watch <run-id> --exit-status
 ```
 
-Every job must pass: notices, compile ×4, sign ×2, bundle ×2, assemble, whose log shows `signature ok, key 44C694713A20D751` for each updater artifact, and the smoke test ×4. Then download the candidate:
+Every job must pass: notices, compile ×4, sign ×2, bundle ×2, assemble, whose log shows `signature ok, key 44C694713A20D751, version <version>` for each updater artifact, and the smoke test ×4. Then download the candidate:
 
 ```bash
 gh run download <run-id> --name release --dir candidate
@@ -370,7 +372,7 @@ It is the first entry of `plugins.updater.endpoints` in tauri.conf.json; GitHub'
 
 The bundle type picks the package: a `.deb` or `.rpm` install that is handed the AppImage can't install it. Treat a missing `bundle_type` as `unknown`.
 
-The answer comes from the `latest.json` of the release marked as latest on GitHub, which the service may cache for a short time, through exactly the logic of `resolveUpdate()` in [`release-assets.mjs`](../scripts/release/release-assets.mjs). That takes the entry for `{target}-{arch}-{bundle_type}`, or else the one for `{target}-{arch}`, and offers it only when its version is newer than `current_version`.
+The answer comes from the `latest.json` of the release marked as latest on GitHub, which the service may cache for a short time, through exactly the logic of `resolveUpdate()` in [`release-assets.mjs`](../scripts/release/release-assets.mjs). That takes the entry for `{target}-{arch}-{bundle_type}`, or else the one for `{target}-{arch}`, and offers it only when its version is newer than `current_version`. The answer's `version` must be `latest.json`'s, as resolveUpdate gives it: each signature names its release's version, and the updater refuses one that names another.
 
 | Status | When | Body |
 |---|---|---|
@@ -445,11 +447,11 @@ The pinned linuxdeploy was built in July 2024, before AppImage's excludelist lef
 
 ### Tauri
 
-Tauri stays on 2.11.2 until an upgrade is planned:
+The Tauri crates stay on 2.11.2 until an upgrade is planned. The CLI, `@tauri-apps/cli`, is on 2.11.5, the first release that binds an updater signature to its version; package.json asks for 2.11.5 or later, as an older `tauri signer sign` has no `--app-version` and an older `tauri bundle` writes no version, which the checks and the updater refuse.
 
 - The workspace patches tauri-runtime-wry from `vendor/`, and Cargo applies the patch only while its version is the one tauri asks for, dropping it silently otherwise. An upgrade re-vendors it, as [FLEETIFY_PATCH.md](../vendor/tauri-runtime-wry/FLEETIFY_PATCH.md#how-to-refresh-on-a-tauri-bump) describes. After any change to `Cargo.lock`, `cargo tree -i tauri-runtime-wry --target all` must show only the copy in `vendor/`.
 - tauri-plugin-updater moves with tauri's minor version: 2.12 is the newest that works with tauri 2.11, as 2.13 and later need tauri 2.12. A test in `src-tauri/src/shell/updater.rs` holds `Cargo.lock` to it.
-- release-assets.mjs holds the bundle file names that tauri-cli 2.11.2 writes, and appimage-tools.json the AppImage tools of tauri-bundler 2.9.2: check both against the new versions.
+- release-assets.mjs holds the bundle file names that tauri-cli 2.11.5 writes, and appimage-tools.json the AppImage tools of tauri-bundler 2.9.4, which that CLI uses: check both against the new versions.
 - Dependabot leaves tauri, its plugins, wry and tao alone, and gives the `@tauri-apps` npm packages patch updates only ([`.github/dependabot.yml`](../.github/dependabot.yml)).
 - A Tauri upgrade gets a dry run on its pull request, and a candidate before the next release.
 

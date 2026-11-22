@@ -24,6 +24,22 @@ const SHIPPED = JSON.parse(readFileSync(new URL("../../src-tauri/tauri.conf.json
 
 const ENDPOINT = "http://127.0.0.1:18080/update/{{target}}/{{arch}}/{{current_version}}?bundle_type={{bundle_type}}";
 
+/**
+ * `patch` applied to `target` as a JSON merge patch (RFC 7396), the way the
+ * Tauri CLI merges a --config file into tauri.conf.json: objects merge key by
+ * key, null removes a key, and any other value, an array included, replaces
+ * the one it meets.
+ */
+function mergePatch(target, patch) {
+  if (patch === null || typeof patch !== "object" || Array.isArray(patch)) return patch;
+  const result = target !== null && typeof target === "object" && !Array.isArray(target) ? { ...target } : {};
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === null) delete result[key];
+    else result[key] = mergePatch(result[key], value);
+  }
+  return result;
+}
+
 const ROOT = mkdtempSync(join(tmpdir(), "dry-run-config-"));
 after(() => rmSync(ROOT, { recursive: true, force: true }));
 let count = 0;
@@ -59,6 +75,20 @@ describe("dryRunConfig", () => {
     for (const pubkey of ["not a key", "", `${FIXTURE_PUB}\n`, undefined, 42]) {
       assert.throws(() => dryRunConfig({ pubkey }), /malformed public key/, JSON.stringify(pubkey));
     }
+  });
+
+  test("merged into the shipped config, as the CLI merges it, the overlay leaves requireSignedVersion as shipped", () => {
+    // A dry run's rehearsal then runs under the check a release build has;
+    // an overlay that set the key itself would hide its loss from the
+    // shipped config.
+    const overlay = dryRunConfig({ pubkey: FIXTURE_PUB });
+    assert.equal(Object.hasOwn(overlay.plugins.updater, "requireSignedVersion"), false);
+    const merged = mergePatch(SHIPPED, overlay).plugins.updater;
+    assert.equal(merged.requireSignedVersion, true);
+    assert.deepEqual(
+      { pubkey: merged.pubkey, endpoints: merged.endpoints, windows: merged.windows },
+      { pubkey: FIXTURE_PUB, endpoints: [ENDPOINT], windows: SHIPPED.plugins.updater.windows },
+    );
   });
 
   test("a port outside 1-65535, or not a whole number, is refused", () => {

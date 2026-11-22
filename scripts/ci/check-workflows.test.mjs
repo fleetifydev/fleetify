@@ -1193,6 +1193,18 @@ function settingProblems(assignments, redirects, allowed) {
 }
 
 /**
+ * The arguments tauri signer sign may take in a job with the keys: the
+ * release key from the environment, or the run's from its file, and always
+ * --app-version with the release's version, which binds each signature to
+ * it. Without --app-version, the signature names no version, and the
+ * shipped updater (requireSignedVersion) refuses it.
+ */
+const KEYED_SIGNER_FORMS = [
+  ["--app-version", "$VERSION", "$RUNNER_TEMP/bundles/$name"],
+  ["-f", "$RUNNER_TEMP/dry-run/updater.key", "-p", "", "--app-version", "$VERSION", "$RUNNER_TEMP/bundles/$name"],
+];
+
+/**
  * Why a simple command may not run in a job with the keys: none, when it may.
  * Only these may run: the lockfile's Tauri CLI, to bundle with the flags the
  * workflow passes or to sign; npm ci --ignore-scripts; node on
@@ -1215,8 +1227,7 @@ function keyedProblems({ words: [name, ...args], assignments, redirects }, funct
     if (args.slice(0, 3).join(" ") !== "--no -- tauri") why = "runs npx other than as npx --no -- tauri";
     else if (args[3] === "bundle") why = bundleArgsProblem(args.slice(4));
     else if (args.slice(3, 5).join(" ") === "signer sign") {
-      const forms = [["$RUNNER_TEMP/bundles/$name"], ["-f", "$RUNNER_TEMP/dry-run/updater.key", "-p", "", "$RUNNER_TEMP/bundles/$name"]];
-      if (!forms.some((form) => sameWords(form, args.slice(5)))) why = "passes tauri signer sign arguments these jobs don't";
+      if (!KEYED_SIGNER_FORMS.some((form) => sameWords(form, args.slice(5)))) why = "passes tauri signer sign arguments these jobs don't";
     } else why = `runs tauri ${args[3] ?? ""}, where these jobs only bundle and sign`;
   } else if (name === "npm") {
     if (!sameWords(args, ["ci", "--ignore-scripts"])) why = "runs npm other than as npm ci --ignore-scripts";
@@ -1272,6 +1283,45 @@ Version needs section '.gnu.version_r' contains 1 entry:
   0x0010:   Name: GLIBC_$version  Flags: none  Version: 2
 EOF
 `;
+
+/** The lockfile's Tauri CLI, as npx runs it: @tauri-apps/cli's bin, which loads the binary for this platform. */
+const TAURI_CLI = join(ROOT, "node_modules", "@tauri-apps", "cli", "tauri.js");
+
+const TAURI_SKIP =
+  existsSync(TAURI_CLI) && spawnSync(process.execPath, [TAURI_CLI, "--version"], { stdio: "ignore" }).status === 0
+    ? false
+    : "the lockfile's Tauri CLI is needed to sign as the workflow does: run npm ci";
+
+/** Run the lockfile's Tauri CLI with `args`, reading nothing. */
+const tauri = (...args) => spawnSync(process.execPath, [TAURI_CLI, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+
+/**
+ * A bin folder in `dir` whose npx runs the lockfile's Tauri CLI, as
+ * `npx --no -- tauri` does in the workflow, and refuses any other use.
+ */
+function npxForTauri(dir) {
+  const bin = join(dir, "bin");
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(
+    join(bin, "npx"),
+    `#!/bin/sh
+if [ "$1" != --no ] || [ "$2" != -- ] || [ "$3" != tauri ]; then
+  echo "npx $*: not the lockfile's Tauri CLI as the workflow runs it" >&2
+  exit 64
+fi
+shift 3
+exec "${process.execPath}" "${TAURI_CLI}" "$@"
+`,
+    { mode: 0o755 },
+  );
+  return bin;
+}
+
+/** The trusted comment of a .sig file the Tauri CLI wrote. */
+const trustedCommentOf = (sigFile) => Buffer.from(readFileSync(sigFile, "utf8"), "base64").toString("utf8").split("\n")[2];
+
+/** `text` as a RegExp that matches it literally. */
+const literalPattern = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 describe("build.yml", () => {
   yamlTest("compile runs in no environment; sign and bundle-macos, after it, in the one the caller names", () => {
@@ -1711,6 +1761,12 @@ capture() {
       "npx --no -- tauri bundle --target x86_64-apple-darwin",
       'npx --no -- tauri bundle --verbose --verbose',
       'npx --no -- tauri signer sign -k "$KEY" "$RUNNER_TEMP/bundles/$name"',
+      // A signature that names no version, or another one than the release's.
+      'npx --no -- tauri signer sign "$RUNNER_TEMP/bundles/$name" < /dev/null',
+      'npx --no -- tauri signer sign -f "$RUNNER_TEMP/dry-run/updater.key" -p "" "$RUNNER_TEMP/bundles/$name" < /dev/null',
+      'npx --no -- tauri signer sign --app-version 9.9.9 "$RUNNER_TEMP/bundles/$name" < /dev/null',
+      'npx --no -- tauri signer sign --app-version "$OTHER" "$RUNNER_TEMP/bundles/$name" < /dev/null',
+      'npx --no -- tauri signer sign "$RUNNER_TEMP/bundles/$name" --app-version "$VERSION" < /dev/null',
       // Variables a tool reads, and a here-document.
       'PATH=./bin cp a "$RUNNER_TEMP/b"',
       "GIT_EXTERNAL_DIFF=./evil git diff --exit-code -- x",
@@ -1737,7 +1793,7 @@ capture() {
       "npm ci --ignore-scripts",
       'npx --no -- tauri bundle --verbose --ci --target "$TRIPLE"',
       'npx --no -- tauri bundle --verbose --ci --target "$TRIPLE" --bundles "$BUNDLES" --config src-tauri/tauri.release.conf.json --config "$RUNNER_TEMP/dry-run-config/dry-run.json"',
-      'npx --no -- tauri signer sign -f "$RUNNER_TEMP/dry-run/updater.key" -p "" "$RUNNER_TEMP/bundles/$name" < /dev/null',
+      'npx --no -- tauri signer sign -f "$RUNNER_TEMP/dry-run/updater.key" -p "" --app-version "$VERSION" "$RUNNER_TEMP/bundles/$name" < /dev/null',
       'cp "$RUNNER_TEMP/notices/THIRD-PARTY-NOTICES" THIRD-PARTY-NOTICES',
       'cp "$RUNNER_TEMP/dry-run/updater.key.pub" "$RUNNER_TEMP/bundles/updater-pubkey.txt"',
       'security find-identity -v -p codesigning > "$out/find-identity.txt" 2>&1 || true',
@@ -1746,7 +1802,7 @@ capture() {
       "rustup toolchain install",
       "found=$(cd \"$out\" && find . -type f | sed -e 's|^\\./||' | LC_ALL=C sort)",
       'printf \'%s\' "$APPLE_CERTIFICATE" | base64 --decode > "$dir/release.p12"',
-      'npx --no -- tauri signer sign "$RUNNER_TEMP/bundles/$name" < /dev/null',
+      'npx --no -- tauri signer sign --app-version "$VERSION" "$RUNNER_TEMP/bundles/$name" < /dev/null',
       'node scripts/release/check-artifact.mjs "$RUNNER_TEMP/notices" THIRD-PARTY-NOTICES',
       'expected=$(node scripts/release/release-assets.mjs unsigned "$TRIPLE" "$VERSION")',
       'while IFS= read -r name; do names+=("$name"); done <<< "$expected"',
@@ -2271,9 +2327,9 @@ capture() {
     assert.equal(steps[libraries].if, "runner.os == 'Linux'");
   });
 
-  yamlTest("sign signs each updater artifact with the Tauri CLI's signer: the release key from the environment, the run's from its file", () => {
+  yamlTest("sign signs each updater artifact with the Tauri CLI's signer, for the release's version: the release key from the environment, the run's from its file", () => {
     const steps = stepsOf("sign");
-    const signs = steps.filter((step) => /(^|\s)npx --no -- tauri signer sign /m.test(scriptOf(step)));
+    const signs = steps.filter((step) => /(^|\s)npx --no -- tauri signer sign /m.test(scriptOf(step)) && scriptOf(step).includes("$RUNNER_TEMP/bundles/$name"));
     const release = signs.filter((step) => requires(step.if, RELEASE_ONLY));
     const dryRun = signs.filter((step) => requires(step.if, DRY_RUN_ONLY));
     assert.deepEqual([signs.length, release.length, dryRun.length], [2, 1, 1], `sign must sign once if "${RELEASE_ONLY}" and once if "${DRY_RUN_ONLY}"`);
@@ -2284,42 +2340,52 @@ capture() {
       TAURI_SIGNING_PRIVATE_KEY: "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}",
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: "${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}",
     });
-    // Each call reads /dev/null, not the loop's list.
-    assert.ok(commandLines(release[0]).includes('npx --no -- tauri signer sign "$RUNNER_TEMP/bundles/$name" < /dev/null'));
+    // Each call reads /dev/null, not the loop's list, and binds the
+    // signature to the release's version, as tauri bundle does on macOS.
+    assert.ok(commandLines(release[0]).includes('npx --no -- tauri signer sign --app-version "$VERSION" "$RUNNER_TEMP/bundles/$name" < /dev/null'));
     assert.equal(dryRun[0].env, undefined);
-    assert.ok(commandLines(dryRun[0]).includes('npx --no -- tauri signer sign -f "$RUNNER_TEMP/dry-run/updater.key" -p "" "$RUNNER_TEMP/bundles/$name" < /dev/null'));
+    assert.ok(commandLines(dryRun[0]).includes('npx --no -- tauri signer sign -f "$RUNNER_TEMP/dry-run/updater.key" -p "" --app-version "$VERSION" "$RUNNER_TEMP/bundles/$name" < /dev/null'));
   });
 
-  scriptTest("sign's loop signs every updater artifact of the target, and nothing else", () => {
-    const step = stepsOf("sign").find((candidate) => requires(candidate.if, RELEASE_ONLY) && /tauri signer sign/.test(scriptOf(candidate)));
-    for (const triple of TARGETS.filter((target) => !isMacOS(target)).map(({ triple: t }) => t)) {
-      inTempDir((dir) => {
-        const bin = join(dir, "bin");
-        mkdirSync(bin);
-        writeFileSync(join(bin, "npx"), `#!/bin/sh\nprintf '%s\\n' "$*" >> "$NPX_LOG"\n`, { mode: 0o755 });
-        // Stand-ins for the key and its password, which the step checks are there.
-        const keys = { TAURI_SIGNING_PRIVATE_KEY: "a key", TAURI_SIGNING_PRIVATE_KEY_PASSWORD: "a password" };
-        const env = { PATH: `${bin}:${process.env.PATH}`, NPX_LOG: join(dir, "npx.log"), RUNNER_TEMP: dir, TRIPLE: triple, VERSION: "1.2.3", ...keys };
-        const result = runScript(step.run, { cwd: ROOT, env });
-        assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
-        assert.deepEqual(
-          readFileSync(join(dir, "npx.log"), "utf8").trim().split("\n"),
-          updaterAssets(triple, "1.2.3").map((name) => `--no -- tauri signer sign ${join(dir, "bundles", name)}`),
-          triple,
-        );
-      });
+  scriptTest("sign's loops sign every updater artifact of the target for the release's version, and nothing else", () => {
+    const signs = stepsOf("sign").filter((candidate) => /tauri signer sign/.test(scriptOf(candidate)) && scriptOf(candidate).includes("$RUNNER_TEMP/bundles/$name"));
+    for (const [environment, keyArgs] of [
+      [RELEASE_ONLY, ""],
+      [DRY_RUN_ONLY, "-f <dir>/dry-run/updater.key -p  "],
+    ]) {
+      const step = signs.find((candidate) => requires(candidate.if, environment));
+      for (const triple of TARGETS.filter((target) => !isMacOS(target)).map(({ triple: t }) => t)) {
+        inTempDir((dir) => {
+          const bin = join(dir, "bin");
+          mkdirSync(bin);
+          writeFileSync(join(bin, "npx"), `#!/bin/sh\nprintf '%s\\n' "$*" >> "$NPX_LOG"\n`, { mode: 0o755 });
+          // Stand-ins for the key and its password, which the release step checks are there.
+          const keys = { TAURI_SIGNING_PRIVATE_KEY: "a key", TAURI_SIGNING_PRIVATE_KEY_PASSWORD: "a password" };
+          const env = { PATH: `${bin}:${process.env.PATH}`, NPX_LOG: join(dir, "npx.log"), RUNNER_TEMP: dir, TRIPLE: triple, VERSION: "1.2.3", ...keys };
+          const result = runScript(step.run, { cwd: ROOT, env });
+          assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
+          assert.deepEqual(
+            readFileSync(join(dir, "npx.log"), "utf8").trim().split("\n"),
+            updaterAssets(triple, "1.2.3").map((name) => `--no -- tauri signer sign ${keyArgs.replace("<dir>", dir)}--app-version 1.2.3 ${join(dir, "bundles", name)}`),
+            `${step.name}, ${triple}`,
+          );
+        });
+      }
     }
   });
 
-  yamlTest("every updater signature is checked before upload: against the shipped key in a release, the run's in a dry run", () => {
+  yamlTest("every updater signature is checked before upload, for the release's version: against the shipped key in a release, the run's in a dry run", () => {
     for (const id of KEYED_JOBS) {
       const steps = stepsOf(id);
-      const verifies = steps.filter((step) => scriptOf(step).includes("minisign.mjs verify"));
+      const verifies = steps.filter((step) => scriptOf(step).includes("minisign.mjs verify") && !scriptOf(step).includes("--sig-dir"));
       const release = verifies.filter((step) => requires(step.if, RELEASE_ONLY));
       const dryRun = verifies.filter((step) => requires(step.if, DRY_RUN_ONLY));
       assert.deepEqual([verifies.length, release.length, dryRun.length], [2, 1, 1], `job ${id} must check the signatures once per environment`);
-      assert.equal(commandLines(release[0]).at(-1), `node scripts/release/minisign.mjs verify --pubkey-config src-tauri/tauri.conf.json --expect-key-id ${UPDATER_KEY_ID} "\${files[@]}"`);
-      assert.equal(commandLines(dryRun[0]).at(-1), 'node scripts/release/minisign.mjs verify --pubkey-file "$RUNNER_TEMP/dry-run/updater.key.pub" "${files[@]}"');
+      assert.equal(
+        commandLines(release[0]).at(-1),
+        `node scripts/release/minisign.mjs verify --pubkey-config src-tauri/tauri.conf.json --expect-key-id ${UPDATER_KEY_ID} --version "$VERSION" "\${files[@]}"`,
+      );
+      assert.equal(commandLines(dryRun[0]).at(-1), 'node scripts/release/minisign.mjs verify --pubkey-file "$RUNNER_TEMP/dry-run/updater.key.pub" --version "$VERSION" "${files[@]}"');
       for (const step of verifies) {
         assert.equal(commandLines(step)[0], 'updaters=$(node scripts/release/release-assets.mjs updaters "$TRIPLE" "$VERSION")', `${step.name} doesn't check every updater artifact`);
       }
@@ -2331,6 +2397,51 @@ capture() {
       }
     }
   });
+
+  test(
+    "with the lockfile's Tauri CLI, a dry-run sign leg signs as written: each trusted comment names the release's version, and the leg's check refuses another version, or none",
+    { skip: YAML_SKIP || BASH_SKIP || TAURI_SKIP },
+    () => {
+      const steps = stepsOf("sign");
+      const sign = steps.find((step) => requires(step.if, DRY_RUN_ONLY) && /tauri signer sign/.test(scriptOf(step)) && scriptOf(step).includes("$RUNNER_TEMP/bundles/$name"));
+      const check = steps.find((step) => requires(step.if, DRY_RUN_ONLY) && scriptOf(step).includes("minisign.mjs verify") && !scriptOf(step).includes("--sig-dir"));
+      assert.ok(sign && check, "sign has no dry-run signing or check of the bundles");
+      const triple = "x86_64-unknown-linux-gnu";
+      const names = updaterAssets(triple, "1.2.3");
+      inTempDir((dir) => {
+        const env = { PATH: `${npxForTauri(dir)}:${process.env.PATH}`, RUNNER_TEMP: dir, TRIPLE: triple, VERSION: "1.2.3" };
+        // A key made for the test, as compile makes the run's.
+        mkdirSync(join(dir, "dry-run"));
+        const key = join(dir, "dry-run", "updater.key");
+        const generated = tauri("signer", "generate", "--ci", "-p", "", "-w", key);
+        assert.equal(generated.status, 0, generated.stderr);
+        mkdirSync(join(dir, "bundles"));
+        for (const name of names) writeFileSync(join(dir, "bundles", name), `the bundle ${name}\n`);
+
+        const signed = runScript(sign.run, { cwd: ROOT, env });
+        assert.equal(signed.status, 0, `${signed.stdout}${signed.stderr}`);
+        for (const name of names) {
+          const comment = trustedCommentOf(join(dir, "bundles", `${name}.sig`));
+          assert.match(comment, new RegExp(`^trusted comment: timestamp:\\d+\\tfile:${literalPattern(name)}\\tversion:1\\.2\\.3$`), name);
+        }
+        const passed = runScript(check.run, { cwd: ROOT, env });
+        assert.equal(passed.status, 0, `${passed.stdout}${passed.stderr}`);
+        for (const name of names) assert.ok(passed.stdout.includes(`, version 1.2.3: ${join(dir, "bundles", name)}`), passed.stdout);
+
+        // The first artifact signed again: for another version, then for none.
+        for (const [args, why] of [
+          [["--app-version", "1.2.2"], /signed for version "1\.2\.2", not 1\.2\.3/],
+          [[], /the trusted comment names no version, so the signature isn't bound to 1\.2\.3/],
+        ]) {
+          const resigned = tauri("signer", "sign", "-f", key, "-p", "", ...args, join(dir, "bundles", names[0]));
+          assert.equal(resigned.status, 0, resigned.stderr);
+          const refused = runScript(check.run, { cwd: ROOT, env });
+          assert.equal(refused.status, 1, `${refused.stdout}${refused.stderr}`);
+          assert.match(refused.stderr, new RegExp(`${literalPattern(join(dir, "bundles", names[0]))}: ${why.source}`));
+        }
+      });
+    },
+  );
 
   yamlTest("sign and bundle-macos upload bundles-<triple> after the bundles are complete", () => {
     // assemble.mjs takes exactly these artifacts: the files under their

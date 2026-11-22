@@ -4,20 +4,26 @@
  *
  *   node --test scripts/release/minisign.test.mjs
  *
- * fixtures/minisign/ was made once with the repo's own Tauri CLI (2.11.2):
+ * fixtures/minisign/ was made with the repo's own Tauri CLI, once with
+ * 2.11.2, whose signatures name no version:
  *
  *   npx tauri signer generate --ci -p "" -w "$SCRATCH/fx.key"      (fixture.pub)
  *   npx tauri signer generate --ci -p "" -w "$SCRATCH/other.key"   (other.pub)
  *   npx tauri signer sign -f "$SCRATCH/fx.key" -p "" hello.txt     (hello.txt.sig)
  *
- * Only the two public keys and the signature were kept; both private keys
- * were deleted. The other cases sign with a key made in memory for the run
+ * and once with 2.11.5, which binds a signature to the version it is given:
+ *
+ *   npx tauri signer generate --ci -p "" -w "$SCRATCH/versioned.key"                       (versioned.pub)
+ *   npx tauri signer sign -f "$SCRATCH/versioned.key" -p "" --app-version 1.2.3 hello.txt   (hello.txt.1.2.3.sig)
+ *
+ * Only the public keys and the signatures were kept; every private key was
+ * deleted. The other cases sign with a key made in memory for the run
  * (fixtures/test-signer.mjs), and with minisign's own test vectors.
  */
 import { after, describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -31,6 +37,9 @@ const HELLO = fixture("hello.txt");
 const HELLO_SIG = fixture("hello.txt.sig").toString("utf8");
 const FIXTURE_PUB = fixture("fixture.pub").toString("utf8");
 const OTHER_PUB = fixture("other.pub").toString("utf8");
+const VERSIONED_PUB = fixture("versioned.pub").toString("utf8");
+/** hello.txt, signed by tauri-cli 2.11.5 with --app-version 1.2.3. */
+const HELLO_SIG_1_2_3 = fixture("hello.txt.1.2.3.sig").toString("utf8");
 const CONFIG_PUB = JSON.parse(readFileSync(new URL("../../src-tauri/tauri.conf.json", import.meta.url), "utf8"))
   .plugins.updater.pubkey;
 
@@ -79,7 +88,7 @@ describe("the Tauri CLI's signature (fixtures/minisign)", () => {
   });
 
   test("the fixtures hold no line break, so a CRLF checkout can't change their bytes", () => {
-    for (const name of ["hello.txt", "hello.txt.sig", "fixture.pub", "other.pub"]) {
+    for (const name of ["hello.txt", "hello.txt.sig", "hello.txt.1.2.3.sig", "fixture.pub", "other.pub", "versioned.pub"]) {
       assert.doesNotMatch(fixture(name).toString("latin1"), /[\r\n]/, name);
     }
   });
@@ -158,6 +167,29 @@ describe("the Tauri CLI's signature (fixtures/minisign)", () => {
   test("a public key that is already parsed works the same", () => {
     assert.deepEqual(verify(HELLO, HELLO_SIG, parsePublicKey(FIXTURE_PUB)), { ok: true });
     assertFails(verify(HELLO, HELLO_SIG, parsePublicKey(OTHER_PUB)), /key id/);
+  });
+});
+
+describe("the Tauri CLI's signature bound to a version (fixtures/minisign, tauri-cli 2.11.5)", () => {
+  const check = (version) => verifySignature({ data: HELLO, tauriSignature: HELLO_SIG_1_2_3, publicKey: VERSIONED_PUB, version });
+
+  test("its trusted comment adds the version --app-version names, last, after the timestamp and the file name", () => {
+    assert.match(unwrap(HELLO_SIG_1_2_3).split("\n")[2], /^trusted comment: timestamp:\d+\tfile:hello\.txt\tversion:1\.2\.3$/);
+    assert.equal(algorithmOf(HELLO_SIG_1_2_3), "ED");
+  });
+
+  test("verifies for the version it names, and is refused for any other, naming both", () => {
+    assert.deepEqual(check("1.2.3"), { ok: true });
+    assertFails(check("1.2.4"), /^signed for version "1\.2\.3", not 1\.2\.4$/);
+    assertFails(check("99.0.0"), /^signed for version "1\.2\.3", not 99\.0\.0$/);
+  });
+
+  test("tauri-cli 2.11.2's signature names no version, so it is refused once a version is asked for", () => {
+    assert.deepEqual(verify(HELLO, HELLO_SIG), { ok: true });
+    assertFails(
+      verifySignature({ data: HELLO, tauriSignature: HELLO_SIG, publicKey: FIXTURE_PUB, version: "1.2.3" }),
+      /^the trusted comment names no version, so the signature isn't bound to 1\.2\.3/,
+    );
   });
 });
 
@@ -296,7 +328,9 @@ describe("minisign's test vectors: the raw and the prehashed mode", () => {
 
 // The updater compares a version: field in a verified trusted comment with
 // the version the manifest announces, and refuses the update when they
-// differ. verifySignature does the same when it is given the version.
+// differ; with requireSignedVersion, which the shipped config sets, it also
+// refuses a signature that has no such field. verifySignature does both when
+// it is given the version.
 describe("a version: field in the trusted comment", () => {
   const key = makeTestKey();
   const data = Buffer.from("an updater artifact\n");
@@ -311,11 +345,10 @@ describe("a version: field in the trusted comment", () => {
     assertFails(check(signedFor("\tversion:0.1.0"), "0.2.0"), /^signed for version "0\.1\.0", not 0\.2\.0$/);
   });
 
-  test("no version: field, as in the CLI's comments: verifies", () => {
-    assert.deepEqual(check(signedFor(""), "0.2.0"), { ok: true });
-    assert.deepEqual(verifySignature({ data: HELLO, tauriSignature: HELLO_SIG, publicKey: FIXTURE_PUB, version: "0.2.0" }), {
-      ok: true,
-    });
+  test("no version: field, as tauri signer sign writes without --app-version: refused, as requireSignedVersion refuses it", () => {
+    const reason = /^the trusted comment names no version, so the signature isn't bound to 0\.2\.0/;
+    assertFails(check(signedFor(""), "0.2.0"), reason);
+    assertFails(verifySignature({ data: HELLO, tauriSignature: HELLO_SIG, publicKey: FIXTURE_PUB, version: "0.2.0" }), reason);
   });
 
   test("compared as the updater compares them: leading v's dropped, anything else must be the same version", () => {
@@ -332,7 +365,12 @@ describe("a version: field in the trusted comment", () => {
   });
 
   test("a field must start with version: exactly", () => {
-    assert.deepEqual(check(signedFor("\tthe version:9.9.9\tVersion:9.9.9"), "0.2.0"), { ok: true });
+    assert.deepEqual(check(signedFor("\tthe version:9.9.9\tVersion:9.9.9\tversion:0.2.0"), "0.2.0"), { ok: true });
+    assertFails(check(signedFor("\tthe version:0.2.0\tVersion:0.2.0\tfile-version:0.2.0"), "0.2.0"), /names no version/);
+  });
+
+  test("the timestamp and file: fields don't count, nor does a version: that is part of another field", () => {
+    assertFails(check(signLikeTauri(key, data, { trustedComment: "timestamp:1\tfile:app-version:0.2.0.AppImage" }), "0.2.0"), /names no version/);
   });
 
   test("the field counts only once the global signature covers it", () => {
@@ -344,7 +382,7 @@ describe("a version: field in the trusted comment", () => {
 
   test("a version to compare with that isn't MAJOR.MINOR.PATCH: refused", () => {
     for (const bad of ["v0.2.0", "0.2", "0.2.0-rc.1", "", 2]) {
-      assertFails(check(signedFor(""), bad), /must be MAJOR\.MINOR\.PATCH/, JSON.stringify(bad));
+      assertFails(check(signedFor("\tversion:0.2.0"), bad), /must be MAJOR\.MINOR\.PATCH/, JSON.stringify(bad));
     }
   });
 
@@ -448,50 +486,91 @@ describe("the verify CLI", () => {
   const dir = mkdtempSync(join(tmpdir(), "minisign-cli-"));
   after(() => rmSync(dir, { recursive: true, force: true }));
   const cli = (...args) => spawnSync(process.execPath, [SCRIPT, "verify", ...args], { encoding: "utf8" });
-  const hello = join(FIXTURES, "hello.txt");
-  const fixtureId = parsePublicKey(FIXTURE_PUB.trim()).keyId;
-  /** A Tauri config whose updater key is the fixture's. */
+  const versionedPub = join(FIXTURES, "versioned.pub");
+  const versionedId = parsePublicKey(VERSIONED_PUB.trim()).keyId;
+  /** hello.txt beside its signature for version 1.2.3, as hello.txt.sig, the way the CLI looks for it. */
+  const signed = join(dir, "signed");
+  mkdirSync(signed);
+  const hello = join(signed, "hello.txt");
+  copyFileSync(join(FIXTURES, "hello.txt"), hello);
+  copyFileSync(join(FIXTURES, "hello.txt.1.2.3.sig"), `${hello}.sig`);
+  /** A Tauri config whose updater key is the versioned fixture's. */
   const config = join(dir, "tauri.conf.json");
-  writeFileSync(config, JSON.stringify({ plugins: { updater: { pubkey: FIXTURE_PUB.trim() } } }));
+  writeFileSync(config, JSON.stringify({ plugins: { updater: { pubkey: VERSIONED_PUB.trim() } } }));
 
-  test("each file's .sig against a public key file: exit 0, one line per file", () => {
-    const result = cli("--pubkey-file", join(FIXTURES, "fixture.pub"), hello);
+  test("each file's .sig against a public key file and the version: exit 0, one line per file", () => {
+    const result = cli("--pubkey-file", versionedPub, "--version", "1.2.3", hello);
     assert.equal(result.status, 0, result.stderr);
-    assert.ok(result.stdout.includes(`signature ok, key ${fixtureId}: ${hello}`), result.stdout);
+    assert.ok(result.stdout.includes(`signature ok, key ${versionedId}, version 1.2.3: ${hello}`), result.stdout);
   });
 
   test("against the key in a Tauri config, whose key id must be the one expected", () => {
-    const ok = cli("--pubkey-config", config, "--expect-key-id", fixtureId, hello);
+    const ok = cli("--pubkey-config", config, "--expect-key-id", versionedId, "--version", "1.2.3", hello);
     assert.equal(ok.status, 0, ok.stderr);
-    const other = cli("--pubkey-config", config, "--expect-key-id", "0000000000000000", hello);
+    const other = cli("--pubkey-config", config, "--expect-key-id", "0000000000000000", "--version", "1.2.3", hello);
     assert.equal(other.status, 1);
-    assert.ok(other.stderr.includes(`has key id ${fixtureId}, expected 0000000000000000`), other.stderr);
+    assert.ok(other.stderr.includes(`has key id ${versionedId}, expected 0000000000000000`), other.stderr);
+  });
+
+  test("a signature made for another version, or for none: exit 1, naming the file and why", () => {
+    const other = cli("--pubkey-file", versionedPub, "--version", "1.2.4", hello);
+    assert.equal(other.status, 1);
+    assert.ok(other.stderr.includes(`${hello}: signed for version "1.2.3", not 1.2.4`), other.stderr);
+    // tauri-cli 2.11.2's signature, which names no version.
+    const legacy = join(FIXTURES, "hello.txt");
+    const none = cli("--pubkey-file", join(FIXTURES, "fixture.pub"), "--version", "1.2.3", legacy);
+    assert.equal(none.status, 1);
+    assert.ok(none.stderr.includes(`${legacy}: the trusted comment names no version, so the signature isn't bound to 1.2.3`), none.stderr);
   });
 
   test("another key, changed data or a missing .sig: exit 1, naming the file", () => {
-    const wrongKey = cli("--pubkey-file", join(FIXTURES, "other.pub"), hello);
+    const wrongKey = cli("--pubkey-file", join(FIXTURES, "other.pub"), "--version", "1.2.3", hello);
     assert.equal(wrongKey.status, 1);
     assert.ok(wrongKey.stderr.includes(`${hello}: key id mismatch`), wrongKey.stderr);
     const changed = join(dir, "hello.txt");
     writeFileSync(changed, "hello, changed\n");
-    copyFileSync(join(FIXTURES, "hello.txt.sig"), `${changed}.sig`);
-    const tampered = cli("--pubkey-file", join(FIXTURES, "fixture.pub"), changed);
+    copyFileSync(join(FIXTURES, "hello.txt.1.2.3.sig"), `${changed}.sig`);
+    const tampered = cli("--pubkey-file", versionedPub, "--version", "1.2.3", changed);
     assert.equal(tampered.status, 1);
     assert.ok(tampered.stderr.includes(`${changed}: signature does not match the data`), tampered.stderr);
     const unsigned = join(dir, "unsigned.txt");
     writeFileSync(unsigned, "no signature\n");
-    const missing = cli("--pubkey-file", join(FIXTURES, "fixture.pub"), unsigned);
+    const missing = cli("--pubkey-file", versionedPub, "--version", "1.2.3", unsigned);
     assert.equal(missing.status, 1);
     assert.ok(missing.stderr.includes(`can't read ${unsigned}.sig`), missing.stderr);
   });
 
-  test("usage errors exit 2", () => {
+  test("--sig-dir: each file's signature is <dir>/<its name>.sig, and the file's own .sig isn't read", () => {
+    const sigs = join(dir, "sigs");
+    mkdirSync(sigs);
+    copyFileSync(join(FIXTURES, "hello.txt.1.2.3.sig"), join(sigs, "hello.txt.sig"));
+    // The file's own .sig is tauri-cli 2.11.2's, which names no version and
+    // was made with another key.
+    const bare = join(dir, "bare");
+    mkdirSync(bare);
+    copyFileSync(join(FIXTURES, "hello.txt"), join(bare, "hello.txt"));
+    copyFileSync(join(FIXTURES, "hello.txt.sig"), join(bare, "hello.txt.sig"));
+    const ok = cli("--pubkey-file", versionedPub, "--version", "1.2.3", "--sig-dir", sigs, join(bare, "hello.txt"));
+    assert.equal(ok.status, 0, ok.stderr);
+    assert.ok(ok.stdout.includes(`signature ok, key ${versionedId}, version 1.2.3: ${join(bare, "hello.txt")}`), ok.stdout);
+    const missing = cli("--pubkey-file", versionedPub, "--version", "1.2.3", "--sig-dir", join(dir, "nowhere"), join(bare, "hello.txt"));
+    assert.equal(missing.status, 1);
+    assert.ok(missing.stderr.includes(`can't read ${join(dir, "nowhere", "hello.txt.sig")}`), missing.stderr);
+  });
+
+  test("usage errors exit 2, a missing --version among them", () => {
     for (const args of [
       [],
-      ["--pubkey-file", join(FIXTURES, "fixture.pub")],
-      ["--pubkey-config", config, hello],
-      ["--pubkey-file", join(FIXTURES, "fixture.pub"), "--pubkey-config", config, "--expect-key-id", fixtureId, hello],
-      ["--expect-key-id", "XYZ", "--pubkey-config", config, hello],
+      ["--pubkey-file", versionedPub, "--version", "1.2.3"],
+      ["--pubkey-file", versionedPub, hello],
+      ["--pubkey-config", config, "--expect-key-id", versionedId, hello],
+      ["--pubkey-config", config, "--version", "1.2.3", hello],
+      ["--pubkey-file", versionedPub, "--pubkey-config", config, "--expect-key-id", versionedId, "--version", "1.2.3", hello],
+      ["--expect-key-id", "XYZ", "--pubkey-config", config, "--version", "1.2.3", hello],
+      ["--pubkey-file", versionedPub, "--version", "v1.2.3", hello],
+      ["--pubkey-file", versionedPub, "--version", "1.2", hello],
+      ["--pubkey-file", versionedPub, "--version", "1.2.3", "--version", "1.2.3", hello],
+      ["--pubkey-file", versionedPub, "--version", "1.2.3", "--sig-dir", hello],
     ]) {
       const result = cli(...args);
       assert.equal(result.status, 2, `${args.join(" ")}: ${result.stderr}`);
