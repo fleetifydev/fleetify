@@ -4,7 +4,7 @@ Thank you for helping keep Fleetify and its users safe. Please report a vulnerab
 
 ## Supported versions
 
-Fleetify is pre-1.0. Security fixes go into the latest release only, and older releases don't get backports. Until the first public release (v0.2.0) is out, fixes land on the `main` branch.
+Fleetify is pre-1.0. Security fixes go into the latest release only, and older releases don't get backports.
 
 | Version | Security fixes |
 |---|---|
@@ -43,7 +43,7 @@ In scope:
 
 - the Fleetify desktop app: the Tauri shell, the embedded backend and the user interface;
 - the MCP sidecars: `fleet-memory-mcp`, `fleet-dispatch-mcp`, `fleet-reveng-mcp` and `fleet-browser-mcp`;
-- the updater and the install scripts, once they ship with the first public release.
+- the updater and the install scripts.
 
 The fleetify.dev cloud (sign-in, the dashboard and its API) isn't part of this repository, but we accept reports about it the same way and route them to the people who run it.
 
@@ -72,13 +72,16 @@ We don't run a bug bounty yet, so we can't pay for reports. We credit every vali
 
 ## Verifying a release
 
-This applies from the first release on. Every release on the [Releases page](https://github.com/fleetifydev/fleetify/releases) will come with:
+Every release on the [Releases page](https://github.com/fleetifydev/fleetify/releases) is immutable: once it is published, GitHub lets no one change its files or move its tag. Each one comes with:
 
 - a `SHA256SUMS` file, which lists the SHA-256 checksum of each file in the release;
-- GitHub build provenance attestations, which show that a file was built by this repository's GitHub Actions.
+- GitHub build provenance attestations, which show that a file was built by this repository's GitHub Actions;
+- GitHub's attestation of the release itself, which records its tag and the checksum of each of its files.
 
-To check a download, compare its checksum with its line in `SHA256SUMS`, using `sha256sum <file>` on Linux, `shasum -a 256 <file>` on macOS or `Get-FileHash <file>` in PowerShell. Then check where it was built with the [GitHub CLI](https://cli.github.com):
+To check a download, compare its checksum with its line in `SHA256SUMS`, using `sha256sum <file>` on Linux, `shasum -a 256 <file>` on macOS or `Get-FileHash <file>` in PowerShell. Then check where it was built, and that it belongs to the release, with the [GitHub CLI](https://cli.github.com), where `<version>` is the release's version:
 
 ```bash
 gh attestation verify <file> --repo fleetifydev/fleetify --signer-workflow fleetifydev/fleetify/.github/workflows/release.yml
+gh release verify v<version> --repo fleetifydev/fleetify
+gh release verify-asset v<version> <file> --repo fleetifydev/fleetify
 ```

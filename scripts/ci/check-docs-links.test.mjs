@@ -10,9 +10,7 @@
  *   way GitHub slugs headings;
  * - every link into github.com/fleetifydev/fleetify goes to a page on a short
  *   allow-list (GITHUB_PAGES), so none points at a page that doesn't exist,
- *   such as a release download before the first release;
- * - none offers an install script or a download before the first public
- *   release (PRE_RELEASE_LINKS);
+ *   or at one release's files rather than the latest release;
  * - the only email addresses are the project's contacts (CONTACTS).
  *
  * Both READMEs link fleetify.dev's Terms of Service and Privacy Policy
@@ -25,9 +23,8 @@
  *   node --test scripts/ci/check-docs-links.test.mjs
  *
  * A link counts where GitHub renders one: not inside a code block, a code span
- * or an HTML comment. The github.com, pre-release and address checks read the
- * whole file, since everything in it is published. Nothing here touches the
- * network.
+ * or an HTML comment. The github.com and address checks read the whole file,
+ * since everything in it is published. Nothing here touches the network.
  */
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
@@ -64,9 +61,10 @@ const LEGAL_PAGES = ["https://fleetify.dev/legal/terms", "https://fleetify.dev/l
  * The pages of github.com/fleetifydev/fleetify the docs may link to, besides
  * the repository's front page. A link may also go to a page below one, such as
  * discussions/categories/q-a, issues/new/choose or
- * actions/workflows/ci.yml/badge.svg, unless the entry is `exact`: nothing
- * exists under releases/ before the first release, so a download link there
- * would return 404.
+ * actions/workflows/ci.yml/badge.svg, unless the entry is `exact`. Under
+ * releases/, only the Releases page and the latest release: each release's
+ * files carry its version in their names, so a link to one would go on
+ * serving that release after the next one ships.
  */
 const GITHUB_PAGES = [
   { path: "discussions" },
@@ -74,27 +72,7 @@ const GITHUB_PAGES = [
   { path: "issues" },
   { path: "actions/workflows/ci.yml" },
   { path: "releases", exact: true },
-];
-
-/**
- * Addresses that serve nothing before the first public release (v0.2.0):
- * fleetify.dev's install scripts and download page, and this repository's
- * release downloads. A doc that offers one sends its readers to a 404. Another
- * project's release assets stay linkable. Install one-liners sit in code
- * blocks, so the whole file is read. P3 lifts this list when v0.2.0 ships.
- */
-const PRE_RELEASE_LINKS = [
-  { pattern: /(?<![\w-])fleetify\.dev\/install\b/gi, what: "an install script" },
-  { pattern: /(?<![\w-])get\.fleetify\.dev/gi, what: "an install script" },
-  { pattern: /(?<![\w-])fleetify\.dev\/download/gi, what: "the download page" },
-  {
-    pattern: /github\.com\/fleetifydev\/fleetify\/releases\/(?:latest\/download|download\/)/gi,
-    what: "a release download",
-  },
-  {
-    pattern: /raw\.githubusercontent\.com\/fleetifydev\/fleetify\/[^\s"'`<>()[\]]*install/gi,
-    what: "an install script",
-  },
+  { path: "releases/latest", exact: true },
 ];
 
 /** An inline link or image, [text](destination "title"), allowing one level of brackets in the text. */
@@ -287,12 +265,6 @@ const allowedPage = (page) =>
 /** Every email address in `text`, with its line. */
 const emailsIn = (text) => [...text.matchAll(EMAIL)].map((m) => ({ email: m[0], line: lineAt(text, m.index) }));
 
-/** Every address in `text` that serves nothing before the first public release, with what it is and its line. */
-const preReleaseLinksIn = (text) =>
-  PRE_RELEASE_LINKS.flatMap(({ pattern, what }) =>
-    [...text.matchAll(pattern)].map((m) => ({ match: m[0], what, line: lineAt(text, m.index) })),
-  ).sort((a, b) => a.line - b.line);
-
 /** Whether `path` is a file, not a folder or nothing at all. */
 const isFile = (path) => existsSync(path) && statSync(path).isFile();
 
@@ -380,11 +352,6 @@ describe("docs", () => {
         .map(({ url, line }) => `${file}:${line}: ${url}`);
       const allowed = GITHUB_PAGES.map(({ path, exact }) => (exact ? path : `${path}[/…]`)).join(", ");
       assertNone(problems, `${file} links to pages outside the allow-list (${allowed}); link a repository file relatively`);
-    });
-
-    test(`${file}: offers no install script or download before the first public release`, { skip }, () => {
-      const problems = preReleaseLinksIn(read(file)).map(({ match, what, line }) => `${file}:${line}: ${match} (${what})`);
-      assertNone(problems, `${file} sends readers to addresses that serve nothing until v0.2.0 ships; point them to building from source`);
     });
 
     test(`${file}: the only email addresses are the project contacts`, { skip }, () => {
@@ -594,9 +561,12 @@ describe("the checker", () => {
       "https://github.com/fleetifydev/fleetify/security/advisories/new",
       "https://github.com/fleetifydev/fleetify/actions/workflows/ci.yml/badge.svg",
       "https://github.com/fleetifydev/fleetify/releases",
+      "https://github.com/fleetifydev/fleetify/releases/latest",
     ];
     const refused = [
       "https://github.com/fleetifydev/fleetify/releases/latest/download/SHA256SUMS",
+      "https://github.com/fleetifydev/fleetify/releases/download/v0.2.1/install.sh",
+      "https://github.com/fleetifydev/fleetify/releases/tag/v0.2.1",
       "https://github.com/fleetifydev/fleetify/blob/main/CONTRIBUTING.md",
       "https://github.com/fleetifydev/fleetify/security/advisories",
       "https://github.com/fleetifydev/fleetify/issuesx",
@@ -613,36 +583,6 @@ describe("the checker", () => {
     );
     // Other repositories and accounts are no concern of the allow-list.
     assert.deepEqual(repoLinks("https://github.com/fleetifydev/fleetify-example https://github.com/dorukozgen"), []);
-  });
-
-  test("refuses install scripts and downloads before the first release, but not words about them", () => {
-    const refused = [
-      "curl -fsSL https://fleetify.dev/install.sh | sh",
-      "irm https://fleetify.dev/install.ps1 | iex",
-      "curl -fsSL https://fleetify.dev/install | sh",
-      "curl -fsSL https://get.fleetify.dev | sh",
-      "[Download](https://fleetify.dev/download)",
-      "https://app.fleetify.dev/downloads/latest",
-      "https://github.com/fleetifydev/fleetify/releases/latest/download/SHA256SUMS",
-      "https://github.com/fleetifydev/fleetify/releases/download/v0.2.0/Fleetify.dmg",
-      "curl -fsSL https://raw.githubusercontent.com/fleetifydev/fleetify/main/scripts/install.sh | sh",
-    ];
-    const allowed = [
-      "Downloads, install one-liners and update support arrive with the first public release (v0.2.0).",
-      "the updater and the install scripts, once they ship",
-      "https://fleetify.dev and https://fleetify.dev/docs",
-      "https://github.com/fleetifydev/fleetify/releases",
-      "https://raw.githubusercontent.com/fleetifydev/fleetify/main/README.md",
-      "https://notfleetify.dev/download",
-      // Another project's release assets, such as a tool the install guide points to, stay linkable.
-      "https://github.com/jedisct1/minisign/releases/download/0.12/minisign-0.12-linux.tar.gz",
-      "https://github.com/jedisct1/minisign/releases/latest/download/minisign-win64.zip",
-    ];
-    assert.deepEqual(
-      refused.map((text) => preReleaseLinksIn(text).length),
-      refused.map(() => 1),
-    );
-    assert.deepEqual(allowed.flatMap(preReleaseLinksIn), []);
   });
 
   test("finds email addresses, but not handles, scoped packages, versions or @2x images", () => {

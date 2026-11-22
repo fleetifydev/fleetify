@@ -1,16 +1,46 @@
 # Installing Fleetify
 
-> [!NOTE]
-> Applies from the first public release (v0.2.0). Until it ships there is nothing to download: [build Fleetify from source](../README.md#build-from-source), as [CONTRIBUTING.md](../CONTRIBUTING.md#development-setup) describes.
+Every release is published on the [Releases page](https://github.com/fleetifydev/fleetify/releases). [Install the latest one with one line](#install-with-one-line), or pick the file for your system, [verify it](#verify-a-download), and follow the steps for your OS below. To use Fleetify you sign in with a free Fleetify account the first time it starts; the [README](../README.md#requirements) lists the other requirements.
 
-Every release is published on the [Releases page](https://github.com/fleetifydev/fleetify/releases). Pick the file for your system, [verify it](#verify-a-download), and follow the steps for your OS below. To use Fleetify you sign in with a free Fleetify account the first time it starts; the [README](../README.md#requirements) lists the other requirements.
-
+- [Install with one line](#install-with-one-line)
 - [macOS](#macos)
 - [Windows](#windows)
 - [Linux](#linux)
 - [Updates](#updates)
 - [Verify a download](#verify-a-download)
 - [Uninstall](#uninstall)
+
+## Install with one line
+
+The install scripts install the latest release, or the one you name. Each downloads the release's file for your machine from GitHub and checks it against the release's `SHA256SUMS`: if it doesn't match, nothing is installed. `fleetify.dev/install.sh` and `fleetify.dev/install.ps1` lead to the scripts attached to the latest release, so you can download one and read it before you run it.
+
+**macOS and Linux**, in a terminal:
+
+```bash
+curl -fsSL https://fleetify.dev/install.sh | sh
+```
+
+On macOS it installs Fleetify.app for your Mac, Apple silicon or Intel, into `/Applications`, or into `~/Applications` if you can't write to `/Applications`, replacing an earlier copy. On Linux it installs the AppImage as `~/.local/bin/fleetify`, with a menu entry; the AppImage needs FUSE 2, as [Linux](#linux) explains. Options go after `sh -s --`:
+
+```bash
+curl -fsSL https://fleetify.dev/install.sh | sh -s -- --deb             # the .deb, through sudo apt-get
+curl -fsSL https://fleetify.dev/install.sh | sh -s -- --rpm             # the .rpm, through sudo dnf or zypper
+curl -fsSL https://fleetify.dev/install.sh | sh -s -- --version 0.2.1   # that release, not the latest
+```
+
+`--dir PATH` sets where the app or the AppImage goes, and `--download-only` saves the checked file in the current folder, or in `--dir`, and installs nothing. Only `--deb` and `--rpm` use `sudo`, and the script prints each of their commands before it runs it. `--help` lists the options.
+
+**Windows**, in PowerShell:
+
+```powershell
+irm https://fleetify.dev/install.ps1 | iex
+```
+
+It runs the release's installer, which installs Fleetify for your user account, and waits for it to finish. Run this way, the script takes no options; to install a given release, set `FLEETIFY_VERSION` first:
+
+```powershell
+$env:FLEETIFY_VERSION = "0.2.1"; irm https://fleetify.dev/install.ps1 | iex
+```
 
 ## macOS
 
@@ -99,7 +129,7 @@ How the update installs:
 
 ## Verify a download
 
-Each release comes with a `SHA256SUMS` file, which lists the SHA-256 checksum of every file in the release, and with GitHub build provenance attestations.
+Each release comes with a `SHA256SUMS` file, which lists the SHA-256 checksum of every file in the release, and with GitHub build provenance attestations. Releases are also immutable: once a release is published, GitHub lets no one change its files or move its tag, and it attests what the release holds. The install scripts compare the checksum for you.
 
 **Compare the checksum.** Download `SHA256SUMS` into the folder that holds the file, then run:
 
@@ -113,7 +143,16 @@ Each release comes with a `SHA256SUMS` file, which lists the SHA-256 checksum of
 gh attestation verify <file> --repo fleetifydev/fleetify --signer-workflow fleetifydev/fleetify/.github/workflows/release.yml
 ```
 
-A pass shows that the file was built by this repository's release workflow and hasn't changed since. [SECURITY.md](../SECURITY.md#verifying-a-release) covers the same checks.
+A pass shows that the file was built by this repository's release workflow and hasn't changed since.
+
+**Check that it belongs to the release**, also with the GitHub CLI, where `<version>` is the release's version, such as `0.2.1`:
+
+```bash
+gh release verify v<version> --repo fleetifydev/fleetify
+gh release verify-asset v<version> <file> --repo fleetifydev/fleetify
+```
+
+The first checks GitHub's attestation of the release and lists the files it holds, with their checksums; the second checks that your file is one of them, unchanged. [SECURITY.md](../SECURITY.md#verifying-a-release) covers the same checks.
 
 ## Uninstall
 

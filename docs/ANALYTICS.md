@@ -175,8 +175,14 @@ sends no name, email or other person property.
 
 These flow from `crates/fleetify-backend/src/services/telemetry/emitters.rs`
 through the `enqueue_payload` fan-out, get translated by
-`posthog/mapper.rs`, queued in `~/.fleetify/posthog-outbox.sqlite`, and
-POSTed in batches every 10s by the worker.
+`posthog/mapper.rs` and queued in `~/.fleetify/posthog-outbox.sqlite`.
+The worker sends each event as soon as it is queued: it wakes and POSTs
+what is queued to PostHog's `/batch/` endpoint, oldest first, up to 100
+events at a time. Events whose send fails on the network or with a
+server error (5xx) stay queued and go again the next time it wakes:
+when another event is queued, or when its 10-second timer fires. An
+event is dropped after 10 failed tries, and a batch that PostHog
+refuses with a client error (4xx) is dropped at once.
 
 | Event | Trigger | Properties (kept) | What is **dropped** |
 |---|---|---|---|

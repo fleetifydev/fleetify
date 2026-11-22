@@ -28,11 +28,6 @@
   </picture>
 </p>
 
-> [!IMPORTANT]
-> **Yayın öncesi.** Fleetify ilk herkese açık sürümüne (v0.2.0) hazırlanıyor. İndirmeler, tek satırlık kurulum komutları ve güncelleme desteği bu sürümle gelecek. O zamana kadar Fleetify'ı [kaynaktan derleyebilirsiniz](#kaynaktan-derleme).
->
-> Sürüm çıktığında haberdar olmak için depoyu izleyin (**Watch → Custom → Releases**) ya da [Announcements](https://github.com/fleetifydev/fleetify/discussions/categories/announcements) kategorisini takip edin.
-
 ## Fleetify ne yapar?
 
 Birden fazla kodlama ajanıyla çalışmak; terminaller, branch'ler ve paneller arasında sürekli gidip gelmek demek. Fleetify ajanlarınızı tek pencerede toplar: CLI ajanlarıyla ya da API modelleriyle oturum başlatın, hepsini Fleet hub'dan izleyin, paralel işleri git worktree'leriyle birbirinden ayırın. Library, Marketplace, Routines, yerleşik tarayıcı ve MCP sidecar'larıyla ilgili ayrıntılar [İngilizce README](README.md)'de. Fleetify yaptığı commit'lere `Co-Authored-By: Fleetify` satırı, açtığı pull request'lerin sonuna da kısa bir not ekler; bunu **Settings → General → Attribution** bölümünden kapatabilirsiniz.
@@ -45,7 +40,21 @@ Birden fazla kodlama ajanıyla çalışmak; terminaller, branch'ler ve paneller 
 
 ## Kurulum
 
-İndirmeler ilk herkese açık sürümle (v0.2.0) gelecek; o zamana kadar [kaynaktan derleyin](#kaynaktan-derleme). Paketler macOS'ta kendinden imzalı, Windows'ta imzasız olacak: macOS ilk açılışta **Privacy & Security** bölümünden bir kez izin vermenizi ister, Windows'ta ise SmartScreen bir uyarı gösterir. [docs/INSTALL.md](docs/INSTALL.md) her adımı ayrıntılı anlatıyor.
+[Son sürümü](https://github.com/fleetifydev/fleetify/releases/latest) tek satırla kurabilirsiniz. macOS ya da Linux'ta:
+
+```bash
+curl -fsSL https://fleetify.dev/install.sh | sh
+```
+
+Windows'ta, PowerShell'de:
+
+```powershell
+irm https://fleetify.dev/install.ps1 | iex
+```
+
+Betik, bilgisayarınıza uygun dosyayı GitHub'daki sürümden indirir ve yalnızca sürümün `SHA256SUMS` dosyasıyla eşleşirse kullanır: macOS'ta Fleetify.app'i, Linux'ta AppImage dosyasını menü kaydıyla birlikte kurar; Windows'ta ise Fleetify'ı yalnızca sizin kullanıcı hesabınıza kuran yükleyiciyi çalıştırır. Betiğin seçenekleri (örneğin AppImage yerine `.deb` ya da `.rpm` kurmak) [docs/INSTALL.md](docs/INSTALL.md#install-with-one-line)'de.
+
+Paketleri sürüm sayfasından kendiniz de indirebilirsiniz. Paketler macOS'ta kendinden imzalı, Windows'ta imzasızdır: macOS ilk açılışta **Privacy & Security** bölümünden bir kez izin vermenizi ister, Windows'ta ise SmartScreen bir uyarı gösterir. [docs/INSTALL.md](docs/INSTALL.md) her adımı ve indirdiğiniz dosyayı nasıl doğrulayacağınızı ayrıntılı anlatıyor.
 
 ## Kaynaktan derleme
 

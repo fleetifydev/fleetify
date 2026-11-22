@@ -37,11 +37,6 @@
   </picture>
 </p>
 
-> [!IMPORTANT]
-> **Pre-release.** Fleetify is approaching its first public release (v0.2.0). Downloads, install one-liners and update support arrive with it. Until then, [build from source](#build-from-source).
->
-> To hear when it ships, watch this repository (**Watch → Custom → Releases**) or follow [Announcements](https://github.com/fleetifydev/fleetify/discussions/categories/announcements).
-
 ## What Fleetify does
 
 Running several coding agents means juggling terminals, branches and dashboards. Fleetify puts them in one window: start sessions with CLI agents or API models, follow them all from the Fleet hub, and keep parallel work apart with git worktrees.
@@ -76,9 +71,23 @@ Fleetify writes your Library items and installed plugins into each agent's own c
 
 ## Install
 
-Downloads arrive with the first public release (v0.2.0). Until then, [build from source](#build-from-source).
+Install the [latest release](https://github.com/fleetifydev/fleetify/releases/latest) with one line. On macOS or Linux:
 
-| Platform | Package (from v0.2.0) | First launch |
+```bash
+curl -fsSL https://fleetify.dev/install.sh | sh
+```
+
+On Windows, in PowerShell:
+
+```powershell
+irm https://fleetify.dev/install.ps1 | iex
+```
+
+The script downloads the release's file for your machine from GitHub and uses it only once it matches the release's `SHA256SUMS`: on macOS it installs Fleetify.app, on Linux the AppImage with a menu entry, and on Windows it runs the installer, which installs Fleetify for your user account. [docs/INSTALL.md](docs/INSTALL.md#install-with-one-line) lists its options, such as the `.deb` or the `.rpm` instead of the AppImage.
+
+Or download the package for your system from the release:
+
+| Platform | Package | First launch |
 |---|---|---|
 | macOS | `.dmg` | Self-signed: macOS asks you to allow it once in **Privacy & Security** |
 | Windows | `.exe` installer, per user | Unsigned: SmartScreen shows a warning |
