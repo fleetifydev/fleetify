@@ -56,7 +56,8 @@ on:
     # name (unpassed, it resolves to an empty string, with no error), and its
     # value then comes from the environment that job names: sign and
     # bundle-macos get the keys in a release build alone. A dry run passes
-    # them too, empty, and signs with keys made for the run.
+    # them too, empty, and signs with keys made for the run. Each release
+    # step that gets one first fails on any that is empty, naming it.
     secrets:
       TAURI_SIGNING_PRIVATE_KEY:
         required: false
@@ -433,13 +434,24 @@ jobs:
       # The Tauri CLI's signer writes each <file>.sig as the bundler would,
       # with the same function and trusted comment. The release key reaches
       # it through the environment, never as an argument. Each call gets
-      # /dev/null for input, so nothing reads the loop's list.
+      # /dev/null for input, so nothing reads the loop's list. A key arrives
+      # empty when the release environment lacks it or the caller doesn't
+      # pass it, which the signer reports as a bad password, so the step
+      # first names each empty one, never a value.
       - name: Sign the updater artifacts (release)
         if: inputs.environment == 'release'
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
+          missing=0
+          for name in TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD; do
+            if [ -z "${!name}" ]; then
+              echo "::error::$name is empty: the release environment must hold it and build.yml's caller must pass it by name (see on.workflow_call.secrets)"
+              missing=1
+            fi
+          done
+          if [ "$missing" = 1 ]; then exit 1; fi
           updaters=$(node scripts/release/release-assets.mjs updaters "$TRIPLE" "$VERSION")
           while IFS= read -r name; do
             npx --no -- tauri signer sign "$RUNNER_TEMP/bundles/$name" < /dev/null
@@ -629,7 +641,10 @@ jobs:
           exit "$status"
       # The release identity, from the release environment. This step only
       # decodes the p12; its password reaches the script through the
-      # environment.
+      # environment. Either arrives empty when the release environment lacks
+      # it or the caller doesn't pass it, which the script would report as a
+      # missing password, so the step first names each empty one by the
+      # secret to set, never a value.
       - name: Release code-signing identity (release)
         if: inputs.environment == 'release'
         timeout-minutes: 5
@@ -638,6 +653,16 @@ jobs:
           P12_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
         run: |
+          missing=0
+          for name in APPLE_CERTIFICATE P12_PASSWORD; do
+            if [ -z "${!name}" ]; then
+              secret=$name
+              if [ "$name" = P12_PASSWORD ]; then secret="APPLE_CERTIFICATE_PASSWORD, delivered as P12_PASSWORD,"; fi
+              echo "::error::$secret is empty: the release environment must hold it and build.yml's caller must pass it by name (see on.workflow_call.secrets)"
+              missing=1
+            fi
+          done
+          if [ "$missing" = 1 ]; then exit 1; fi
           dir="$RUNNER_TEMP/codesign"
           mkdir -p "$dir"
           chmod 700 "$dir"
@@ -650,12 +675,22 @@ jobs:
       # --verbose logs each command the bundler runs (codesign, hdiutil).
       # None takes a secret as an argument: the updater key reaches the CLI
       # through the environment, and the identity is a certificate's name.
+      # The updater key and its password are checked first, as in sign.
       - name: Bundle (release)
         if: inputs.environment == 'release'
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: npx --no -- tauri bundle --verbose --ci --target "$TRIPLE" --bundles "$BUNDLES" --config src-tauri/tauri.release.conf.json
+        run: |
+          missing=0
+          for name in TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD; do
+            if [ -z "${!name}" ]; then
+              echo "::error::$name is empty: the release environment must hold it and build.yml's caller must pass it by name (see on.workflow_call.secrets)"
+              missing=1
+            fi
+          done
+          if [ "$missing" = 1 ]; then exit 1; fi
+          npx --no -- tauri bundle --verbose --ci --target "$TRIPLE" --bundles "$BUNDLES" --config src-tauri/tauri.release.conf.json
       # The run's own keys, and the overlay the app was compiled with.
       - name: Bundle (dry run)
         if: inputs.environment == 'dry-run'

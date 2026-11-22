@@ -28,8 +28,9 @@
  * `contents: read` at the top. build.yml builds release-assets.mjs's TARGETS. Its jobs
  * that hold the signing keys run only GitHub's own actions, the lockfile's
  * Tauri CLI, system tools and the repository's scripts, get the release
- * secrets only in release-only steps, and check every artifact they take
- * before using it. A release build gets nothing of a dry run's: no cache,
+ * secrets only in release-only steps, which first fail on each one that
+ * arrived empty, naming it, and check every artifact they take before using
+ * it. A release build gets nothing of a dry run's: no cache,
  * none of the keys a dry run makes, no updater overlay. The dry run assembles
  * with each build's own key and adds the install scripts, and its smoke runs
  * the bundles without the source tree, then installs each platform's bundle
@@ -812,6 +813,50 @@ const commandLines = (step) =>
     .map((line) => line.trim())
     .filter((line) => line !== "" && !line.startsWith("#"));
 
+/**
+ * The last line of the check that opens each step getting a signing secret.
+ * A secret that the release environment lacks, or that the caller doesn't
+ * pass, arrives empty, with no error, and the tools then fail with messages
+ * about the key's password; the check names each empty one first.
+ */
+const SECRET_CHECK_END = 'if [ "$missing" = 1 ]; then exit 1; fi';
+
+/**
+ * How the check names the secret a variable holds: by the variable's name,
+ * which is the secret's, or else by the secret's, with the variable's.
+ */
+const secretLabel = (name, secret) => (name === secret ? name : `${secret}, delivered as ${name},`);
+
+/** The ::error:: line the check prints for an empty secret, by its label. */
+const emptySecret = (label) => `::error::${label} is empty: the release environment must hold it and build.yml's caller must pass it by name (see on.workflow_call.secrets)`;
+
+/**
+ * The steps of sign and bundle-macos that get a signing secret, with the
+ * variables that hold one, in their env's order, and the secret each holds.
+ */
+const secretSteps = () =>
+  KEYED_JOBS.flatMap((id) =>
+    stepsOf(id).flatMap((step) => {
+      const held = Object.entries(step.env ?? {}).filter(([, value]) => secretExpressions(String(value)).length > 0);
+      const names = held.map(([name]) => name);
+      const secrets = Object.fromEntries(held.map(([name, value]) => [name, String(value).match(/^\$\{\{ secrets\.([A-Z0-9_]+) \}\}$/)?.[1]]));
+      return names.length > 0 ? [{ id, step, names, secrets }] : [];
+    }),
+  );
+
+/** A step's script up to the end of its secret check; undefined when it has none. */
+function secretCheckOf(step) {
+  const lines = scriptOf(step).split("\n");
+  const end = lines.findIndex((line) => line.trim() === SECRET_CHECK_END);
+  return end === -1 ? undefined : lines.slice(0, end + 1).join("\n");
+}
+
+/** A step's command lines after its secret check: all of them when it has none. */
+const afterSecretCheck = (step) => {
+  const lines = commandLines(step);
+  return lines.slice(lines.indexOf(SECRET_CHECK_END) + 1);
+};
+
 /** Words that start or join a compound command, after which a command still comes. */
 const RESERVED_WORDS = new Set(["!", "{", "}", "case", "do", "done", "elif", "else", "esac", "fi", "for", "function", "if", "in", "select", "then", "time", "until", "while"]);
 
@@ -1317,6 +1362,81 @@ describe("build.yml", () => {
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ["bundle-macos", "sign"],
     });
     assert.deepEqual(Object.keys(found).sort(), RELEASE_SECRETS);
+  });
+
+  yamlTest("each step that gets a signing secret first checks that every one arrived, and names an empty one, never a value", () => {
+    // A secret that the release environment lacks, or that the caller
+    // doesn't pass by name, arrives empty, and the tools then blame the
+    // key's password.
+    const steps = secretSteps();
+    assert.deepEqual(
+      steps.map(({ id, step, secrets }) => [id, step.name, secrets]),
+      [
+        ["sign", "Sign the updater artifacts (release)", { TAURI_SIGNING_PRIVATE_KEY: "TAURI_SIGNING_PRIVATE_KEY", TAURI_SIGNING_PRIVATE_KEY_PASSWORD: "TAURI_SIGNING_PRIVATE_KEY_PASSWORD" }],
+        ["bundle-macos", "Release code-signing identity (release)", { APPLE_CERTIFICATE: "APPLE_CERTIFICATE", P12_PASSWORD: "APPLE_CERTIFICATE_PASSWORD" }],
+        ["bundle-macos", "Bundle (release)", { TAURI_SIGNING_PRIVATE_KEY: "TAURI_SIGNING_PRIVATE_KEY", TAURI_SIGNING_PRIVATE_KEY_PASSWORD: "TAURI_SIGNING_PRIVATE_KEY_PASSWORD" }],
+      ],
+    );
+    for (const { step, names, secrets } of steps) {
+      const check = secretCheckOf(step);
+      assert.ok(check !== undefined, `${step.name} doesn't check that its secrets arrived`);
+      // A variable named otherwise than its secret, such as P12_PASSWORD,
+      // gets the secret's name, which is the one to set.
+      const renamed = names.filter((name) => secrets[name] !== name);
+      const labels = renamed.length === 0 ? [] : ["secret=$name", ...renamed.map((name) => `if [ "$name" = ${name} ]; then secret="${secretLabel(name, secrets[name])}"; fi`)];
+      // From the script's first command: nothing runs before it.
+      assert.deepEqual(
+        commandLines({ run: check }),
+        [
+          "missing=0",
+          `for name in ${names.join(" ")}; do`,
+          'if [ -z "${!name}" ]; then',
+          ...labels,
+          `echo "${emptySecret(renamed.length === 0 ? "$name" : "$secret")}"`,
+          "missing=1",
+          "fi",
+          "done",
+          SECRET_CHECK_END,
+        ],
+        `${step.name}'s check`,
+      );
+    }
+  });
+
+  scriptTest("the check fails a step whose secrets are empty, naming each, before the step does anything else, and passes when they're all there", () => {
+    const steps = secretSteps();
+    assert.ok(steps.length > 0, "no step of sign or bundle-macos gets a secret");
+    for (const { step, names, secrets } of steps) {
+      assert.ok(secretCheckOf(step) !== undefined, `${step.name} doesn't check that its secrets arrived`);
+      inTempDir((dir) => {
+        // Stand-ins for what the steps run after the check: each notes that it ran.
+        const bin = join(dir, "bin");
+        mkdirSync(bin);
+        for (const tool of ["base64", "node", "npx", "security"]) writeFileSync(join(bin, tool), `#!/bin/sh\necho ${tool} >> "$RAN"\n`, { mode: 0o755 });
+        const temp = join(dir, "temp");
+        mkdirSync(temp);
+        const ran = join(dir, "ran.log");
+        const run = (script, values) =>
+          runScript(script, {
+            cwd: dir,
+            env: { PATH: `${bin}:${process.env.PATH}`, RAN: ran, RUNNER_TEMP: temp, TRIPLE: "x86_64-apple-darwin", VERSION: "1.2.3", BUNDLES: "app,dmg", ...values },
+          });
+        const values = (empty) => Object.fromEntries(names.map((name) => [name, empty.includes(name) ? "" : "a value that isn't printed"]));
+        // Each empty alone, then all of them, as when the caller passes none.
+        for (const empty of [...names.map((name) => [name]), names]) {
+          const result = run(step.run, values(empty));
+          assert.equal(result.status, 1, `${step.name}, ${empty.join(" and ")} empty: ${result.stdout}${result.stderr}`);
+          const expected = empty.map((name) => emptySecret(secretLabel(name, secrets[name])));
+          assert.deepEqual(result.stdout.trim().split("\n"), expected, `${step.name}, ${empty.join(" and ")} empty`);
+          assert.ok(!existsSync(ran), `${step.name} ran ${existsSync(ran) ? readFileSync(ran, "utf8").trim() : ""} after the check failed`);
+          assert.deepEqual(readdirSync(temp), [], `${step.name} wrote to RUNNER_TEMP after the check failed`);
+        }
+        // Only the check: the rest of the step needs the release keys and the runner's tools.
+        const passed = run(secretCheckOf(step), values([]));
+        assert.equal(passed.status, 0, `${step.name}, every secret there: ${passed.stdout}${passed.stderr}`);
+        assert.equal(passed.stdout, "", `${step.name}, every secret there`);
+      });
+    }
   });
 
   yamlTest("only bundle-macos's release identity step reads the macOS identity's name, and no other job mentions APPLE_", () => {
@@ -1856,7 +1976,8 @@ capture() {
       IDENTITY: "${{ vars.APPLE_SIGNING_IDENTITY }}",
     });
     assert.ok(commandLines(release[0]).includes('P12="$dir/release.p12" bash scripts/release/macos-keychain.sh import'));
-    assert.doesNotMatch(scriptOf(release[0]), /P12_PASSWORD/, "the release step uses the p12's password itself");
+    // Past checking that it arrived, which another test covers.
+    assert.deepEqual(afterSecretCheck(release[0]).filter((line) => line.includes("P12_PASSWORD")), [], "the release step uses the p12's password itself");
     const firstBundle = steps.findIndex(isTauriBundle);
     for (const step of identity) {
       assert.equal(step["timeout-minutes"], 5, `${step.name} must give up after five minutes`);
@@ -1991,7 +2112,7 @@ capture() {
     const dryRun = signs.filter((step) => requires(step.if, DRY_RUN_ONLY));
     assert.deepEqual([signs.length, release.length, dryRun.length], [2, 1, 1], `sign must sign once if "${RELEASE_ONLY}" and once if "${DRY_RUN_ONLY}"`);
     for (const step of signs) {
-      assert.equal(commandLines(step)[0], 'updaters=$(node scripts/release/release-assets.mjs updaters "$TRIPLE" "$VERSION")', `${step.name} doesn't sign release-assets.mjs's updater artifacts`);
+      assert.equal(afterSecretCheck(step)[0], 'updaters=$(node scripts/release/release-assets.mjs updaters "$TRIPLE" "$VERSION")', `${step.name} doesn't sign release-assets.mjs's updater artifacts`);
     }
     assert.deepEqual(release[0].env, {
       TAURI_SIGNING_PRIVATE_KEY: "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}",
@@ -2010,7 +2131,9 @@ capture() {
         const bin = join(dir, "bin");
         mkdirSync(bin);
         writeFileSync(join(bin, "npx"), `#!/bin/sh\nprintf '%s\\n' "$*" >> "$NPX_LOG"\n`, { mode: 0o755 });
-        const env = { PATH: `${bin}:${process.env.PATH}`, NPX_LOG: join(dir, "npx.log"), RUNNER_TEMP: dir, TRIPLE: triple, VERSION: "1.2.3" };
+        // Stand-ins for the key and its password, which the step checks are there.
+        const keys = { TAURI_SIGNING_PRIVATE_KEY: "a key", TAURI_SIGNING_PRIVATE_KEY_PASSWORD: "a password" };
+        const env = { PATH: `${bin}:${process.env.PATH}`, NPX_LOG: join(dir, "npx.log"), RUNNER_TEMP: dir, TRIPLE: triple, VERSION: "1.2.3", ...keys };
         const result = runScript(step.run, { cwd: ROOT, env });
         assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
         assert.deepEqual(
