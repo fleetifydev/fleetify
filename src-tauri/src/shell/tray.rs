@@ -25,6 +25,10 @@ pub fn ready() -> bool {
     READY.load(Ordering::SeqCst)
 }
 
+/// The menu item that quits. The notice on the first close names it too
+/// (shell::close_notice).
+pub const QUIT_LABEL: &str = "Quit Fleetify";
+
 /// The tray icon's image for the taskbar's theme, given the
 /// `SystemUsesLightTheme` value under
 /// `HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize` (the
@@ -55,8 +59,8 @@ mod notification_area {
     use winreg::enums::{HKEY_CURRENT_USER, KEY_NOTIFY, KEY_QUERY_VALUE};
     use winreg::RegKey;
 
-    use super::{tray_icon_png, READY};
-    use crate::shell::lifecycle::open_main_window;
+    use super::{tray_icon_png, QUIT_LABEL, READY};
+    use crate::shell::lifecycle::{open_main_window, quit};
 
     /// The icon's id, to find it again when its mark changes.
     const TRAY_ID: &str = "fleetify";
@@ -84,7 +88,7 @@ mod notification_area {
         let theme_key = personalize_key();
         let theme = system_uses_light_theme(theme_key.as_ref());
         let open_item = MenuItem::with_id(app, OPEN_ID, "Open Fleetify", true, None::<&str>)?;
-        let quit_item = MenuItem::with_id(app, QUIT_ID, "Quit Fleetify", true, None::<&str>)?;
+        let quit_item = MenuItem::with_id(app, QUIT_ID, QUIT_LABEL, true, None::<&str>)?;
         let menu = MenuBuilder::new(app)
             .item(&open_item)
             .separator()
@@ -98,7 +102,7 @@ mod notification_area {
             .show_menu_on_left_click(false)
             .on_menu_event(|app, event| match event.id().as_ref() {
                 OPEN_ID => open_main_window(app),
-                QUIT_ID => quit(app),
+                QUIT_ID => quit(app, "the notification-area icon"),
                 _ => {}
             })
             .on_tray_icon_event(|tray, event| {
@@ -126,14 +130,6 @@ mod notification_area {
                 ..
             }
         )
-    }
-
-    /// Quit Fleetify: exits through the event loop, as every quit does, so
-    /// the shutdown at `RunEvent::Exit` runs (shell::lifecycle::on_exit) and
-    /// Tauri removes the icon.
-    fn quit(app: &AppHandle) {
-        tracing::info!("quitting from the notification-area icon");
-        app.exit(0);
     }
 
     /// The key that holds the taskbar's theme, opened to read it and to wait

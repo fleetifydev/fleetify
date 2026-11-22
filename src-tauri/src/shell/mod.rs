@@ -6,6 +6,7 @@ pub mod auth;
 pub mod backend_ready;
 #[cfg(test)]
 mod bundle_config;
+pub mod close_notice;
 pub mod config;
 pub mod feedback;
 pub mod git;

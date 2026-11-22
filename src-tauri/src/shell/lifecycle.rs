@@ -11,6 +11,11 @@
 //! quits, as before: a tray icon needs libayatana-appindicator at run time,
 //! and not every desktop shows one, so a hidden window could be stranded.
 //!
+//! On Windows the first close that would hide the window explains first,
+//! once (shell::close_notice): Windows puts a new notification-area icon
+//! under the ^ arrow, so a window that just disappeared would look as if
+//! Fleetify had quit.
+//!
 //! Quitting stays quitting. Nothing here prevents an exit request: only a
 //! close request hides the window, and Quit Fleetify, Cmd+Q, Restart to
 //! update and any other `AppHandle::exit` or restart exit without one. They
@@ -22,7 +27,7 @@ use serde_json::Value;
 use tauri::{AppHandle, CloseRequestApi, Manager, RunEvent, Window};
 
 use crate::shell::startup_window::{self, MAIN_WINDOW};
-use crate::shell::{config, head_watcher, logging, tray};
+use crate::shell::{close_notice, config, head_watcher, logging, tray};
 
 /// The desktop platforms, as [`close_action`] tells them apart.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,20 +101,29 @@ pub fn close_action(
 /// time, so a change in Settings counts at the next close. A window that
 /// can't be hidden closes, rather than stay on screen after its close
 /// button was pressed.
+///
+/// On Windows, the first close that would hide the main window shows the
+/// notice instead (shell::close_notice), and the window stays until it is
+/// answered; a notice that can't be shown hides the window, as before.
+/// While the notice is open, a close request changes nothing.
 pub fn on_close_requested(window: &Window, api: &CloseRequestApi) {
-    let keep_running = window
-        .app_handle()
-        .path()
-        .app_data_dir()
-        .map(|dir| keep_running_from(&config::load_config_from(&dir)))
-        .unwrap_or(true);
-    let action = close_action(
-        window.label() == MAIN_WINDOW,
-        PLATFORM,
-        keep_running,
-        tray::ready(),
-    );
+    let main_window = window.label() == MAIN_WINDOW;
+    if main_window && close_notice::is_open() {
+        api.prevent_close();
+        return;
+    }
+    let dir = window.app_handle().path().app_data_dir().ok();
+    let cfg = dir.as_deref().map(config::load_config_from);
+    let keep_running = cfg.as_ref().is_none_or(keep_running_from);
+    let action = close_action(main_window, PLATFORM, keep_running, tray::ready());
     if action == CloseAction::Close {
+        return;
+    }
+    #[cfg(windows)]
+    if close_notice::shows_notice(action, PLATFORM, close_notice::shown(cfg.as_ref()))
+        && close_notice::show(window, dir)
+    {
+        api.prevent_close();
         return;
     }
     match hide(window) {
@@ -123,7 +137,7 @@ pub fn on_close_requested(window: &Window, api: &CloseRequestApi) {
 /// Hides `window`. On macOS a window in full screen hides with the app, as
 /// Cmd+H does: hiding the window alone would leave its empty full-screen
 /// Space on screen.
-fn hide(window: &Window) -> tauri::Result<()> {
+pub(crate) fn hide(window: &Window) -> tauri::Result<()> {
     #[cfg(target_os = "macos")]
     if window.is_fullscreen()? {
         return window.app_handle().hide();
@@ -165,6 +179,17 @@ pub fn open_main_window(app: &AppHandle) {
     if let Err(e) = window.set_focus() {
         tracing::warn!("focusing the main window failed: {e}");
     }
+}
+
+/// Quits Fleetify, for Quit Fleetify in the notification-area icon's menu
+/// (shell::tray) and in the notice on the first close (shell::close_notice),
+/// `from` naming which, for the log. It exits through the event loop, as
+/// every quit does, so the shutdown at `RunEvent::Exit` runs ([`on_exit`])
+/// and Tauri removes the icon.
+#[cfg(windows)]
+pub fn quit(app: &AppHandle, from: &str) {
+    tracing::info!("quitting from {from}");
+    app.exit(0);
 }
 
 /// The shutdown every orderly quit runs, at `RunEvent::Exit`: the last

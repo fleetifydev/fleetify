@@ -1630,6 +1630,7 @@ dependencies = [
  "portable-pty 0.9.0",
  "rand 0.8.6",
  "reqwest 0.12.28",
+ "rfd",
  "serde",
  "serde_json",
  "sha2",
