@@ -35,8 +35,10 @@
  * with its install script, from the release as a local server serves it.
  * Where a step's script decides something, such as the environment or the
  * arguments the smoke gets, the check runs that script with bash, as the
- * runner does. No job hands a workflow it calls any secret: build.yml's keyed
- * jobs take theirs from the environment they name.
+ * runner does. Only the jobs that call build.yml hand it secrets: the four
+ * signing secrets, each by name, never `secrets: inherit`. An environment
+ * secret reaches a called workflow only when its caller passes it, and the
+ * value comes from the environment build.yml's keyed jobs name.
  *
  * release.yml runs on pushes to main alone, one run at a time, none
  * cancelled. Its release-please, assemble and publish jobs are the only jobs
@@ -738,14 +740,28 @@ describe("release workflows", () => {
     assert.deepEqual(found, [], `these workflows run on pull_request_target; use pull_request: ${found.join(", ")}`);
   });
 
-  yamlTest("no job hands a workflow it calls any secret, secrets: inherit least of all", () => {
-    // inherit would give every job of build.yml, compile's included, the
-    // repository's secrets; its keyed jobs take theirs from the environment
-    // they name.
+  yamlTest("only a call to build.yml hands over secrets: the four signing secrets, each by name, never inherit", () => {
+    // A secret that lives only in an environment reaches a reusable
+    // workflow's job only when the caller passes it; otherwise it resolves
+    // to an empty string, with no error. Passed by name, its value comes
+    // from the environment the keyed job names. inherit would give every job
+    // of build.yml, compile's included, the repository's secrets.
     const calls = workflowJobs().filter(({ job }) => typeof job.uses === "string");
-    assert.ok(calls.length > 0, "no job calls a workflow, so there was nothing to check");
-    const found = calls.filter(({ job }) => job.secrets !== undefined).map(({ rel, id, job }) => `${rel}, job ${id}: secrets: ${JSON.stringify(job.secrets)}`);
-    assert.deepEqual(found, [], found.join("\n"));
+    assert.ok(calls.some(({ job }) => job.uses === `./${BUILD}`), "no job calls build.yml, so there was nothing to check");
+    const byName = Object.fromEntries(RELEASE_SECRETS.map((name) => [name, `\${{ secrets.${name} }}`]));
+    const problems = calls
+      .map(({ rel, id, job }) => ({ rel, id, job, want: job.uses === `./${BUILD}` ? byName : undefined }))
+      .filter(({ job, want }) => !isDeepStrictEqual(job.secrets, want))
+      .map(({ rel, id, job, want }) => `${rel}, job ${id} (${job.uses}): secrets: ${JSON.stringify(job.secrets)}, want ${JSON.stringify(want)}`);
+    assert.deepEqual(problems, [], problems.join("\n"));
+  });
+
+  yamlTest("build.yml declares the four signing secrets it takes, none required", () => {
+    // A dry run passes them too, empty: it signs with keys made for the run.
+    const call = triggersOf(load(BUILD)).workflow_call ?? {};
+    const want = Object.fromEntries(RELEASE_SECRETS.map((name) => [name, { required: false }]));
+    const declared = Object.fromEntries(Object.entries(call.secrets ?? {}).map(([name, spec]) => [name, { required: spec?.required }]));
+    assert.deepEqual(declared, want);
   });
 
   yamlTest("the release workflows grant only contents: read at the top, and more per job only", () => {
@@ -3390,11 +3406,14 @@ describe("release.yml", () => {
     }
     assert.deepEqual(problems, [], problems.join("\n"));
     assert.deepEqual(readers.sort(), RELEASE_BOT_JOBS.map((id) => `${RELEASE}, job ${id}`).sort());
-    // In release.yml, the key is the only secret, and only a token step reads it.
+    // In release.yml, the key is the only secret a step reads, and only a token
+    // step reads it. The call to build.yml hands over the signing secrets by
+    // name, which another test checks exactly.
     const flow = workflow(RELEASE);
     if (secretExpressions(JSON.stringify(flow.env ?? {})).length > 0) problems.push("release.yml's env reads a secret");
     for (const [id, job] of Object.entries(flow.jobs ?? {})) {
       const { steps = [], ...settings } = job;
+      if (settings.uses === `./${BUILD}`) delete settings.secrets;
       if (secretExpressions(JSON.stringify(settings)).length > 0) problems.push(`job ${id} reads a secret outside its steps`);
       for (const [i, step] of steps.entries()) {
         const found = secretExpressions(JSON.stringify(step));

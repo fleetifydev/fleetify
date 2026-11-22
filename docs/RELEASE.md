@@ -83,7 +83,7 @@ The hand-off artifacts between the jobs are kept for seven days, so approve a re
 - **`release-bot`** holds the Release Bot's private key. Its deployments need no approval, and they may come only from `main`.
 - **`dry-run`** has no protection rules, secrets or variables.
 
-Never call build.yml with `secrets: inherit`. It would hand the repository's secrets to every job in build.yml, the compile job included. The signing keys reach a job only through the environment its caller names.
+Never call build.yml with `secrets: inherit`. It would hand the repository's secrets to every job in build.yml, the compile job included. Its callers pass the four signing secrets by name instead: a secret that lives only in an environment reaches a called workflow's job only when the caller passes it, and unpassed it resolves to an empty string, with no error. Its value comes from the environment the job names, so only sign and bundle-macos get the keys, and only in a release build.
 
 ## Keys and secrets
 

@@ -120,6 +120,12 @@ jobs:
       ref: ${{ github.sha }}
       environment: ${{ needs.meta.outputs.environment }}
       version: ${{ needs.meta.outputs.version }}
+    # By name, never inherit; build.yml says why.
+    secrets:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
 
   assemble:
     name: Assemble the release

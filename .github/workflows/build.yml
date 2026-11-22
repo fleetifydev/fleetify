@@ -51,6 +51,21 @@ on:
         description: The version the bundles carry, MAJOR.MINOR.PATCH, as in package.json.
         required: true
         type: string
+    # The signing keys live only in the release environment. A secret like
+    # that reaches a called workflow's job only when the caller passes it by
+    # name (unpassed, it resolves to an empty string, with no error), and its
+    # value then comes from the environment that job names: sign and
+    # bundle-macos get the keys in a release build alone. A dry run passes
+    # them too, empty, and signs with keys made for the run.
+    secrets:
+      TAURI_SIGNING_PRIVATE_KEY:
+        required: false
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD:
+        required: false
+      APPLE_CERTIFICATE:
+        required: false
+      APPLE_CERTIFICATE_PASSWORD:
+        required: false
 
 permissions:
   contents: read
