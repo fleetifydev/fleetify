@@ -40,6 +40,21 @@ function agenticToolDescription(toolName: string): string {
 }
 
 /**
+ * The product analytics module, imported on first use and then shared: every
+ * capture in this file goes through the one import, so they all reach the
+ * same module instance however close together they come. An import that
+ * failed is forgotten, so the next capture tries again.
+ */
+let analyticsModule: Promise<typeof import("@/lib/posthog")> | undefined;
+function loadAnalytics(): Promise<typeof import("@/lib/posthog")> {
+  analyticsModule ??= import("@/lib/posthog").catch((err: unknown) => {
+    analyticsModule = undefined;
+    throw err;
+  });
+  return analyticsModule;
+}
+
+/**
  * Multiplexed WebSocket manager. ONE physical socket carries
  * traffic for every active session — the user sees a single
  * "WebSocket /ws/sessions [accepted]" line in the backend log
@@ -1791,7 +1806,7 @@ class WSManager {
     // provider / model / tokens dimensions via the PostHog fan-out
     // from PR 1; this one adds the renderer-side latency / attachments
     // dimensions that the backend doesn't see.
-    void import("@/lib/posthog").then(({ capture }) => {
+    void loadAnalytics().then(({ capture }) => {
       capture("message_sent", {
         session_id_short: sessionId.slice(0, 8),
         text_length: text.length,
@@ -1875,7 +1890,7 @@ class WSManager {
       this._sendOrQueue(payload);
     } catch (err) {
       useChatStore.getState().clearStreaming(sessionId);
-      void import("@/lib/posthog").then(({ capture }) => {
+      void loadAnalytics().then(({ capture }) => {
         // The error's class only: its message can carry paths or tokens.
         capture("message_error", {
           session_id_short: sessionId.slice(0, 8),
