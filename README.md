@@ -16,11 +16,13 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/fleetifydev/fleetify/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/fleetifydev/fleetify"></a>
   <a href="https://github.com/fleetifydev/fleetify/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/fleetifydev/fleetify/actions/workflows/ci.yml/badge.svg?branch=main"></a>
   <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue"></a>
 </p>
 
 <p align="center">
+  <a href="https://fleetify.dev/download"><b>Download</b></a> ·
   <a href="https://fleetify.dev">Website</a> ·
   <a href="#build-from-source">Build from source</a> ·
   <a href="https://github.com/fleetifydev/fleetify/discussions">Discussions</a> ·
