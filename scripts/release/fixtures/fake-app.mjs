@@ -35,6 +35,11 @@
  *                        the updater reports
  *   FAKE_DOWNLOAD_ASSET  a release asset it downloads from the update
  *                        server's /artifacts/ instead of the one offered
+ *   FAKE_UPDATER_PUBKEY  an updater public key, in Tauri's form: it checks
+ *                        the download against the signature offered with it,
+ *                        as the real updater does with requireSignedVersion:
+ *                        the signature must verify with this key and name
+ *                        the version offered. Without it, any download passes.
  *   FAKE_POSTHOG         "initialised": it logs that the PostHog sink started,
  *                        as a build with the key does; else that there is no key
  *   FAKE_APPRUN          a folder: it starts the app as a child process in
@@ -48,6 +53,8 @@ import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { verifySignature } from "../minisign.mjs";
 
 /** The version the app reports to the updater. */
 const VERSION = "0.2.0";
@@ -148,7 +155,15 @@ async function checkForUpdate(template) {
     const other = process.env.FAKE_DOWNLOAD_ASSET;
     const download = await fetch(other ? new URL(`/artifacts/${other}`, update.url) : update.url);
     if (!download.ok) throw new Error(`the download answered ${download.status}`);
-    await download.arrayBuffer();
+    const data = Buffer.from(await download.arrayBuffer());
+    const publicKey = process.env.FAKE_UPDATER_PUBKEY;
+    if (publicKey) {
+      const checked = verifySignature({ data, tauriSignature: update.signature, publicKey, version: update.version });
+      if (!checked.ok) {
+        log("WARN", "fleetify.updater", "update download failed", { error: checked.reason });
+        return;
+      }
+    }
     log("INFO", "fleetify.updater", "update ready", { version: update.version });
   } catch (err) {
     log("WARN", "fleetify.updater", "update check failed", { error: err.message });

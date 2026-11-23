@@ -4,7 +4,7 @@
  * every file before anything is published.
  *
  *   node scripts/release/assemble.mjs --in <dir> --out <dir> --version <v>
- *        (--pubkey-config src-tauri/tauri.conf.json --expect-key-id 44C694713A20D751 | --per-target-pubkeys)
+ *        (--pubkey-config src-tauri/tauri.conf.json --expect-key-id 44C694713A20D751 | --per-target-pubkeys --rehearsal-out <dir>)
  *        [--extra <file>]...
  *
  * --in holds the downloaded artifacts:
@@ -13,6 +13,12 @@
  *                           files under their release names (bundleFiles).
  *                           The Linux one also holds LINUX-APPIMAGE-LIBRARIES.txt;
  *                           in a dry run, each also holds updater-pubkey.txt.
+ *   rehearsal-<triple>/     in a dry run only, one per release target: the
+ *                           rehearsal's signature of each of the target's
+ *                           updater artifacts, <asset>.sig, which the run's
+ *                           key made for REHEARSAL_VERSION. The smoke's
+ *                           update server offers that version, and the
+ *                           updater refuses a signature made for another.
  *   third-party-notices/THIRD-PARTY-NOTICES
  *
  * --extra adds a file from elsewhere under its own name. It must be a release
@@ -31,17 +37,23 @@
  *     warns when it signs with another key. With --per-target-pubkeys (dry
  *     runs, where each build signs with a throwaway key), it is each bundle
  *     folder's own updater-pubkey.txt, which isn't published;
- *   - an out folder that isn't empty.
+ *   - in a dry run, a rehearsal signature that doesn't verify against its
+ *     target's key, over its artifact's bytes, for REHEARSAL_VERSION. A
+ *     release run takes none: a rehearsal-<triple> folder is unexpected;
+ *   - an out folder that isn't empty, and a --rehearsal-out that isn't, or
+ *     that is --out, lies inside it or holds it.
  *
  * With none, it copies the files, writes latest.json (latestJson: download
  * URLs under the version's tag; each signature is the .sig text, trimmed;
  * pub_date is now, as toISOString() writes it) and SHA256SUMS (every other
  * asset), and checks that the out folder holds exactly
- * expectedAssets(version). Each file is hashed from the same read that was
- * checked (a .sig's verified text and its hash come from one read), and each
- * copy must hash the same, so the hashes, the signatures and latest.json all
- * vouch for the bytes in the out folder. After a problem, the out folder is
- * left as it was found.
+ * expectedAssets(version). A dry run then copies the rehearsal's signatures
+ * into --rehearsal-out, each as <asset>.sig, for the smoke: they never join
+ * the release. Each file is hashed from the same read that was checked (a
+ * .sig's verified text and its hash come from one read), and each copy must
+ * hash the same, so the hashes, the signatures and latest.json all vouch for
+ * the bytes in the out folders. After a problem, both out folders are left
+ * as they were found.
  *
  * Exit codes: 0 assembled; 1 problems, listed on stderr; 2 usage.
  */
@@ -57,7 +69,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { parsePublicKey, verifySignature } from "./minisign.mjs";
@@ -66,6 +78,7 @@ import {
   LIBRARY_LIST,
   MANIFEST,
   NOTICES,
+  REHEARSAL_VERSION,
   TARGETS,
   bundleFiles,
   downloadBase,
@@ -73,16 +86,19 @@ import {
   latestJson,
   sha256sums,
   updaterArtifacts,
+  updaterAssets,
 } from "./release-assets.mjs";
 
 const USAGE = [
   "usage: node scripts/release/assemble.mjs --in <dir> --out <dir> --version <v>",
-  "         (--pubkey-config <tauri.conf.json> --expect-key-id <16 hex digits> | --per-target-pubkeys)",
+  "         (--pubkey-config <tauri.conf.json> --expect-key-id <16 hex digits> | --per-target-pubkeys --rehearsal-out <dir>)",
   "         [--extra <file>]...",
 ].join("\n");
 
 /** In a dry run, each bundle folder's copy of the updater public key its build signed with. */
 const PUBKEY_FILE = "updater-pubkey.txt";
+/** In a dry run, the folder of a target's rehearsal signatures. */
+const rehearsalFolder = (triple) => `rehearsal-${triple}`;
 const NOTICES_FOLDER = "third-party-notices";
 /** The target whose folder also holds the AppImage's library list. */
 const LIBRARY_TRIPLE = TARGETS.find(({ bundles }) => bundles.includes("appimage")).triple;
@@ -100,6 +116,12 @@ function statOrNull(path, { follow }) {
   }
 }
 
+/** Whether `child` is the folder `parent`, or lies inside it. */
+function within(parent, child) {
+  const path = relative(resolve(parent), resolve(child));
+  return path === "" || (path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path));
+}
+
 /**
  * Check the artifacts in `inDir` and assemble the release into `outDir`.
  *
@@ -108,17 +130,21 @@ function statOrNull(path, { follow }) {
  * @param {string} options.outDir   created when absent; must be empty
  * @param {string} options.version
  * @param {{ config: string, expectKeyId: string } | { perTarget: true }} options.pubkeys
+ * @param {string} [options.rehearsalOut]   a dry run's, with per-target keys and only
+ *   with them: where the rehearsal's signatures go; created when absent, must be empty
  * @param {string[]} [options.extras]
  * @param {Date} [options.now]      the time latest.json gives as pub_date
  * @param {typeof verifySignature} [options.verify]
  * @param {(line: string) => void} [options.log]   progress lines
- * @returns {{ assets: string[], problems: string[] }} the assets written (none after a problem)
+ * @returns {{ assets: string[], rehearsal: string[], problems: string[] }}
+ *   the assets and the rehearsal signatures written (none after a problem)
  */
 export function assemble({
   inDir,
   outDir,
   version,
   pubkeys,
+  rehearsalOut,
   extras = [],
   now = new Date(),
   verify = verifySignature,
@@ -128,8 +154,11 @@ export function assemble({
   if (perTarget === (typeof pubkeys?.config === "string") || (!perTarget && typeof pubkeys.expectKeyId !== "string")) {
     throw new TypeError("pubkeys must be { config, expectKeyId } or { perTarget: true }");
   }
+  if (perTarget !== (typeof rehearsalOut === "string")) {
+    throw new TypeError("rehearsalOut goes with pubkeys { perTarget: true }, and only with them: a dry run's builds sign the rehearsal's signatures");
+  }
   const problems = [];
-  const failed = () => ({ assets: [], problems });
+  const failed = () => ({ assets: [], rehearsal: [], problems });
 
   let expected;
   try {
@@ -148,17 +177,29 @@ export function assemble({
   for (const { triple } of TARGETS) {
     const files = bundleFiles(triple, version).map(({ to }) => to);
     if (triple === LIBRARY_TRIPLE) files.push(LIBRARY_LIST);
-    folders.set(`bundles-${triple}`, { triple, files, keyFile: perTarget });
+    folders.set(`bundles-${triple}`, { triple, files, keyFile: perTarget, rehearsal: false });
   }
-  folders.set(NOTICES_FOLDER, { triple: null, files: [NOTICES], keyFile: false });
+  folders.set(NOTICES_FOLDER, { triple: null, files: [NOTICES], keyFile: false, rehearsal: false });
   const provided = new Set([...[...folders.values()].flatMap(({ files }) => files), MANIFEST, CHECKSUMS]);
+  /** The rehearsal's signatures, each named for its updater artifact: what --rehearsal-out holds. */
+  const rehearsalNames = [];
+  if (perTarget) {
+    for (const { triple } of TARGETS) {
+      const files = updaterAssets(triple, version).map((asset) => `${asset}.sig`);
+      rehearsalNames.push(...files);
+      folders.set(rehearsalFolder(triple), { triple, files, keyFile: false, rehearsal: true });
+    }
+    rehearsalNames.sort(compare);
+  }
 
   /** asset name → { path, label }: the file each asset is copied from. */
   const sources = new Map();
+  /** updater artifact → { path, label }: its rehearsal signature, in a dry run. */
+  const rehearsalSources = new Map();
   /** triple → path of its updater-pubkey.txt */
   const keyFiles = new Map();
 
-  for (const [folder, { triple, files, keyFile }] of folders) {
+  for (const [folder, { triple, files, keyFile, rehearsal }] of folders) {
     const dir = join(inDir, folder);
     const stats = statOrNull(dir, { follow: false });
     if (stats === null) {
@@ -182,6 +223,7 @@ export function assemble({
       if (!file.isFile()) problems.push(`${label} is not a regular file`);
       else if (file.size === 0) problems.push(`${label} is empty`);
       else if (name === PUBKEY_FILE) keyFiles.set(triple, path);
+      else if (rehearsal) rehearsalSources.set(name.slice(0, -".sig".length), { path, label });
       else sources.set(name, { path, label });
     }
     for (const name of [...present].sort(compare)) {
@@ -238,37 +280,63 @@ export function assemble({
   const outStats = statOrNull(outDir, { follow: true });
   if (outStats !== null && !outStats.isDirectory()) problems.push(`--out ${outDir} is not a folder`);
   else if (outStats !== null && readdirSync(outDir).length > 0) problems.push(`--out ${outDir} is not empty`);
+  let rehearsalStats = null;
+  if (perTarget) {
+    if (within(outDir, rehearsalOut) || within(rehearsalOut, outDir)) {
+      problems.push(`--rehearsal-out ${rehearsalOut} must be a folder of its own, apart from --out ${outDir}`);
+    } else {
+      rehearsalStats = statOrNull(rehearsalOut, { follow: true });
+      if (rehearsalStats !== null && !rehearsalStats.isDirectory()) problems.push(`--rehearsal-out ${rehearsalOut} is not a folder`);
+      else if (rehearsalStats !== null && readdirSync(rehearsalOut).length > 0) problems.push(`--rehearsal-out ${rehearsalOut} is not empty`);
+    }
+  }
 
-  // Each updater artifact's signature, against its target's key.
+  // Each updater artifact's signature, and in a dry run the rehearsal's,
+  // against its target's key.
   const tripleOf = new Map(
     TARGETS.flatMap(({ triple }) => bundleFiles(triple, version).map(({ to }) => [to, triple])),
   );
   const hashes = new Map();
+  /** updater artifact → the SHA-256 of its rehearsal signature, as checked. */
+  const rehearsalHashes = new Map();
   const signatures = {};
+  /**
+   * A signature's text, trimmed, from one read: the text checked here, and
+   * later carried by latest.json, and the hash the copy must match come from
+   * the same bytes. Null, with a problem, when the text is empty.
+   */
+  const readSignature = ({ path, label }, name, into) => {
+    const bytes = readFileSync(path);
+    into.set(name, sha256(bytes));
+    const text = bytes.toString("utf8").trim();
+    if (text === "") problems.push(`${label} is empty`);
+    return text === "" ? null : text;
+  };
   for (const { asset, keys: platformKeys } of updaterArtifacts(version)) {
     const artifact = sources.get(asset);
     const sig = sources.get(`${asset}.sig`);
+    const rehearsalSig = rehearsalSources.get(asset);
     const key = keys.get(tripleOf.get(asset));
-    if (artifact === undefined || sig === undefined) continue;
-    // One read: the text checked here, and later carried by latest.json, and
-    // the hash the copy must match come from the same bytes.
-    const sigBytes = readFileSync(sig.path);
-    hashes.set(`${asset}.sig`, sha256(sigBytes));
-    const signature = sigBytes.toString("utf8").trim();
-    if (signature === "") {
-      problems.push(`${sig.label} is empty`);
-      continue;
-    }
-    if (key === undefined) continue;
+    if (artifact === undefined) continue;
+    const signature = sig === undefined ? null : readSignature(sig, `${asset}.sig`, hashes);
+    const rehearsal = rehearsalSig === undefined ? null : readSignature(rehearsalSig, asset, rehearsalHashes);
+    if (key === undefined || (signature === null && rehearsal === null)) continue;
     const data = readFileSync(artifact.path);
     hashes.set(asset, sha256(data));
-    const result = verify({ data, tauriSignature: signature, publicKey: key, version });
-    if (result?.ok !== true) {
-      problems.push(`bad signature for ${asset}: ${result?.reason ?? "no reason given"}`);
-      continue;
+    if (signature !== null) {
+      const result = verify({ data, tauriSignature: signature, publicKey: key, version });
+      if (result?.ok === true) {
+        signatures[asset] = signature;
+        log(`signature ok, key ${key.keyId}, version ${version}: ${asset} (${platformKeys.join(", ")})`);
+      } else {
+        problems.push(`bad signature for ${asset}: ${result?.reason ?? "no reason given"}`);
+      }
     }
-    signatures[asset] = signature;
-    log(`signature ok, key ${key.keyId}, version ${version}: ${asset} (${platformKeys.join(", ")})`);
+    if (rehearsal !== null) {
+      const result = verify({ data, tauriSignature: rehearsal, publicKey: key, version: REHEARSAL_VERSION });
+      if (result?.ok === true) log(`rehearsal signature ok, key ${key.keyId}, version ${REHEARSAL_VERSION}: ${asset}`);
+      else problems.push(`bad rehearsal signature for ${asset}: ${result?.reason ?? "no reason given"}`);
+    }
   }
   if (problems.length > 0) return failed();
 
@@ -280,13 +348,28 @@ export function assemble({
   hashes.set(MANIFEST, sha256(manifest));
   const checksums = Buffer.from(sha256sums([...hashes].map(([name, hash]) => ({ name, sha256: hash }))));
 
-  // Write, then check that the folder holds exactly the release.
+  // Write, then check that each folder holds exactly what it should: the
+  // release, then in a dry run the rehearsal's signatures.
   const written = [];
-  const createdOut = outStats === null;
+  const created = [];
+  /** Where the files go now, for the message when one can't be written. */
+  let writing = outDir;
+  /** A problem when `dir` doesn't hold exactly `names`, naming the difference. */
+  const holdsExactly = (dir, names, sentence) => {
+    const listed = readdirSync(dir).sort(compare);
+    const missing = names.filter((name) => !listed.includes(name));
+    const unexpected = listed.filter((name) => !names.includes(name));
+    if (missing.length > 0 || unexpected.length > 0) {
+      problems.push(`${sentence}: missing [${missing.join(", ")}], unexpected [${unexpected.join(", ")}]`);
+    }
+  };
   try {
-    if (createdOut) mkdirSync(outDir, { recursive: true });
-    const write = (name, bytes) => {
-      const target = join(outDir, name);
+    if (outStats === null) {
+      mkdirSync(outDir, { recursive: true });
+      created.push(outDir);
+    }
+    const write = (dir, name, bytes) => {
+      const target = join(dir, name);
       writeFileSync(target, bytes, { flag: "wx" });
       written.push(target);
     };
@@ -296,23 +379,31 @@ export function assemble({
         problems.push(`${label} changed while the release was being assembled`);
         break;
       }
-      write(name, bytes);
+      write(outDir, name, bytes);
     }
     if (problems.length === 0) {
-      write(MANIFEST, manifest);
-      write(CHECKSUMS, checksums);
-      const listed = readdirSync(outDir).sort(compare);
-      const missing = expected.filter((name) => !listed.includes(name));
-      const unexpected = listed.filter((name) => !expected.includes(name));
-      if (missing.length > 0 || unexpected.length > 0) {
-        problems.push(
-          `the out folder doesn't hold exactly the release's assets: missing [${missing.join(", ")}], ` +
-            `unexpected [${unexpected.join(", ")}]`,
-        );
+      write(outDir, MANIFEST, manifest);
+      write(outDir, CHECKSUMS, checksums);
+      holdsExactly(outDir, expected, "the out folder doesn't hold exactly the release's assets");
+    }
+    if (problems.length === 0 && perTarget) {
+      writing = rehearsalOut;
+      if (rehearsalStats === null) {
+        mkdirSync(rehearsalOut, { recursive: true });
+        created.push(rehearsalOut);
       }
+      for (const [asset, { path, label }] of [...rehearsalSources].sort(([a], [b]) => compare(a, b))) {
+        const bytes = readFileSync(path);
+        if (sha256(bytes) !== rehearsalHashes.get(asset)) {
+          problems.push(`${label} changed while the release was being assembled`);
+          break;
+        }
+        write(rehearsalOut, `${asset}.sig`, bytes);
+      }
+      if (problems.length === 0) holdsExactly(rehearsalOut, rehearsalNames, "--rehearsal-out doesn't hold exactly the rehearsal's signatures");
     }
   } catch (err) {
-    problems.push(`could not write ${outDir}: ${err.message}`);
+    problems.push(`could not write ${writing}: ${err.message}`);
   }
   if (problems.length > 0) {
     for (const target of written.reverse()) {
@@ -322,16 +413,16 @@ export function assemble({
         // Best effort: the problem is already reported.
       }
     }
-    if (createdOut) {
+    for (const dir of created.reverse()) {
       try {
-        rmdirSync(outDir);
+        rmdirSync(dir);
       } catch {
         // Best effort, as above.
       }
     }
     return failed();
   }
-  return { assets: expected, problems };
+  return { assets: expected, rehearsal: rehearsalNames, problems };
 }
 
 /**
@@ -364,7 +455,7 @@ function parseArgs(argv) {
   const values = new Map();
   const extras = [];
   let perTarget = false;
-  const takesValue = ["--in", "--out", "--version", "--pubkey-config", "--expect-key-id", "--extra"];
+  const takesValue = ["--in", "--out", "--version", "--pubkey-config", "--expect-key-id", "--rehearsal-out", "--extra"];
   for (let i = 0; i < argv.length; i += 1) {
     const flag = argv[i];
     if (flag === "--per-target-pubkeys") {
@@ -385,11 +476,15 @@ function parseArgs(argv) {
   }
   const config = values.get("--pubkey-config");
   const expectKeyId = values.get("--expect-key-id");
+  const rehearsalOut = values.get("--rehearsal-out");
   if (perTarget && (config !== undefined || expectKeyId !== undefined)) {
     throw new Error("--per-target-pubkeys can't be combined with --pubkey-config or --expect-key-id");
   }
   if (!perTarget && (config === undefined || expectKeyId === undefined)) {
     throw new Error("give --pubkey-config with --expect-key-id, or --per-target-pubkeys");
+  }
+  if (perTarget !== (rehearsalOut !== undefined)) {
+    throw new Error("--rehearsal-out goes with --per-target-pubkeys, and only with it: a dry run's builds sign the rehearsal's signatures");
   }
   if (expectKeyId !== undefined && !/^[0-9A-Fa-f]{16}$/.test(expectKeyId)) {
     throw new Error(`--expect-key-id must be a key id of 16 hex digits, not ${expectKeyId}`);
@@ -399,6 +494,7 @@ function parseArgs(argv) {
     outDir: values.get("--out"),
     version: values.get("--version"),
     pubkeys: perTarget ? { perTarget: true } : { config, expectKeyId },
+    ...(perTarget ? { rehearsalOut } : {}),
     extras,
   };
 }
@@ -425,6 +521,10 @@ function main(argv) {
   }
   process.stdout.write(`assemble: ${result.assets.length} assets in ${options.outDir}:\n`);
   for (const asset of result.assets) process.stdout.write(`  ${asset}\n`);
+  if (options.rehearsalOut !== undefined) {
+    process.stdout.write(`assemble: ${result.rehearsal.length} rehearsal signatures in ${options.rehearsalOut}:\n`);
+    for (const name of result.rehearsal) process.stdout.write(`  ${name}\n`);
+  }
   return 0;
 }
 

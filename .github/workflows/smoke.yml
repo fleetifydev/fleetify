@@ -3,7 +3,11 @@
 # home, by scripts/release/launch-smoke.mjs, whose header lists the checks.
 # With rehearse, each also rehearses an update: the app must find, download
 # and verify version 99.0.0 of its own bundle type from a local update
-# server, which only a dry-run build asks.
+# server, which only a dry-run build asks. The server offers the rehearsal's
+# signatures, which the dry run's builds made for 99.0.0, from the run's
+# rehearsal artifact: the updater takes only a signature made for the
+# version it is offered, so the release's own, made for its version, can't
+# serve.
 #
 # Each job checks out only scripts/release, into tools/, so the bundles run
 # without the source tree, as they do on a user's machine: from the commit
@@ -81,6 +85,13 @@ jobs:
         with:
           name: release
           path: release
+      # The signatures the rehearsal's update server offers.
+      - name: Download the rehearsal's signatures
+        if: inputs.rehearse
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: rehearsal
+          path: rehearsal
       # A virtual display and a session bus for each launch, and what a
       # desktop provides: an AppImage leaves the graphics stack and a few
       # base libraries to the system, and this image is a server's. Mesa's
@@ -114,7 +125,7 @@ jobs:
           chmod +x "${appimages[0]}"
           args=(run --app "${appimages[0]}" --app-arg --appimage-extract-and-run --home "$RUNNER_TEMP/home-appimage" --csp-origin "$CSP_ORIGIN")
           if [ "$EXPECT_POSTHOG_SINK" = true ]; then args+=(--expect-posthog-sink); fi
-          if [ "$REHEARSE" = true ]; then args+=(--rehearse release --bundle-type appimage); fi
+          if [ "$REHEARSE" = true ]; then args+=(--rehearse release --rehearsal-signatures rehearsal --bundle-type appimage); fi
           xvfb-run -a dbus-run-session -- node tools/scripts/release/launch-smoke.mjs "${args[@]}"
       - name: Debian package
         run: |
@@ -135,7 +146,7 @@ jobs:
           done
           args=(run --app "$exe" --home "$RUNNER_TEMP/home-deb" --legal-dir "$legal" --csp-origin "$CSP_ORIGIN")
           if [ "$EXPECT_POSTHOG_SINK" = true ]; then args+=(--expect-posthog-sink); fi
-          if [ "$REHEARSE" = true ]; then args+=(--rehearse release --bundle-type deb); fi
+          if [ "$REHEARSE" = true ]; then args+=(--rehearse release --rehearsal-signatures rehearsal --bundle-type deb); fi
           xvfb-run -a dbus-run-session -- node tools/scripts/release/launch-smoke.mjs "${args[@]}"
       # The .rpm's dependencies must resolve on a current Fedora. openSUSE
       # names the same libraries in its own packages; it is checked too, but
@@ -217,6 +228,13 @@ jobs:
         with:
           name: release
           path: release
+      # The signatures the rehearsal's update server offers.
+      - name: Download the rehearsal's signatures
+        if: inputs.rehearse
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: rehearsal
+          path: rehearsal
       # A per-user install, as a user's silent one, into %LOCALAPPDATA%\Fleetify.
       - name: Install (silent, per user)
         shell: pwsh
@@ -237,7 +255,7 @@ jobs:
         run: |
           args=(run --app "$APP_EXE" --cwd "C:\\" --home "$RUNNER_TEMP/home-nsis" --legal-dir "$LEGAL_DIR" --csp-origin "$CSP_ORIGIN")
           if [ "$EXPECT_POSTHOG_SINK" = true ]; then args+=(--expect-posthog-sink); fi
-          if [ "$REHEARSE" = true ]; then args+=(--rehearse release --bundle-type nsis); fi
+          if [ "$REHEARSE" = true ]; then args+=(--rehearse release --rehearsal-signatures rehearsal --bundle-type nsis); fi
           node tools/scripts/release/launch-smoke.mjs "${args[@]}"
       # install.ps1 as a user runs it, in Windows PowerShell 5.1: fetched from
       # the release and run as a script block, with -Silent. It installs over
@@ -343,6 +361,13 @@ jobs:
         with:
           name: release
           path: release
+      # The signatures the rehearsal's update server offers.
+      - name: Download the rehearsal's signatures
+        if: inputs.rehearse
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: rehearsal
+          path: rehearsal
       - name: Mount the disk image
         run: |
           dmgs=(release/*_"$ARCH".dmg)
@@ -371,7 +396,7 @@ jobs:
           exe=$(plutil -extract CFBundleExecutable raw "$app/Contents/Info.plist")
           args=(run --app "$app/Contents/MacOS/$exe" --home "$RUNNER_TEMP/home-app" --legal-dir "$app/Contents/Resources/legal" --csp-origin "$CSP_ORIGIN")
           if [ "$EXPECT_POSTHOG_SINK" = true ]; then args+=(--expect-posthog-sink); fi
-          if [ "$REHEARSE" = true ]; then args+=(--rehearse release --bundle-type app); fi
+          if [ "$REHEARSE" = true ]; then args+=(--rehearse release --rehearsal-signatures rehearsal --bundle-type app); fi
           node tools/scripts/release/launch-smoke.mjs "${args[@]}"
       # The install script as a user runs it: piped into sh from the release.
       # A file curl downloads carries no quarantine flag, so Gatekeeper

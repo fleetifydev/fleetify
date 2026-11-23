@@ -33,11 +33,16 @@
  * Tauri CLI, system tools and the repository's scripts, get the release
  * secrets only in release-only steps, which first fail on each one that
  * arrived empty, naming it, and check every artifact they take before using
- * it. A release build gets nothing of a dry run's: no cache,
- * none of the keys a dry run makes, no updater overlay. The dry run assembles
- * with each build's own key and adds the install scripts, and its smoke runs
- * the bundles without the source tree, then installs each platform's bundle
- * with its install script, from the release as a local server serves it.
+ * it. Each updater signature they make names the release's version, and
+ * each check of one requires it, as the lockfile's CLI shows when it signs
+ * as the steps are written. A release build gets nothing of a dry run's: no
+ * cache, none of the keys a dry run makes, no updater overlay, no rehearsal
+ * signatures, which a dry run's keyed jobs make for the version its smoke
+ * offers. The dry run assembles with each build's own key, checks the
+ * rehearsal's signatures and adds the install scripts, and its smoke runs
+ * the bundles without the source tree, offering the rehearsal's signatures
+ * with each update, then installs each platform's bundle with its install
+ * script, from the release as a local server serves it.
  * The Linux compile leg checks, once the AppImage is repacked and before it
  * collects the bundles, that the app, the sidecars and every ELF file in the
  * AppImage need no glibc newer than Ubuntu 22.04's, nor GLIBC_PRIVATE.
@@ -83,7 +88,7 @@ import { isDeepStrictEqual } from "node:util";
 import { compiledFiles } from "../release/compiled-tar.mjs";
 import { dryRunConfig } from "../release/dry-run-config.mjs";
 import { GLIBC_FLOOR } from "../release/glibc-floor.mjs";
-import { INSTALL_SCRIPTS, TARGETS, UPDATER_KEY_ID, expectedAssets, unsignedAssets, updaterAssets } from "../release/release-assets.mjs";
+import { INSTALL_SCRIPTS, REHEARSAL_VERSION, TARGETS, UPDATER_KEY_ID, expectedAssets, unsignedAssets, updaterAssets } from "../release/release-assets.mjs";
 
 const ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const WORKFLOWS = ".github/workflows";
@@ -640,6 +645,8 @@ const DRY_RUN_MARKERS = [
   { marker: "dry-run.json", what: "builds with the updater overlay" },
   { marker: "updater-pubkey.txt", what: "adds the run's updater public key to the artifact" },
   { marker: "macos-keychain.sh dry-run", what: "makes the run's own code-signing identity" },
+  { marker: "rehearsal", what: "signs the rehearsal's update, checks those signatures or hands them on" },
+  { marker: REHEARSAL_VERSION, what: "signs for the version the rehearsal offers" },
 ];
 
 const BASH_SKIP =
@@ -1202,7 +1209,19 @@ function settingProblems(assignments, redirects, allowed) {
 const KEYED_SIGNER_FORMS = [
   ["--app-version", "$VERSION", "$RUNNER_TEMP/bundles/$name"],
   ["-f", "$RUNNER_TEMP/dry-run/updater.key", "-p", "", "--app-version", "$VERSION", "$RUNNER_TEMP/bundles/$name"],
+  // A dry run's rehearsal: a copy of each updater artifact, signed with the
+  // run's key for the version the smoke's update server offers.
+  ["-f", "$RUNNER_TEMP/dry-run/updater.key", "-p", "", "--app-version", REHEARSAL_VERSION, "$RUNNER_TEMP/rehearsal/$name"],
 ];
+
+/** Whether a step signs the bundles themselves: a line of it runs the Tauri CLI's signer on "$RUNNER_TEMP/bundles/$name". */
+const signsBundles = (step) => commandLines(step).some((line) => /(^|\s)tauri signer sign /.test(line) && line.includes('"$RUNNER_TEMP/bundles/$name"'));
+
+/** Whether a step signs the rehearsal's copies: a line of it runs the Tauri CLI's signer on "$RUNNER_TEMP/rehearsal/$name". */
+const signsRehearsal = (step) => commandLines(step).some((line) => /(^|\s)tauri signer sign /.test(line) && line.includes('"$RUNNER_TEMP/rehearsal/$name"'));
+
+/** Whether a step checks the rehearsal's signatures, which lie apart from the bundles (--sig-dir). */
+const checksRehearsal = (step) => scriptOf(step).includes("minisign.mjs verify") && scriptOf(step).includes("--sig-dir");
 
 /**
  * Why a simple command may not run in a job with the keys: none, when it may.
@@ -1767,6 +1786,9 @@ capture() {
       'npx --no -- tauri signer sign --app-version 9.9.9 "$RUNNER_TEMP/bundles/$name" < /dev/null',
       'npx --no -- tauri signer sign --app-version "$OTHER" "$RUNNER_TEMP/bundles/$name" < /dev/null',
       'npx --no -- tauri signer sign "$RUNNER_TEMP/bundles/$name" --app-version "$VERSION" < /dev/null',
+      // The rehearsal's version on a bundle's own signature, or the release key on the rehearsal's.
+      `npx --no -- tauri signer sign -f "$RUNNER_TEMP/dry-run/updater.key" -p "" --app-version ${REHEARSAL_VERSION} "$RUNNER_TEMP/bundles/$name" < /dev/null`,
+      `npx --no -- tauri signer sign --app-version ${REHEARSAL_VERSION} "$RUNNER_TEMP/rehearsal/$name" < /dev/null`,
       // Variables a tool reads, and a here-document.
       'PATH=./bin cp a "$RUNNER_TEMP/b"',
       "GIT_EXTERNAL_DIFF=./evil git diff --exit-code -- x",
@@ -1794,6 +1816,9 @@ capture() {
       'npx --no -- tauri bundle --verbose --ci --target "$TRIPLE"',
       'npx --no -- tauri bundle --verbose --ci --target "$TRIPLE" --bundles "$BUNDLES" --config src-tauri/tauri.release.conf.json --config "$RUNNER_TEMP/dry-run-config/dry-run.json"',
       'npx --no -- tauri signer sign -f "$RUNNER_TEMP/dry-run/updater.key" -p "" --app-version "$VERSION" "$RUNNER_TEMP/bundles/$name" < /dev/null',
+      `npx --no -- tauri signer sign -f "$RUNNER_TEMP/dry-run/updater.key" -p "" --app-version ${REHEARSAL_VERSION} "$RUNNER_TEMP/rehearsal/$name" < /dev/null`,
+      'cp "$RUNNER_TEMP/bundles/$name" "$RUNNER_TEMP/rehearsal/$name"',
+      'rm "$RUNNER_TEMP/rehearsal/$name"',
       'cp "$RUNNER_TEMP/notices/THIRD-PARTY-NOTICES" THIRD-PARTY-NOTICES',
       'cp "$RUNNER_TEMP/dry-run/updater.key.pub" "$RUNNER_TEMP/bundles/updater-pubkey.txt"',
       'security find-identity -v -p codesigning > "$out/find-identity.txt" 2>&1 || true',
@@ -2329,7 +2354,7 @@ capture() {
 
   yamlTest("sign signs each updater artifact with the Tauri CLI's signer, for the release's version: the release key from the environment, the run's from its file", () => {
     const steps = stepsOf("sign");
-    const signs = steps.filter((step) => /(^|\s)npx --no -- tauri signer sign /m.test(scriptOf(step)) && scriptOf(step).includes("$RUNNER_TEMP/bundles/$name"));
+    const signs = steps.filter(signsBundles);
     const release = signs.filter((step) => requires(step.if, RELEASE_ONLY));
     const dryRun = signs.filter((step) => requires(step.if, DRY_RUN_ONLY));
     assert.deepEqual([signs.length, release.length, dryRun.length], [2, 1, 1], `sign must sign once if "${RELEASE_ONLY}" and once if "${DRY_RUN_ONLY}"`);
@@ -2348,7 +2373,7 @@ capture() {
   });
 
   scriptTest("sign's loops sign every updater artifact of the target for the release's version, and nothing else", () => {
-    const signs = stepsOf("sign").filter((candidate) => /tauri signer sign/.test(scriptOf(candidate)) && scriptOf(candidate).includes("$RUNNER_TEMP/bundles/$name"));
+    const signs = stepsOf("sign").filter(signsBundles);
     for (const [environment, keyArgs] of [
       [RELEASE_ONLY, ""],
       [DRY_RUN_ONLY, "-f <dir>/dry-run/updater.key -p  "],
@@ -2377,7 +2402,7 @@ capture() {
   yamlTest("every updater signature is checked before upload, for the release's version: against the shipped key in a release, the run's in a dry run", () => {
     for (const id of KEYED_JOBS) {
       const steps = stepsOf(id);
-      const verifies = steps.filter((step) => scriptOf(step).includes("minisign.mjs verify") && !scriptOf(step).includes("--sig-dir"));
+      const verifies = steps.filter((step) => scriptOf(step).includes("minisign.mjs verify") && !checksRehearsal(step));
       const release = verifies.filter((step) => requires(step.if, RELEASE_ONLY));
       const dryRun = verifies.filter((step) => requires(step.if, DRY_RUN_ONLY));
       assert.deepEqual([verifies.length, release.length, dryRun.length], [2, 1, 1], `job ${id} must check the signatures once per environment`);
@@ -2390,7 +2415,7 @@ capture() {
         assert.equal(commandLines(step)[0], 'updaters=$(node scripts/release/release-assets.mjs updaters "$TRIPLE" "$VERSION")', `${step.name} doesn't check every updater artifact`);
       }
       const upload = steps.findIndex((step) => usesAction(step, "actions/upload-artifact") && step.with?.name === "bundles-${{ matrix.triple }}");
-      const signed = Math.max(steps.findLastIndex(isTauriBundle), steps.findLastIndex((step) => /tauri signer sign/.test(scriptOf(step))));
+      const signed = Math.max(steps.findLastIndex(isTauriBundle), steps.findLastIndex(signsBundles));
       for (const step of verifies) {
         const at = steps.indexOf(step);
         assert.ok(at > signed && at < upload, `job ${id}: ${step.name} must run after the signing and before the upload`);
@@ -2403,8 +2428,8 @@ capture() {
     { skip: YAML_SKIP || BASH_SKIP || TAURI_SKIP },
     () => {
       const steps = stepsOf("sign");
-      const sign = steps.find((step) => requires(step.if, DRY_RUN_ONLY) && /tauri signer sign/.test(scriptOf(step)) && scriptOf(step).includes("$RUNNER_TEMP/bundles/$name"));
-      const check = steps.find((step) => requires(step.if, DRY_RUN_ONLY) && scriptOf(step).includes("minisign.mjs verify") && !scriptOf(step).includes("--sig-dir"));
+      const sign = steps.find((step) => requires(step.if, DRY_RUN_ONLY) && signsBundles(step));
+      const check = steps.find((step) => requires(step.if, DRY_RUN_ONLY) && scriptOf(step).includes("minisign.mjs verify") && !checksRehearsal(step));
       assert.ok(sign && check, "sign has no dry-run signing or check of the bundles");
       const triple = "x86_64-unknown-linux-gnu";
       const names = updaterAssets(triple, "1.2.3");
@@ -2443,6 +2468,93 @@ capture() {
     },
   );
 
+  yamlTest("a dry run's sign and bundle-macos also sign each updater artifact for the rehearsal's version, apart, check those signatures and upload them as rehearsal-<triple>", () => {
+    // The smoke's update server offers REHEARSAL_VERSION, and the updater
+    // refuses a signature made for another version, so the release's own
+    // can't serve the rehearsal. Copies are signed in a folder of their own,
+    // so the bundles keep the signatures made for the release's version.
+    const uploadsRehearsal = (step) => usesAction(step, "actions/upload-artifact") && String(step.with?.name).startsWith("rehearsal-");
+    for (const id of KEYED_JOBS) {
+      const steps = stepsOf(id);
+      const at = (find, what) => {
+        const found = steps.filter(find);
+        assert.equal(found.length, 1, `job ${id} must ${what} once`);
+        assert.ok(requires(found[0].if, DRY_RUN_ONLY), `job ${id}: ${found[0].name} runs outside a dry run: ${found[0].if}`);
+        return steps.indexOf(found[0]);
+      };
+      const sign = at(signsRehearsal, "sign the rehearsal's update");
+      const check = at(checksRehearsal, "check the rehearsal's signatures");
+      const upload = at(uploadsRehearsal, "upload the rehearsal's signatures");
+      assert.deepEqual(commandLines(steps[sign]), [
+        'mkdir -p "$RUNNER_TEMP/rehearsal"',
+        'updaters=$(node scripts/release/release-assets.mjs updaters "$TRIPLE" "$VERSION")',
+        'while IFS= read -r name; do',
+        'cp "$RUNNER_TEMP/bundles/$name" "$RUNNER_TEMP/rehearsal/$name"',
+        `npx --no -- tauri signer sign -f "$RUNNER_TEMP/dry-run/updater.key" -p "" --app-version ${REHEARSAL_VERSION} "$RUNNER_TEMP/rehearsal/$name" < /dev/null`,
+        'rm "$RUNNER_TEMP/rehearsal/$name"',
+        'done <<< "$updaters"',
+      ], `job ${id}'s rehearsal signing`);
+      assert.equal(steps[sign].env, undefined, `job ${id}'s rehearsal signing gets an env`);
+      assert.equal(commandLines(steps[check])[0], 'updaters=$(node scripts/release/release-assets.mjs updaters "$TRIPLE" "$VERSION")');
+      assert.equal(
+        commandLines(steps[check]).at(-1),
+        `node scripts/release/minisign.mjs verify --pubkey-file "$RUNNER_TEMP/dry-run/updater.key.pub" --version ${REHEARSAL_VERSION} --sig-dir "$RUNNER_TEMP/rehearsal" "\${files[@]}"`,
+      );
+      assert.deepEqual(steps[upload].with, {
+        name: "rehearsal-${{ matrix.triple }}",
+        path: "${{ runner.temp }}/rehearsal",
+        "if-no-files-found": "error",
+        "retention-days": 7,
+      });
+      // Once the bundles' own signatures are made and checked: tauri bundle
+      // and collect-bundles.mjs on macOS, the signer on Linux and Windows.
+      const bundlesChecked = steps.findIndex((step) => requires(step.if, DRY_RUN_ONLY) && scriptOf(step).includes("minisign.mjs verify") && !checksRehearsal(step));
+      assert.ok(bundlesChecked !== -1 && bundlesChecked < sign && sign < check && check < upload, `job ${id}: the bundles' check, the rehearsal's signing, its check and its upload come out of order`);
+    }
+  });
+
+  test(
+    "with the lockfile's Tauri CLI, a dry run's rehearsal signing, as written: each signature names the rehearsal's version, the bundles keep theirs, and the check refuses a signature for the release's version",
+    { skip: YAML_SKIP || BASH_SKIP || TAURI_SKIP },
+    () => {
+      const steps = stepsOf("sign");
+      const dryRunStep = (find) => steps.find((step) => requires(step.if, DRY_RUN_ONLY) && find(step));
+      const sign = dryRunStep(signsBundles);
+      const signRehearsal = dryRunStep(signsRehearsal);
+      const checkRehearsal = dryRunStep(checksRehearsal);
+      assert.ok(sign && signRehearsal && checkRehearsal, "sign lacks the dry run's signing, the rehearsal's signing or its check");
+      const triple = "x86_64-pc-windows-msvc";
+      const names = updaterAssets(triple, "1.2.3");
+      inTempDir((dir) => {
+        const env = { PATH: `${npxForTauri(dir)}:${process.env.PATH}`, RUNNER_TEMP: dir, TRIPLE: triple, VERSION: "1.2.3" };
+        mkdirSync(join(dir, "dry-run"));
+        const generated = tauri("signer", "generate", "--ci", "-p", "", "-w", join(dir, "dry-run", "updater.key"));
+        assert.equal(generated.status, 0, generated.stderr);
+        mkdirSync(join(dir, "bundles"));
+        for (const name of names) writeFileSync(join(dir, "bundles", name), `the bundle ${name}\n`);
+        for (const step of [sign, signRehearsal]) {
+          const result = runScript(step.run, { cwd: ROOT, env });
+          assert.equal(result.status, 0, `${step.name}: ${result.stdout}${result.stderr}`);
+        }
+        // Only the signatures stay in the rehearsal's folder, not the copies they were made from.
+        assert.deepEqual(readdirSync(join(dir, "rehearsal")).sort(), names.map((name) => `${name}.sig`).sort());
+        for (const name of names) {
+          const pattern = (version) => new RegExp(`^trusted comment: timestamp:\\d+\\tfile:${literalPattern(name)}\\tversion:${literalPattern(version)}$`);
+          assert.match(trustedCommentOf(join(dir, "rehearsal", `${name}.sig`)), pattern(REHEARSAL_VERSION), name);
+          assert.match(trustedCommentOf(join(dir, "bundles", `${name}.sig`)), pattern("1.2.3"), `${name}: the bundle's own signature changed`);
+        }
+        const passed = runScript(checkRehearsal.run, { cwd: ROOT, env });
+        assert.equal(passed.status, 0, `${passed.stdout}${passed.stderr}`);
+        assert.ok(passed.stdout.includes(`, version ${REHEARSAL_VERSION}: ${join(dir, "bundles", names[0])}`), passed.stdout);
+        // The release's own signature in the rehearsal's place.
+        copyFileSync(join(dir, "bundles", `${names[0]}.sig`), join(dir, "rehearsal", `${names[0]}.sig`));
+        const refused = runScript(checkRehearsal.run, { cwd: ROOT, env });
+        assert.equal(refused.status, 1, `${refused.stdout}${refused.stderr}`);
+        assert.ok(refused.stderr.includes(`${join(dir, "bundles", names[0])}: signed for version "1.2.3", not ${REHEARSAL_VERSION}`), refused.stderr);
+      });
+    },
+  );
+
   yamlTest("sign and bundle-macos upload bundles-<triple> after the bundles are complete", () => {
     // assemble.mjs takes exactly these artifacts: the files under their
     // release names, their signatures, and in a dry run the run's public key.
@@ -2474,6 +2586,7 @@ capture() {
       "compiled-${{ matrix.triple }}": [7],
       "updater-key-${{ matrix.triple }}": [1],
       "bundles-${{ matrix.triple }}": [7],
+      "rehearsal-${{ matrix.triple }}": [7],
       "codesign-output-${{ matrix.triple }}": [7],
     });
   });
@@ -2573,15 +2686,18 @@ describe("release-dry-run.yml", () => {
     });
   });
 
-  yamlTest("assemble checks a dry run against each build's own key, and release signing against the shipped one", () => {
+  yamlTest("assemble checks a dry run against each build's own key, with the rehearsal's signatures, and release signing against the shipped one, without them", () => {
     const runs = (jobOf(DRY_RUN, "assemble").steps ?? []).filter((step) => scriptOf(step).includes("assemble.mjs"));
     const dryRun = runs.filter((step) => requires(step.if, "needs.meta.outputs.environment == 'dry-run'"));
     const release = runs.filter((step) => requires(step.if, "needs.meta.outputs.environment == 'release'"));
     assert.deepEqual([runs.length, dryRun.length, release.length], [2, 1, 1], "assemble must run once per environment");
     assert.match(scriptOf(dryRun[0]), /\s--per-target-pubkeys(\s|$)/);
+    assert.match(scriptOf(dryRun[0]), /\s--rehearsal-out rehearsal(\s|$)/);
     assert.doesNotMatch(scriptOf(dryRun[0]), /--pubkey-config|--expect-key-id/);
     assert.match(scriptOf(release[0]), new RegExp(`\\s--pubkey-config src-tauri/tauri\\.conf\\.json --expect-key-id ${UPDATER_KEY_ID}(\\s|$)`));
-    assert.doesNotMatch(scriptOf(release[0]), /--per-target-pubkeys/);
+    assert.doesNotMatch(scriptOf(release[0]), /--per-target-pubkeys|rehearsal/);
+    // release.yml's assemble makes a release, which never carries them.
+    assert.doesNotMatch(JSON.stringify(jobOf(RELEASE, "assemble")), /rehearsal/);
   });
 
   yamlTest("each assemble adds the install scripts from scripts/release: the dry run's in both environments, and the release's", () => {
@@ -2602,27 +2718,31 @@ describe("release-dry-run.yml", () => {
     }
   });
 
-  yamlTest("each assemble downloads only the bundles and the notices, and uploads the release for the smoke", () => {
+  yamlTest("each assemble downloads only the bundles and the notices, and a dry run's the rehearsal's signatures too, and uploads the release for the smoke, and a dry run's the rehearsal's signatures", () => {
     // assemble.mjs refuses any other folder in --in. A candidate's release is
     // kept for the RC checks; a release's files are on GitHub, and its
     // artifact serves only the smoke, so it is kept as long as the builds'.
-    for (const [rel, retention] of [
-      [DRY_RUN, 14],
-      [RELEASE, 7],
+    // The rehearsal's signatures serve a dry run's smoke alone, next to its
+    // release, and are kept as long.
+    const dryRunOnly = "needs.meta.outputs.environment == 'dry-run'";
+    for (const [rel, retention, rehearsal] of [
+      [DRY_RUN, 14, true],
+      [RELEASE, 7, false],
     ]) {
       const steps = jobOf(rel, "assemble").steps ?? [];
       const downloads = steps
         .filter((step) => usesAction(step, "actions/download-artifact"))
-        .map((step) => ({ what: step.with?.name ?? step.with?.pattern ?? "every artifact", path: step.with?.path, merge: step.with?.["merge-multiple"] ?? false }));
+        .map((step) => ({ what: step.with?.name ?? step.with?.pattern ?? "every artifact", path: step.with?.path, merge: step.with?.["merge-multiple"] ?? false, when: step.if }));
       assert.deepEqual(downloads.sort((a, b) => (a.what < b.what ? -1 : 1)), [
-        { what: "bundles-*", path: "artifacts", merge: false },
-        { what: "third-party-notices", path: "artifacts/third-party-notices", merge: false },
+        { what: "bundles-*", path: "artifacts", merge: false, when: undefined },
+        ...(rehearsal ? [{ what: "rehearsal-*", path: "artifacts", merge: false, when: dryRunOnly }] : []),
+        { what: "third-party-notices", path: "artifacts/third-party-notices", merge: false, when: undefined },
       ], `${rel}'s downloads`);
       const uploads = steps.filter((step) => usesAction(step, "actions/upload-artifact"));
       assert.deepEqual(
-        uploads.map((step) => [step.with?.name, step.with?.path, step.with?.["if-no-files-found"], step.with?.["retention-days"]]),
-        [["release", "release", "error", retention]],
-        `${rel}'s upload`,
+        uploads.map((step) => [step.with?.name, step.with?.path, step.with?.["if-no-files-found"], step.with?.["retention-days"], step.if]),
+        [["release", "release", "error", retention, undefined], ...(rehearsal ? [["rehearsal", "rehearsal", "error", retention, dryRunOnly]] : [])],
+        `${rel}'s uploads`,
       );
     }
   });
@@ -2804,8 +2924,16 @@ describe("smoke.yml", () => {
       );
       const node = steps.find((step) => usesAction(step, "actions/setup-node"));
       assert.equal(String(node?.with?.["node-version"]), nvmrc, `job ${id} must set up Node ${nvmrc}, as .nvmrc says (it isn't checked out)`);
-      const download = steps.find((step) => usesAction(step, "actions/download-artifact"));
-      assert.deepEqual(download?.with, { name: "release", path: "release" }, `job ${id} must download the release into release/`);
+      // The release always, and the rehearsal's signatures only when rehearsing.
+      const downloads = steps.filter((step) => usesAction(step, "actions/download-artifact")).map((step) => ({ with: step.with, if: step.if }));
+      assert.deepEqual(
+        downloads,
+        [
+          { with: { name: "release", path: "release" }, if: undefined },
+          { with: { name: "rehearsal", path: "rehearsal" }, if: "inputs.rehearse" },
+        ],
+        `job ${id} must download the release into release/, and when it rehearses the rehearsal's signatures into rehearsal/`,
+      );
       const stray = steps.flatMap((step) => scriptOf(step).split("\n")).filter((line) => /(?<!tools\/)\bscripts\//.test(line));
       assert.deepEqual(stray, [], `job ${id} runs scripts from outside tools/`);
     }
@@ -2849,8 +2977,13 @@ describe("smoke.yml", () => {
     for (const launch of launches()) {
       const { job, runs } = launch;
       const [plain, all] = runs.map(({ calls }) => calls[0]?.args ?? []);
-      assert.deepEqual([argValue(plain, "--rehearse"), argValue(plain, "--bundle-type")], [undefined, undefined], `job ${job} rehearses unasked`);
+      assert.deepEqual(
+        [argValue(plain, "--rehearse"), argValue(plain, "--rehearsal-signatures"), argValue(plain, "--bundle-type")],
+        [undefined, undefined, undefined],
+        `job ${job} rehearses unasked`,
+      );
       assert.equal(argValue(all, "--rehearse"), "release", `job ${job} doesn't rehearse against release/ when asked`);
+      assert.equal(argValue(all, "--rehearsal-signatures"), "rehearsal", `job ${job} doesn't offer the rehearsal's signatures, from rehearsal/, when asked`);
       const type = bundleTypeOf(launch);
       types.push(type);
       for (const args of [plain, all]) assert.equal(argValue(args, "--home"), `<dir>/runner-temp/home-${type}`, `job ${job}'s home`);

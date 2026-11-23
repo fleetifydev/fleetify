@@ -8,11 +8,12 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import {
   INSTALL_SCRIPTS,
+  REHEARSAL_VERSION,
   REPO,
   TARGETS,
   UPDATER_KEY_ID,
@@ -88,6 +89,12 @@ describe("the release's constants", () => {
 
   test("downloadBase: GitHub's download folder for the release's tag", () => {
     assert.equal(downloadBase(V), BASE);
+  });
+
+  test("REHEARSAL_VERSION: the version a dry run's rehearsal offers, newer than the release's, which the updater must see as an update", () => {
+    assert.equal(REHEARSAL_VERSION, "99.0.0");
+    const { version } = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8"));
+    assert.equal(compareVersions(REHEARSAL_VERSION, version), 1, `package.json's ${version} has caught up with the rehearsal's version`);
   });
 });
 

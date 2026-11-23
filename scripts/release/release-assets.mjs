@@ -31,6 +31,16 @@ export const REPO = "fleetifydev/fleetify";
  */
 export const UPDATER_KEY_ID = "44C694713A20D751";
 
+/**
+ * The version a dry run's update rehearsal offers each bundle: newer than
+ * any release, so the updater takes it for an update. The updater refuses a
+ * signature made for another version than the one it is offered, so a dry
+ * run's sign and bundle-macos jobs also sign each updater artifact for this
+ * one, with the run's key: the rehearsal's signatures, which travel apart
+ * from the release's files and never ship with them.
+ */
+export const REHEARSAL_VERSION = "99.0.0";
+
 /** The release assets that don't come out of a Tauri bundle. */
 export const MANIFEST = "latest.json";
 export const CHECKSUMS = "SHA256SUMS";

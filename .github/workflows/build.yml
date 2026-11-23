@@ -32,6 +32,9 @@
 #   127.0.0.1, over plain http. The run's updater key stays among the run's
 #   artifacts for a day, as only this run's builds trust it; the macOS
 #   identity goes with the job. What the run builds stays in its artifacts.
+#   sign and bundle-macos also sign each updater artifact for the version
+#   the smoke's rehearsal offers, and upload those signatures apart, as
+#   rehearsal-<triple>, which assemble.mjs checks and hands to the smoke.
 # Either way the build starts from a clean target folder, without a cache.
 #
 # Every job uses the Tauri CLI directly, so the asset names stay the ones
@@ -551,6 +554,40 @@ jobs:
           files=()
           while IFS= read -r name; do files+=("$RUNNER_TEMP/bundles/$name"); done <<< "$updaters"
           node scripts/release/minisign.mjs verify --pubkey-file "$RUNNER_TEMP/dry-run/updater.key.pub" --version "$VERSION" "${files[@]}"
+      # The smoke rehearses an update to 99.0.0 (REHEARSAL_VERSION in
+      # release-assets.mjs) with these bundles, and the updater takes only a
+      # signature made for the version it is offered. So a dry run also signs
+      # each updater artifact for 99.0.0, with the run's key: a copy, under
+      # its own name, in a folder of its own, which keeps only the signature.
+      # The bundles keep theirs, made for the release's version, and a
+      # release build makes none of these.
+      - name: Sign the rehearsal's update (dry run)
+        if: inputs.environment == 'dry-run'
+        run: |
+          mkdir -p "$RUNNER_TEMP/rehearsal"
+          updaters=$(node scripts/release/release-assets.mjs updaters "$TRIPLE" "$VERSION")
+          while IFS= read -r name; do
+            cp "$RUNNER_TEMP/bundles/$name" "$RUNNER_TEMP/rehearsal/$name"
+            npx --no -- tauri signer sign -f "$RUNNER_TEMP/dry-run/updater.key" -p "" --app-version 99.0.0 "$RUNNER_TEMP/rehearsal/$name" < /dev/null
+            rm "$RUNNER_TEMP/rehearsal/$name"
+          done <<< "$updaters"
+      - name: Check the rehearsal's signatures (dry run)
+        if: inputs.environment == 'dry-run'
+        run: |
+          updaters=$(node scripts/release/release-assets.mjs updaters "$TRIPLE" "$VERSION")
+          files=()
+          while IFS= read -r name; do files+=("$RUNNER_TEMP/bundles/$name"); done <<< "$updaters"
+          node scripts/release/minisign.mjs verify --pubkey-file "$RUNNER_TEMP/dry-run/updater.key.pub" --version 99.0.0 --sig-dir "$RUNNER_TEMP/rehearsal" "${files[@]}"
+      # assemble.mjs checks them again, and hands them to the smoke apart
+      # from the release.
+      - name: Upload the rehearsal's signatures (dry run)
+        if: inputs.environment == 'dry-run'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rehearsal-${{ matrix.triple }}
+          path: ${{ runner.temp }}/rehearsal
+          if-no-files-found: error
+          retention-days: 7
       # assemble.mjs checks each dry-run build's signatures against its own key.
       - name: Add the run's updater public key (dry run)
         if: inputs.environment == 'dry-run'
@@ -850,6 +887,40 @@ jobs:
           files=()
           while IFS= read -r name; do files+=("$RUNNER_TEMP/bundles/$name"); done <<< "$updaters"
           node scripts/release/minisign.mjs verify --pubkey-file "$RUNNER_TEMP/dry-run/updater.key.pub" --version "$VERSION" "${files[@]}"
+      # The smoke rehearses an update to 99.0.0 (REHEARSAL_VERSION in
+      # release-assets.mjs) with these bundles, and the updater takes only a
+      # signature made for the version it is offered. So a dry run also signs
+      # the updater archive for 99.0.0, with the run's key: a copy, under
+      # its own name, in a folder of its own, which keeps only the signature.
+      # The bundles keep theirs, made for the release's version, and a
+      # release build makes none of these.
+      - name: Sign the rehearsal's update (dry run)
+        if: inputs.environment == 'dry-run'
+        run: |
+          mkdir -p "$RUNNER_TEMP/rehearsal"
+          updaters=$(node scripts/release/release-assets.mjs updaters "$TRIPLE" "$VERSION")
+          while IFS= read -r name; do
+            cp "$RUNNER_TEMP/bundles/$name" "$RUNNER_TEMP/rehearsal/$name"
+            npx --no -- tauri signer sign -f "$RUNNER_TEMP/dry-run/updater.key" -p "" --app-version 99.0.0 "$RUNNER_TEMP/rehearsal/$name" < /dev/null
+            rm "$RUNNER_TEMP/rehearsal/$name"
+          done <<< "$updaters"
+      - name: Check the rehearsal's signatures (dry run)
+        if: inputs.environment == 'dry-run'
+        run: |
+          updaters=$(node scripts/release/release-assets.mjs updaters "$TRIPLE" "$VERSION")
+          files=()
+          while IFS= read -r name; do files+=("$RUNNER_TEMP/bundles/$name"); done <<< "$updaters"
+          node scripts/release/minisign.mjs verify --pubkey-file "$RUNNER_TEMP/dry-run/updater.key.pub" --version 99.0.0 --sig-dir "$RUNNER_TEMP/rehearsal" "${files[@]}"
+      # assemble.mjs checks them again, and hands them to the smoke apart
+      # from the release.
+      - name: Upload the rehearsal's signatures (dry run)
+        if: inputs.environment == 'dry-run'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rehearsal-${{ matrix.triple }}
+          path: ${{ runner.temp }}/rehearsal
+          if-no-files-found: error
+          retention-days: 7
       # assemble.mjs checks each dry-run build's signatures against its own key.
       - name: Add the run's updater public key (dry run)
         if: inputs.environment == 'dry-run'

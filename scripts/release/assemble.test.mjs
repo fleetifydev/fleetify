@@ -7,15 +7,16 @@
  *   node --test scripts/release/assemble.test.mjs
  *
  * The trees are fake: each bundle is a line of text. Most tests inject a
- * `verify` stub that passes when a .sig names its own file. The end-to-end
- * tests sign the fake bundles with keys made in memory for the run
- * (fixtures/test-signer.mjs), then run the real verifier and the CLI.
+ * `verify` stub that passes when a .sig names its own file, and a rehearsal
+ * signature its file and the rehearsal. The end-to-end tests sign the fake
+ * bundles with keys made in memory for the run (fixtures/test-signer.mjs),
+ * then run the real verifier and the CLI.
  */
 import { after, describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,6 +26,7 @@ import { makeTestKey, signLikeTauri } from "./fixtures/test-signer.mjs";
 import { parsePublicKey } from "./minisign.mjs";
 import {
   INSTALL_SCRIPTS,
+  REHEARSAL_VERSION,
   TARGETS,
   UPDATER_KEY_ID,
   bundleFiles,
@@ -33,6 +35,7 @@ import {
   latestJson,
   sha256sums,
   updaterArtifacts,
+  updaterAssets,
 } from "./release-assets.mjs";
 
 const SCRIPT = fileURLToPath(new URL("./assemble.mjs", import.meta.url));
@@ -76,13 +79,24 @@ const extraArgs = () => EXTRAS.flatMap((path) => ["--extra", path]);
  * signature by that target's key, whose trusted comment is `comment(name)`:
  * by default the one tauri-cli 2.11.5 writes for version 0.2.0. `pubkeyFiles`
  * adds each bundle folder's updater-pubkey.txt, as a dry run has them: the
- * target's key, or else fixture.pub.
+ * target's key, or else fixture.pub. `rehearsal` adds each target's
+ * rehearsal-<triple> folder, as a dry run has them: for each updater
+ * artifact, <name>.sig holds "rehearsal-sig:<name>\n", or with `keys` a real
+ * signature whose trusted comment is `rehearsalComment(name)`, by default
+ * the one tauri signer sign --app-version 99.0.0 writes.
  */
-function inputTree({ keys = null, pubkeyFiles = false, comment = (name) => `timestamp:1795238472\tfile:${name}\tversion:${V}` } = {}) {
+function inputTree({
+  keys = null,
+  pubkeyFiles = false,
+  rehearsal = false,
+  comment = (name) => `timestamp:1795238472\tfile:${name}\tversion:${V}`,
+  rehearsalComment = (name) => `timestamp:1795238473\tfile:${name}\tversion:${REHEARSAL_VERSION}`,
+} = {}) {
   const dir = fresh("in");
   for (const { triple } of TARGETS) {
     const folder = join(dir, `bundles-${triple}`);
     mkdirSync(folder, { recursive: true });
+    if (rehearsal) mkdirSync(join(dir, `rehearsal-${triple}`));
     for (const { to } of bundleFiles(triple, V)) {
       if (to.endsWith(".sig")) continue;
       const data = Buffer.from(`fake ${to}\n`);
@@ -92,6 +106,11 @@ function inputTree({ keys = null, pubkeyFiles = false, comment = (name) => `time
         ? signLikeTauri(keys[triple], data, { trustedComment: comment(to) })
         : `sig:${to}\n`;
       writeFileSync(join(folder, `${to}.sig`), signature);
+      if (!rehearsal) continue;
+      const rehearsalSignature = keys
+        ? signLikeTauri(keys[triple], data, { trustedComment: rehearsalComment(to) })
+        : `rehearsal-sig:${to}\n`;
+      writeFileSync(join(dir, `rehearsal-${triple}`, `${to}.sig`), rehearsalSignature);
     }
     if (pubkeyFiles) writeFileSync(join(folder, "updater-pubkey.txt"), keys ? keys[triple].tauriPublicKey : FIXTURE_PUB);
   }
@@ -101,11 +120,18 @@ function inputTree({ keys = null, pubkeyFiles = false, comment = (name) => `time
   return dir;
 }
 
-/** Passes when a .sig names the data's own file, as the fake .sig files do. */
-function stubVerify({ data, tauriSignature }) {
+/**
+ * Passes when a .sig names the data's own file, as the fake .sig files do,
+ * and a signature checked for the rehearsal's version names the rehearsal too.
+ */
+function stubVerify({ data, tauriSignature, version }) {
   const name = data.toString("utf8").replace(/^fake /, "").trimEnd();
-  return tauriSignature === `sig:${name}` ? { ok: true } : { ok: false, reason: "signature does not match the data" };
+  const expected = version === REHEARSAL_VERSION ? `rehearsal-sig:${name}` : `sig:${name}`;
+  return tauriSignature === expected ? { ok: true } : { ok: false, reason: "signature does not match the data" };
 }
+
+/** assemble()'s options for a dry run: each build's own key, and a fresh folder for the rehearsal's signatures. */
+const dryRun = () => ({ pubkeys: { perTarget: true }, rehearsalOut: fresh("rehearsal") });
 
 /** assemble() over `inDir` for 0.2.0 into a fresh out folder, as a release run would, unless told otherwise. */
 function run(inDir, options = {}) {
@@ -305,11 +331,11 @@ describe("assemble, with a stub for the signature check", () => {
   });
 
   test("per-target keys: each bundle's signatures against its own updater-pubkey.txt, which isn't published", () => {
-    const inDir = inputTree({ pubkeyFiles: true });
+    const inDir = inputTree({ pubkeyFiles: true, rehearsal: true });
     writeFileSync(join(inDir, `bundles-${WINDOWS}`, "updater-pubkey.txt"), `${OTHER_PUB}\n`);
     const calls = [];
     const { assets, problems, outDir } = run(inDir, {
-      pubkeys: { perTarget: true },
+      ...dryRun(),
       verify: (args) => {
         calls.push(args);
         return stubVerify(args);
@@ -318,7 +344,8 @@ describe("assemble, with a stub for the signature check", () => {
     assert.deepEqual(problems, []);
     assert.deepEqual(assets, expectedAssets(V));
     assert.ok(!readdirSync(outDir).includes("updater-pubkey.txt"));
-    assert.equal(calls.length, 6);
+    // Each updater artifact twice: its signature for the release, and the rehearsal's.
+    assert.equal(calls.length, 12);
     for (const { data, publicKey } of calls) {
       const windows = data.toString("utf8").includes("x64-setup.exe");
       assert.equal(publicKey.keyId, parsePublicKey(windows ? OTHER_PUB : FIXTURE_PUB).keyId);
@@ -326,12 +353,127 @@ describe("assemble, with a stub for the signature check", () => {
   });
 
   test("per-target keys: a missing or malformed updater-pubkey.txt is a problem", () => {
-    const inDir = inputTree({ pubkeyFiles: true });
+    const inDir = inputTree({ pubkeyFiles: true, rehearsal: true });
     rmSync(join(inDir, `bundles-${WINDOWS}`, "updater-pubkey.txt"));
     writeFileSync(join(inDir, `bundles-${LINUX}`, "updater-pubkey.txt"), "garbage\n");
-    const { problems } = run(inDir, { pubkeys: { perTarget: true } });
+    const { problems } = run(inDir, dryRun());
     assertProblem(problems, literal(`missing bundles-${WINDOWS}/updater-pubkey.txt`));
     assertProblem(problems, literal(`bundles-${LINUX}/updater-pubkey.txt`), /malformed public key/);
+  });
+
+  test("a dry run's rehearsal signatures: each checked once, over its artifact's bytes, against its target's key, for the rehearsal's version", () => {
+    const calls = [];
+    const { problems } = run(inputTree({ pubkeyFiles: true, rehearsal: true }), {
+      ...dryRun(),
+      verify: (args) => {
+        calls.push(args);
+        return stubVerify(args);
+      },
+    });
+    assert.deepEqual(problems, []);
+    const rehearsed = calls.filter(({ version }) => version === REHEARSAL_VERSION);
+    const released = calls.filter(({ version }) => version === V);
+    assert.equal(rehearsed.length + released.length, calls.length, "a signature was checked for another version");
+    const names = (list) => list.map(({ data }) => data.toString("utf8").replace(/^fake /, "").trimEnd()).sort();
+    const updaters = updaterArtifacts(V).map(({ asset }) => asset).sort();
+    assert.deepEqual([names(rehearsed), names(released)], [updaters, updaters]);
+    for (const { data, tauriSignature } of rehearsed) assert.equal(tauriSignature, `rehearsal-sig:${data.toString("utf8").slice(5).trimEnd()}`);
+  });
+
+  test("a dry run writes the rehearsal's signatures to --rehearsal-out, each as <asset>.sig, byte for byte, and none into the release", () => {
+    const inDir = inputTree({ pubkeyFiles: true, rehearsal: true });
+    const options = dryRun();
+    const { assets, rehearsal, problems, outDir } = run(inDir, options);
+    assert.deepEqual(problems, []);
+    assert.deepEqual(readdirSync(outDir).sort(), expectedAssets(V));
+    assert.deepEqual(assets, expectedAssets(V));
+    const sigs = updaterArtifacts(V).map(({ asset }) => `${asset}.sig`).sort();
+    assert.deepEqual(rehearsal, sigs);
+    assert.deepEqual(readdirSync(options.rehearsalOut).sort(), sigs);
+    for (const { triple } of TARGETS) {
+      for (const asset of updaterAssets(triple, V)) {
+        const published = readFileSync(join(options.rehearsalOut, `${asset}.sig`));
+        assert.deepEqual(published, readFileSync(join(inDir, `rehearsal-${triple}`, `${asset}.sig`)), asset);
+        assert.notDeepEqual(published, readFileSync(join(outDir, `${asset}.sig`)), `${asset}: the rehearsal's signature is the release's`);
+      }
+    }
+  });
+
+  test("a rehearsal signature that doesn't verify: a problem naming it, and neither folder is written", () => {
+    const inDir = inputTree({ pubkeyFiles: true, rehearsal: true });
+    writeFileSync(join(inDir, `rehearsal-${LINUX}`, `${DEB}.sig`), `sig:${DEB}\n`);
+    const options = dryRun();
+    const { assets, rehearsal, problems, outDir } = run(inDir, options);
+    assert.deepEqual(problems, [`bad rehearsal signature for ${DEB}: signature does not match the data`]);
+    assert.deepEqual([assets, rehearsal], [[], []]);
+    assert.equal(existsSync(outDir), false);
+    assert.equal(existsSync(options.rehearsalOut), false);
+  });
+
+  test("a rehearsal folder that is missing, or misses a signature or holds another file: a problem each", () => {
+    const inDir = inputTree({ pubkeyFiles: true, rehearsal: true });
+    rmSync(join(inDir, `rehearsal-${WINDOWS}`), { recursive: true });
+    rmSync(join(inDir, `rehearsal-${LINUX}`, `${APPIMAGE}.sig`));
+    writeFileSync(join(inDir, `rehearsal-${LINUX}`, "updater-pubkey.txt"), FIXTURE_PUB);
+    const { problems } = run(inDir, dryRun());
+    assert.deepEqual(problems, [
+      `missing rehearsal-${LINUX}/${APPIMAGE}.sig`,
+      `unexpected file rehearsal-${LINUX}/updater-pubkey.txt`,
+      `missing rehearsal-${WINDOWS}/`,
+    ]);
+  });
+
+  test("a release run takes no rehearsal signature: a rehearsal folder is unexpected, so none can ship", () => {
+    const { assets, problems } = run(inputTree({ rehearsal: true }));
+    assert.deepEqual(
+      problems,
+      TARGETS.map(({ triple }) => `rehearsal-${triple}`)
+        .sort()
+        .map((folder) => `unexpected folder ${folder}/`),
+    );
+    assert.deepEqual(assets, []);
+  });
+
+  test("--rehearsal-out that isn't empty, or is --out or inside it, or holds it: a problem, and nothing is written", () => {
+    const busy = fresh("rehearsal");
+    mkdirSync(busy);
+    writeFileSync(join(busy, "old.sig"), "from an earlier run\n");
+    const outDir = fresh("out");
+    for (const [rehearsalOut, pattern, out] of [
+      [busy, /--rehearsal-out .* is not empty/, outDir],
+      [outDir, /--rehearsal-out \S+ must be a folder of its own, apart from --out \S+$/, outDir],
+      [join(outDir, "rehearsal"), /--rehearsal-out \S+ must be a folder of its own, apart from --out \S+$/, outDir],
+      [outDir, /--rehearsal-out \S+ must be a folder of its own, apart from --out \S+$/, join(outDir, "release")],
+    ]) {
+      const { assets, problems } = run(inputTree({ pubkeyFiles: true, rehearsal: true }), { pubkeys: { perTarget: true }, rehearsalOut, outDir: out });
+      assertProblem(problems, pattern);
+      assert.deepEqual(assets, []);
+      assert.equal(existsSync(out), false, `${out} was written`);
+    }
+    assert.deepEqual(readdirSync(busy), ["old.sig"]);
+  });
+
+  test("a rehearsal signature that changes after its check: a problem, and neither folder keeps a file", () => {
+    const inDir = inputTree({ pubkeyFiles: true, rehearsal: true });
+    const sig = join(inDir, `rehearsal-${LINUX}`, `${APPIMAGE}.sig`);
+    const options = dryRun();
+    const { assets, problems, outDir } = run(inDir, {
+      ...options,
+      verify: (args) => {
+        const result = stubVerify(args);
+        if (args.version === REHEARSAL_VERSION && args.data.toString("utf8").includes(APPIMAGE)) writeFileSync(sig, "rehearsal-sig:another file\n");
+        return result;
+      },
+    });
+    assert.deepEqual(problems, [`rehearsal-${LINUX}/${APPIMAGE}.sig changed while the release was being assembled`]);
+    assert.deepEqual(assets, []);
+    assert.equal(existsSync(outDir), false);
+    assert.equal(existsSync(options.rehearsalOut), false);
+  });
+
+  test("per-target keys and --rehearsal-out go together: either alone is refused", () => {
+    assert.throws(() => run(inputTree({ pubkeyFiles: true, rehearsal: true }), { pubkeys: { perTarget: true } }), TypeError);
+    assert.throws(() => run(inputTree(), { rehearsalOut: fresh("rehearsal") }), TypeError);
   });
 
   test("a non-empty out folder: a problem, and its files are left alone", () => {
@@ -432,27 +574,54 @@ describe("assemble, with a stub for the signature check", () => {
 describe("assemble, with the real signature check and keys from the test run", () => {
   const perTargetKeys = () => Object.fromEntries(TARGETS.map(({ triple }) => [triple, makeTestKey()]));
 
-  test("a dry run's per-target keys: every signature verifies", () => {
-    const inDir = inputTree({ keys: perTargetKeys(), pubkeyFiles: true });
-    const { assets, problems } = assemble({ inDir, outDir: fresh("out"), version: V, pubkeys: { perTarget: true }, extras: EXTRAS, now: NOW });
+  /** assemble() over a dry run's tree, signed with `keys` (by default fresh per-target keys), as the CLI runs it. */
+  const assembleDryRun = (options = {}) => {
+    const { keys = perTargetKeys(), ...tree } = options;
+    const inDir = inputTree({ keys, pubkeyFiles: true, rehearsal: true, ...tree });
+    return { inDir, ...assemble({ inDir, outDir: fresh("out"), version: V, ...dryRun(), extras: EXTRAS, now: NOW }) };
+  };
+
+  test("a dry run's per-target keys: every signature verifies, the rehearsal's among them", () => {
+    const { assets, rehearsal, problems } = assembleDryRun();
     assert.deepEqual(problems, []);
     assert.deepEqual(assets, expectedAssets(V));
+    assert.deepEqual(rehearsal, updaterArtifacts(V).map(({ asset }) => `${asset}.sig`).sort());
   });
 
-  test("a bundle signed by another target's key: a key id problem", () => {
+  test("a bundle signed by another target's key: a key id problem, for its signature and the rehearsal's", () => {
     const keys = perTargetKeys();
-    const inDir = inputTree({ keys, pubkeyFiles: true });
+    const inDir = inputTree({ keys, pubkeyFiles: true, rehearsal: true });
     writeFileSync(join(inDir, `bundles-${WINDOWS}`, "updater-pubkey.txt"), keys[LINUX].tauriPublicKey);
-    const { problems } = assemble({ inDir, outDir: fresh("out"), version: V, pubkeys: { perTarget: true }, extras: EXTRAS, now: NOW });
-    assertProblem(problems, /Fleetify_0\.2\.0_x64-setup\.exe/, /key id/);
-    assert.equal(problems.length, 1);
+    const { problems } = assemble({ inDir, outDir: fresh("out"), version: V, ...dryRun(), extras: EXTRAS, now: NOW });
+    assert.equal(problems.length, 2, problems.join("\n"));
+    assertProblem(problems, /^bad signature for Fleetify_0\.2\.0_x64-setup\.exe/, /key id/);
+    assertProblem(problems, /^bad rehearsal signature for Fleetify_0\.2\.0_x64-setup\.exe/, /key id/);
+  });
+
+  test("a rehearsal signature must name the rehearsal's version: the release's, or none, is a problem", () => {
+    const base = (name) => `timestamp:1795238473\tfile:${name}`;
+    const released = assembleDryRun({ rehearsalComment: (name) => (name === DEB ? `${base(name)}\tversion:${V}` : `${base(name)}\tversion:${REHEARSAL_VERSION}`) });
+    assert.deepEqual(released.problems, [`bad rehearsal signature for ${DEB}: signed for version "0.2.0", not 99.0.0`]);
+    const none = assembleDryRun({ rehearsalComment: (name) => (name === APPIMAGE ? base(name) : `${base(name)}\tversion:${REHEARSAL_VERSION}`) });
+    assert.equal(none.problems.length, 1, none.problems.join("\n"));
+    assertProblem(none.problems, literal(`bad rehearsal signature for ${APPIMAGE}: the trusted comment names no version, so the signature isn't bound to 99.0.0`));
+  });
+
+  test("the release's own signatures can't stand in for the rehearsal's: they name the release's version", () => {
+    const keys = perTargetKeys();
+    const inDir = inputTree({ keys, pubkeyFiles: true, rehearsal: true });
+    for (const { triple } of TARGETS) {
+      for (const asset of updaterAssets(triple, V)) copyFileSync(join(inDir, `bundles-${triple}`, `${asset}.sig`), join(inDir, `rehearsal-${triple}`, `${asset}.sig`));
+    }
+    const { problems } = assemble({ inDir, outDir: fresh("out"), version: V, ...dryRun(), extras: EXTRAS, now: NOW });
+    assert.deepEqual(
+      problems,
+      updaterArtifacts(V).map(({ asset }) => `bad rehearsal signature for ${asset}: signed for version "0.2.0", not 99.0.0`),
+    );
   });
 
   test("the trusted comment's version: field must name the release version: any other, or none, is a problem", () => {
-    const signed = (comment) => {
-      const inDir = inputTree({ keys: perTargetKeys(), pubkeyFiles: true, comment });
-      return assemble({ inDir, outDir: fresh("out"), version: V, pubkeys: { perTarget: true }, extras: EXTRAS, now: NOW });
-    };
+    const signed = (comment) => assembleDryRun({ comment });
     const base = (name) => `timestamp:1795238472\tfile:${name}`;
     const release = (name) => `${base(name)}\tversion:0.2.0`;
     assert.deepEqual(signed(release).problems, []);
@@ -502,18 +671,23 @@ describe("assemble, with the real signature check and keys from the test run", (
 describe("the CLI", () => {
   const cli = (...args) => spawnSync(process.execPath, [SCRIPT, ...args], { encoding: "utf8" });
 
-  test("a signed dry-run tree: exit 0, listing the assets and each key and version that verified them", () => {
+  test("a signed dry-run tree: exit 0, listing the assets, the rehearsal's signatures, and each key and version that verified them", () => {
     const keys = Object.fromEntries(TARGETS.map(({ triple }) => [triple, makeTestKey()]));
-    const inDir = inputTree({ keys, pubkeyFiles: true });
+    const inDir = inputTree({ keys, pubkeyFiles: true, rehearsal: true });
     const outDir = fresh("out");
-    const result = cli("--in", inDir, "--out", outDir, "--version", V, "--per-target-pubkeys", ...extraArgs());
+    const rehearsalOut = fresh("rehearsal");
+    const result = cli("--in", inDir, "--out", outDir, "--version", V, "--per-target-pubkeys", "--rehearsal-out", rehearsalOut, ...extraArgs());
     assert.equal(result.status, 0, result.stderr);
     for (const asset of expectedAssets(V)) assert.ok(result.stdout.includes(asset), result.stdout);
     for (const key of Object.values(keys)) assert.ok(result.stdout.includes(key.keyId), result.stdout);
     for (const { asset } of updaterArtifacts(V)) {
-      assert.match(result.stdout, new RegExp(`signature ok, key [0-9A-F]{16}, version 0\\.2\\.0: ${asset.replaceAll(".", "\\.")} `), asset);
+      const name = asset.replaceAll(".", "\\.");
+      assert.match(result.stdout, new RegExp(`signature ok, key [0-9A-F]{16}, version 0\\.2\\.0: ${name} `), asset);
+      assert.match(result.stdout, new RegExp(`rehearsal signature ok, key [0-9A-F]{16}, version 99\\.0\\.0: ${name}\\n`), asset);
     }
+    assert.ok(result.stdout.includes(`6 rehearsal signatures in ${rehearsalOut}`), result.stdout);
     assert.deepEqual(readdirSync(outDir).sort(), expectedAssets(V));
+    assert.deepEqual(readdirSync(rehearsalOut).sort(), updaterArtifacts(V).map(({ asset }) => `${asset}.sig`).sort());
   });
 
   test("a release run whose configured key isn't the expected one: exit 1, saying why, nothing written", () => {
@@ -543,10 +717,15 @@ describe("the CLI", () => {
       [...base, "--pubkey-config", CONFIG],
       [...base, "--expect-key-id", UPDATER_KEY_ID],
       [...base, "--pubkey-config", CONFIG, "--expect-key-id", "44C69471"],
-      [...base, "--per-target-pubkeys", "--bogus"],
-      [...base, "--per-target-pubkeys", "--extra"],
-      ["--in", inDir, "--out", fresh("out"), "--per-target-pubkeys"],
-      [...base, "--version", V, "--per-target-pubkeys"],
+      [...base, "--per-target-pubkeys", "--rehearsal-out", fresh("rehearsal"), "--bogus"],
+      [...base, "--per-target-pubkeys", "--rehearsal-out", fresh("rehearsal"), "--extra"],
+      ["--in", inDir, "--out", fresh("out"), "--per-target-pubkeys", "--rehearsal-out", fresh("rehearsal")],
+      [...base, "--version", V, "--per-target-pubkeys", "--rehearsal-out", fresh("rehearsal")],
+      // The rehearsal's signatures go with a dry run's per-target keys, and only with them.
+      [...base, "--per-target-pubkeys"],
+      [...base, "--per-target-pubkeys", "--rehearsal-out"],
+      [...base, "--pubkey-config", CONFIG, "--expect-key-id", UPDATER_KEY_ID, "--rehearsal-out", fresh("rehearsal")],
+      [...base, "--per-target-pubkeys", "--rehearsal-out", fresh("rehearsal"), "--rehearsal-out", fresh("rehearsal")],
     ]) {
       const result = cli(...args);
       assert.equal(result.status, 2, `${args.join(" ")}\n${result.stderr}`);

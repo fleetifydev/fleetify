@@ -37,7 +37,8 @@ import {
   updateRequestPath,
 } from "./launch-smoke.mjs";
 import { dryRunConfig } from "./dry-run-config.mjs";
-import { downloadBase, latestJson, updaterArtifacts } from "./release-assets.mjs";
+import { makeTestKey, signLikeTauri } from "./fixtures/test-signer.mjs";
+import { REHEARSAL_VERSION, downloadBase, latestJson, updaterArtifacts } from "./release-assets.mjs";
 
 const SCRIPT = fileURLToPath(new URL("./launch-smoke.mjs", import.meta.url));
 const FAKE_APP = fileURLToPath(new URL("./fixtures/fake-app.mjs", import.meta.url));
@@ -102,6 +103,31 @@ writeFileSync(join(RELEASE, "latest.json"), `${JSON.stringify(MANIFEST, null, 2)
 writeFileSync(join(RELEASE, "SHA256SUMS"), "not checked here\n");
 /** Whether this machine is one of the release's platforms, which the rehearsal runs need. */
 const RELEASED_HERE = Object.hasOwn(MANIFEST.platforms, `${OS}-${ARCH}`);
+
+/**
+ * The rehearsal's signatures, as a dry run's assemble hands them to the
+ * smoke: <asset>.sig for each updater artifact, stand-ins here.
+ */
+const SIGNATURES = folder("rehearsal");
+for (const { asset } of updaterArtifacts(V)) writeFileSync(join(SIGNATURES, `${asset}.sig`), `rehearsal sig ${asset}`);
+
+/**
+ * A key made for the test run, as a dry run makes its updater key, and real
+ * signatures of the artifacts by it, each in a folder laid out like
+ * SIGNATURES: made for the rehearsal's version, as a dry run's builds make
+ * the rehearsal's, and made for the release's own version, as the release's
+ * signatures are, which can't stand in for them.
+ */
+const KEY = makeTestKey();
+function signedFor(version) {
+  const dir = folder(`signed-for-${version}`);
+  for (const [asset, bytes] of ARTIFACT_BYTES) {
+    writeFileSync(join(dir, `${asset}.sig`), signLikeTauri(KEY, bytes, { trustedComment: `timestamp:1795238473\tfile:${asset}\tversion:${version}` }));
+  }
+  return dir;
+}
+const SIGNED_FOR_REHEARSAL = signedFor(REHEARSAL_VERSION);
+const SIGNED_FOR_RELEASE = signedFor(V);
 
 // ── Ports: handed out by the system, all held open together so they differ ──
 
@@ -296,6 +322,7 @@ describe("parseArgs", () => {
       cspOrigin: null,
       expectPosthogSink: false,
       rehearse: null,
+      rehearsalSignatures: null,
       bundleType: null,
       updatePort: 18080,
       timeoutS: 120,
@@ -319,6 +346,8 @@ describe("parseArgs", () => {
       "--expect-posthog-sink",
       "--rehearse",
       "release",
+      "--rehearsal-signatures",
+      "rehearsal",
       "--bundle-type",
       "deb",
       "--update-port",
@@ -340,6 +369,7 @@ describe("parseArgs", () => {
       cspOrigin: "https://eu.i.posthog.com",
       expectPosthogSink: true,
       rehearse: resolve("release"),
+      rehearsalSignatures: resolve("rehearsal"),
       bundleType: "deb",
       updatePort: 18090,
       timeoutS: 60,
@@ -397,6 +427,10 @@ describe("parseArgs", () => {
       [[...RUN, "--rehearse", "r", "--bundle-type", "msi"], /--bundle-type must be one of appimage, deb, rpm, nsis, app/],
       [[...RUN, "--update-port", "18090"], /--update-port goes with --rehearse/],
       [[...RUN, "--rehearse", "r", "--bundle-type", "deb", "--port", "18080"], /--port and --update-port are both 18080/],
+      // The rehearsal's update must carry a signature made for the version offered.
+      [[...RUN, "--rehearse", "r", "--bundle-type", "deb"], /--rehearse needs --rehearsal-signatures/],
+      [[...RUN, "--rehearsal-signatures", "s"], /--rehearsal-signatures goes with --rehearse/],
+      [[...RUN, "--rehearse", "r", "--bundle-type", "deb", "--rehearsal-signatures"], /--rehearsal-signatures needs a value/],
       [[...RUN, "--verbose"], /unexpected argument: --verbose/],
       [[...RUN, "extra"], /unexpected argument: extra/],
     ];
@@ -694,7 +728,7 @@ describe("updateRequestPath", () => {
 describe("createUpdateServer", () => {
   /** Ask a fresh server one path; resolves with the answer and what the server recorded. */
   async function ask(path, options) {
-    const server = createUpdateServer({ releaseDir: RELEASE, ...options });
+    const server = createUpdateServer({ releaseDir: RELEASE, signaturesDir: SIGNATURES, ...options });
     const base = await listen(server);
     try {
       const answer = await request(`${base}${path}`);
@@ -704,7 +738,7 @@ describe("createUpdateServer", () => {
     }
   }
 
-  test("offers the release's entry for the bundle type asked about, as 99.0.0, from /artifacts/, and records the path", async () => {
+  test("offers the release's entry for the bundle type asked about, as 99.0.0, from /artifacts/, with the rehearsal's signature, and records the path", async () => {
     const path = "/update/linux/x86_64/0.2.0?bundle_type=deb";
     const { answer, base, server } = await ask(path);
     assert.equal(answer.status, 200);
@@ -712,11 +746,39 @@ describe("createUpdateServer", () => {
     assert.deepEqual(JSON.parse(answer.body), {
       version: "99.0.0",
       url: `${base}/artifacts/Fleetify_0.2.0_amd64.deb`,
-      signature: "sig Fleetify_0.2.0_amd64.deb",
+      signature: "rehearsal sig Fleetify_0.2.0_amd64.deb",
       notes: MANIFEST.notes,
       pub_date: PUB_DATE,
     });
     assert.deepEqual(server.requests, [path]);
+    assert.deepEqual(server.errors, []);
+  });
+
+  test("each offered signature is the rehearsal's for that artifact, trimmed, never the one latest.json carries", async () => {
+    const signatures = folder("rehearsal");
+    for (const { asset } of updaterArtifacts(V)) writeFileSync(join(signatures, `${asset}.sig`), `  rehearsal sig of ${asset}\n`);
+    for (const [path, asset] of [
+      ["/update/linux/x86_64/0.2.0?bundle_type=appimage", "Fleetify_0.2.0_amd64.AppImage"],
+      ["/update/windows/x86_64/0.2.0?bundle_type=nsis", "Fleetify_0.2.0_x64-setup.exe"],
+      ["/update/darwin/aarch64/0.2.0?bundle_type=app", "Fleetify_0.2.0_aarch64.app.tar.gz"],
+    ]) {
+      const { answer } = await ask(path, { signaturesDir: signatures });
+      assert.equal(JSON.parse(answer.body).signature, `rehearsal sig of ${asset}`, path);
+    }
+  });
+
+  test("an update whose rehearsal signature is missing or empty gets a 500 and an error, not the release's signature", async () => {
+    const signatures = folder("rehearsal");
+    writeFileSync(join(signatures, "Fleetify_0.2.0_amd64.deb.sig"), "\n");
+    for (const [path, error] of [
+      ["/update/linux/x86_64/0.2.0?bundle_type=rpm", /no Fleetify-0\.2\.0-1\.x86_64\.rpm\.sig/],
+      ["/update/linux/x86_64/0.2.0?bundle_type=deb", /Fleetify_0\.2\.0_amd64\.deb\.sig, the rehearsal's signature of Fleetify_0\.2\.0_amd64\.deb, is empty/],
+    ]) {
+      const { answer, server } = await ask(path, { signaturesDir: signatures });
+      assert.equal(answer.status, 500, path);
+      assert.doesNotMatch(answer.body.toString("utf8"), /sig Fleetify/, path);
+      assert.match(server.errors.join("\n"), error, path);
+    }
   });
 
   test("each platform and bundle type gets its own artifact; an unknown bundle type gets the platform's fallback", async () => {
@@ -758,7 +820,7 @@ describe("createUpdateServer", () => {
   });
 
   test("/artifacts/<asset> sends the file in full, and the download is recorded as complete", async () => {
-    const server = createUpdateServer({ releaseDir: RELEASE });
+    const server = createUpdateServer({ releaseDir: RELEASE, signaturesDir: SIGNATURES });
     const base = await listen(server);
     // A client that keeps the connection open, as the updater's does. One
     // that hangs up as soon as it has the body can close the connection
@@ -806,7 +868,7 @@ describe("createUpdateServer", () => {
   }
 
   test("a download is complete once every byte went out, though the client hung up before the response finished", async () => {
-    const server = createUpdateServer({ releaseDir: RELEASE });
+    const server = createUpdateServer({ releaseDir: RELEASE, signaturesDir: SIGNATURES });
     const base = await listen(server);
     const asset = "Fleetify_0.2.0_amd64.AppImage";
     const size = ARTIFACT_BYTES.get(asset).length;
@@ -843,7 +905,7 @@ describe("createUpdateServer", () => {
     const asset = "Fleetify_0.2.0_amd64.AppImage";
     const size = 48 * 1024 * 1024;
     writeFileSync(join(release, asset), Buffer.alloc(size, 7));
-    const server = createUpdateServer({ releaseDir: release });
+    const server = createUpdateServer({ releaseDir: release, signaturesDir: SIGNATURES });
     const base = await listen(server);
     const { closed, stop } = nextClose(server);
     try {
@@ -869,7 +931,7 @@ describe("createUpdateServer", () => {
   });
 
   test("a name too long for the filesystem gets 404, and the server goes on serving", async () => {
-    const server = createUpdateServer({ releaseDir: RELEASE });
+    const server = createUpdateServer({ releaseDir: RELEASE, signaturesDir: SIGNATURES });
     const base = await listen(server);
     try {
       assert.equal((await request(`${base}/artifacts/${"a".repeat(300)}.AppImage`)).status, 404);
@@ -884,7 +946,7 @@ describe("createUpdateServer", () => {
     const broken = structuredClone(MANIFEST);
     broken.platforms["linux-x86_64-deb"].url = "not a url";
     writeFileSync(join(release, "latest.json"), JSON.stringify(broken));
-    const server = createUpdateServer({ releaseDir: release });
+    const server = createUpdateServer({ releaseDir: release, signaturesDir: SIGNATURES });
     const base = await listen(server);
     try {
       assert.equal((await request(`${base}/update/linux/x86_64/0.2.0?bundle_type=deb`)).status, 500);
@@ -895,10 +957,17 @@ describe("createUpdateServer", () => {
     }
   });
 
-  test("refuses a release folder without latest.json, and an offered version that isn't newer than the release", () => {
-    assert.throws(() => createUpdateServer({ releaseDir: folder("empty") }), /latest\.json/);
-    assert.throws(() => createUpdateServer({ releaseDir: RELEASE, offerVersion: "0.2.0" }), /not newer/);
-    assert.throws(() => createUpdateServer({ releaseDir: RELEASE, offerVersion: "next" }), /MAJOR\.MINOR\.PATCH/);
+  test("refuses a release folder without latest.json, an offered version that isn't newer than the release, and no rehearsal signatures", () => {
+    assert.throws(() => createUpdateServer({ releaseDir: folder("empty"), signaturesDir: SIGNATURES }), /latest\.json/);
+    assert.throws(() => createUpdateServer({ releaseDir: RELEASE, signaturesDir: SIGNATURES, offerVersion: "0.2.0" }), /not newer/);
+    assert.throws(() => createUpdateServer({ releaseDir: RELEASE, signaturesDir: SIGNATURES, offerVersion: "next" }), /MAJOR\.MINOR\.PATCH/);
+    assert.throws(() => createUpdateServer({ releaseDir: RELEASE }), /signaturesDir/);
+  });
+
+  test("offers 99.0.0 by default, the rehearsal's version", async () => {
+    assert.equal(REHEARSAL_VERSION, "99.0.0");
+    const { answer } = await ask("/update/linux/x86_64/0.2.0?bundle_type=deb");
+    assert.equal(JSON.parse(answer.body).version, REHEARSAL_VERSION);
   });
 });
 
@@ -1216,7 +1285,7 @@ describe("run against the fake app", { concurrency: 8, timeout: 120_000 }, () =>
   test("rehearsal reports the bundle type", { skip: !RELEASED_HERE && "no release platform for this machine" }, async () => {
     const updatePort = takePort();
     const result = await smokeFake({
-      args: ["--rehearse", RELEASE, "--bundle-type", "appimage", "--update-port", String(updatePort)],
+      args: ["--rehearse", RELEASE, "--rehearsal-signatures", SIGNATURES, "--bundle-type", "appimage", "--update-port", String(updatePort)],
       env: { FAKE_UPDATE_URL: `http://127.0.0.1:${updatePort}/update/{{target}}/{{arch}}/{{current_version}}?bundle_type={{bundle_type}}` },
     });
     assert.equal(result.status, 0, result.output);
@@ -1225,10 +1294,39 @@ describe("run against the fake app", { concurrency: 8, timeout: 120_000 }, () =>
     assert.match(result.stdout, /downloaded in full; update ready 99\.0\.0/);
   });
 
+  test("rehearsal passes when the updater checks the signature as requireSignedVersion does, and it names 99.0.0", { skip: !RELEASED_HERE && "no release platform for this machine" }, async () => {
+    const updatePort = takePort();
+    const result = await smokeFake({
+      args: ["--rehearse", RELEASE, "--rehearsal-signatures", SIGNED_FOR_REHEARSAL, "--bundle-type", "appimage", "--update-port", String(updatePort)],
+      env: {
+        FAKE_UPDATE_URL: `http://127.0.0.1:${updatePort}/update/{{target}}/{{arch}}/{{current_version}}?bundle_type={{bundle_type}}`,
+        FAKE_UPDATER_PUBKEY: KEY.tauriPublicKey,
+      },
+    });
+    assert.equal(result.status, 0, result.output);
+    assert.match(result.stdout, row("PASS", "rehearsal"));
+    assert.match(result.stdout, /downloaded in full; update ready 99\.0\.0/);
+  });
+
+  test("rehearsal fails when the signature offered names the release's own version: the updater refuses it, as the release's own signatures are", { skip: !RELEASED_HERE && "no release platform for this machine" }, async () => {
+    const updatePort = takePort();
+    const result = await smokeFake({
+      args: ["--rehearse", RELEASE, "--rehearsal-signatures", SIGNED_FOR_RELEASE, "--bundle-type", "appimage", "--update-port", String(updatePort)],
+      env: {
+        FAKE_UPDATE_URL: `http://127.0.0.1:${updatePort}/update/{{target}}/{{arch}}/{{current_version}}?bundle_type={{bundle_type}}`,
+        FAKE_UPDATER_PUBKEY: KEY.tauriPublicKey,
+      },
+    });
+    assert.equal(result.status, 1, result.output);
+    assert.match(result.stdout, row("FAIL", "rehearsal"));
+    assert.ok(result.stdout.includes('the updater logged: update download failed: signed for version "0.2.0", not 99.0.0'), result.stdout);
+    assert.match(result.stdout, /no "update ready" line in the log/);
+  });
+
   test("rehearsal fails when the app reports another bundle type", { skip: !RELEASED_HERE && "no release platform for this machine" }, async () => {
     const updatePort = takePort();
     const result = await smokeFake({
-      args: ["--rehearse", RELEASE, "--bundle-type", "appimage", "--update-port", String(updatePort)],
+      args: ["--rehearse", RELEASE, "--rehearsal-signatures", SIGNATURES, "--bundle-type", "appimage", "--update-port", String(updatePort)],
       env: {
         FAKE_UPDATE_URL: `http://127.0.0.1:${updatePort}/update/{{target}}/{{arch}}/{{current_version}}?bundle_type={{bundle_type}}`,
         FAKE_BUNDLE_TYPE: "deb",
@@ -1242,7 +1340,7 @@ describe("run against the fake app", { concurrency: 8, timeout: 120_000 }, () =>
   test("rehearsal fails when /healthz reports another version than the release's", { skip: !RELEASED_HERE && "no release platform for this machine" }, async () => {
     const updatePort = takePort();
     const result = await smokeFake({
-      args: ["--rehearse", RELEASE, "--bundle-type", "appimage", "--update-port", String(updatePort)],
+      args: ["--rehearse", RELEASE, "--rehearsal-signatures", SIGNATURES, "--bundle-type", "appimage", "--update-port", String(updatePort)],
       env: {
         FAKE_UPDATE_URL: `http://127.0.0.1:${updatePort}/update/{{target}}/{{arch}}/{{current_version}}?bundle_type={{bundle_type}}`,
         FAKE_HEALTH_VERSION: "0.1.0",
@@ -1256,7 +1354,7 @@ describe("run against the fake app", { concurrency: 8, timeout: 120_000 }, () =>
   test("rehearsal fails when the app downloads another artifact than the one offered", { skip: !RELEASED_HERE && "no release platform for this machine" }, async () => {
     const updatePort = takePort();
     const result = await smokeFake({
-      args: ["--rehearse", RELEASE, "--bundle-type", "appimage", "--update-port", String(updatePort)],
+      args: ["--rehearse", RELEASE, "--rehearsal-signatures", SIGNATURES, "--bundle-type", "appimage", "--update-port", String(updatePort)],
       env: {
         FAKE_UPDATE_URL: `http://127.0.0.1:${updatePort}/update/{{target}}/{{arch}}/{{current_version}}?bundle_type={{bundle_type}}`,
         FAKE_DOWNLOAD_ASSET: "Fleetify-0.2.0-1.x86_64.rpm",
@@ -1295,9 +1393,18 @@ describe("run against the fake app", { concurrency: 8, timeout: 120_000 }, () =>
   test("setup errors exit 2 before the app starts: a release folder without the artifact its latest.json offers", { skip: !RELEASED_HERE && "no release platform for this machine" }, async () => {
     const release = folder("release");
     writeFileSync(join(release, "latest.json"), JSON.stringify(MANIFEST));
-    const result = await smokeFake({ args: ["--rehearse", release, "--bundle-type", "appimage", "--update-port", String(takePort())] });
+    const result = await smokeFake({ args: ["--rehearse", release, "--rehearsal-signatures", SIGNATURES, "--bundle-type", "appimage", "--update-port", String(takePort())] });
     assert.equal(result.status, 2, result.output);
     assert.match(result.stderr, /has no Fleetify_0\.2\.0_.*, which its latest\.json offers/);
+    assert.equal(result.pid, null, "the app never started");
+  });
+
+  test("setup errors exit 2 before the app starts: rehearsal signatures without the one of the update offered", { skip: !RELEASED_HERE && "no release platform for this machine" }, async () => {
+    const signatures = folder("rehearsal");
+    writeFileSync(join(signatures, "unrelated.sig"), "x");
+    const result = await smokeFake({ args: ["--rehearse", RELEASE, "--rehearsal-signatures", signatures, "--bundle-type", "appimage", "--update-port", String(takePort())] });
+    assert.equal(result.status, 2, result.output);
+    assert.match(result.stderr, /--rehearsal-signatures: .* has no (Fleetify_0\.2\.0_\S+)\.sig, the rehearsal's signature of \1\n/);
     assert.equal(result.pid, null, "the app never started");
   });
 

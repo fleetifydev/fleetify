@@ -7,8 +7,8 @@
  *   node scripts/release/launch-smoke.mjs run --app <exe> [--app-arg <a>]... --home <dir>
  *     [--port 18765] [--cwd <dir>] [--log-dir <dir>] [--legal-dir <dir>]
  *     [--csp-origin <origin>] [--expect-posthog-sink]
- *     [--rehearse <release-dir> --bundle-type appimage|deb|rpm|nsis|app] [--update-port 18080]
- *     [--timeout-s 120] [--settle-s 10]
+ *     [--rehearse <release-dir> --rehearsal-signatures <dir> --bundle-type appimage|deb|rpm|nsis|app]
+ *     [--update-port 18080] [--timeout-s 120] [--settle-s 10]
  *   node scripts/release/launch-smoke.mjs serve-release --dir <release-dir> --version <v> [--port 18081]
  *
  * run starts the app with the working directory --cwd, by default the
@@ -37,12 +37,17 @@
  *   rehearsal     with --rehearse: an update server (createUpdateServer) on
  *                 127.0.0.1:--update-port offers 99.0.0 from the release
  *                 folder's latest.json, as the dry-run build's only endpoint
- *                 expects. Within 180 s the app asks it for
+ *                 expects, with the rehearsal's signature of the artifact
+ *                 from --rehearsal-signatures: <asset>.sig, which the dry
+ *                 run's build signed for 99.0.0. The updater refuses a
+ *                 signature made for another version than the one it is
+ *                 offered, so the release's own can't stand in. Within 180 s
+ *                 the app asks it for
  *                 /update/<os>/<arch>/<version>?bundle_type=<--bundle-type>,
  *                 where <version> is the release's, downloads that bundle type's
- *                 artifact in full and logs "update ready" 99.0.0. The version
- *                 /healthz reports, the one the backend was built as, must be
- *                 the release's too.
+ *                 artifact in full, verifies it and logs "update ready" 99.0.0.
+ *                 The version /healthz reports, the one the backend was built
+ *                 as, must be the release's too.
  *   log           --settle-s after the healthz, or after the rehearsal: the
  *                 log folder holds JSON log lines from this run (lines there
  *                 before the launch are not read), and neither they nor the
@@ -75,7 +80,8 @@
  * Exit codes: 0 every check passed (serve-release: stopped by a signal);
  * 1 a check failed, or the smoke was interrupted; 2 usage, or a setup problem
  * found before the app started (the app isn't a file, the home already holds
- * a DB, a port is in use, the release folder can't be read).
+ * a DB, a port is in use, the release folder can't be read, the rehearsal's
+ * signature of the update offered is missing).
  */
 import { spawn, spawnSync } from "node:child_process";
 import { closeSync, createReadStream, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync, statSync } from "node:fs";
@@ -84,13 +90,13 @@ import { createServer as createNetServer } from "node:net";
 import { join, parse, posix, resolve, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { MANIFEST, compareVersions, resolveUpdate } from "./release-assets.mjs";
+import { MANIFEST, REHEARSAL_VERSION, compareVersions, resolveUpdate } from "./release-assets.mjs";
 
 const USAGE = `usage: node scripts/release/launch-smoke.mjs run --app <exe> [--app-arg <a>]... --home <dir>
          [--port 18765] [--cwd <dir>] [--log-dir <dir>] [--legal-dir <dir>]
          [--csp-origin <origin>] [--expect-posthog-sink]
-         [--rehearse <release-dir> --bundle-type appimage|deb|rpm|nsis|app] [--update-port 18080]
-         [--timeout-s 120] [--settle-s 10]
+         [--rehearse <release-dir> --rehearsal-signatures <dir> --bundle-type appimage|deb|rpm|nsis|app]
+         [--update-port 18080] [--timeout-s 120] [--settle-s 10]
        node scripts/release/launch-smoke.mjs serve-release --dir <release-dir> --version <v> [--port 18081]`;
 
 const DEFAULT_PORT = 18765;
@@ -103,8 +109,8 @@ const REHEARSAL_TIMEOUT_S = 180;
 /** How long a stop waits after SIGTERM, and after SIGKILL. */
 const STOP_GRACE_MS = 5000;
 const POLL_MS = 250;
-/** The version the update server offers: newer than any release. */
-const OFFER_VERSION = "99.0.0";
+/** The version the update server offers: newer than any release, and the one the rehearsal's signatures name. */
+const OFFER_VERSION = REHEARSAL_VERSION;
 
 const BUNDLE_TYPES = ["appimage", "deb", "rpm", "nsis", "app"];
 const LEGAL_FILES = ["LICENSE", "NOTICE", "THIRD-PARTY-NOTICES"];
@@ -150,6 +156,7 @@ const RUN_FLAGS = {
   "--csp-origin": "maybe-empty",
   "--expect-posthog-sink": "switch",
   "--rehearse": "value",
+  "--rehearsal-signatures": "value",
   "--bundle-type": "value",
   "--update-port": "value",
   "--timeout-s": "value",
@@ -235,6 +242,9 @@ function parseRun(argv) {
   const port = values.has("--port") ? portOf("--port", values.get("--port")) : DEFAULT_PORT;
   const updatePort = values.has("--update-port") ? portOf("--update-port", values.get("--update-port")) : DEFAULT_UPDATE_PORT;
   if (rehearse !== undefined && port === updatePort) throw new UsageError(`--port and --update-port are both ${port}`);
+  // The updater takes only a signature made for the version it is offered.
+  if (rehearse !== undefined && !values.has("--rehearsal-signatures")) throw new UsageError("--rehearse needs --rehearsal-signatures");
+  if (rehearse === undefined && values.has("--rehearsal-signatures")) throw new UsageError("--rehearsal-signatures goes with --rehearse");
   const csp = values.get("--csp-origin");
   const path = (flag) => (values.has(flag) ? resolve(values.get(flag)) : null);
   return {
@@ -250,6 +260,7 @@ function parseRun(argv) {
     cspOrigin: csp === undefined || csp === "" ? null : originOf("--csp-origin", csp),
     expectPosthogSink: values.has("--expect-posthog-sink"),
     rehearse: path("--rehearse"),
+    rehearsalSignatures: path("--rehearsal-signatures"),
     bundleType: bundleType ?? null,
     updatePort,
     timeoutS: values.has("--timeout-s") ? secondsOf("--timeout-s", values.get("--timeout-s"), 1) : DEFAULT_TIMEOUT_S,
@@ -668,6 +679,17 @@ function releaseFile(dir, name) {
   return stat?.isFile() === true ? { path, size: stat.size } : null;
 }
 
+/**
+ * The rehearsal's signature of `asset`, <dir>/<asset>.sig, trimmed: { text },
+ * or { error } saying why there is none.
+ */
+function rehearsalSignature(dir, asset) {
+  const file = releaseFile(dir, `${asset}.sig`);
+  if (file === null) return { error: `${dir} has no ${asset}.sig, the rehearsal's signature of ${asset}` };
+  const text = readFileSync(file.path, "utf8").trim();
+  return text === "" ? { error: `${file.path}, the rehearsal's signature of ${asset}, is empty` } : { text };
+}
+
 /** A listening server's base URL. */
 function baseUrl(server) {
   const { address, port, family } = server.address();
@@ -730,20 +752,28 @@ function sendFile(req, res, { path, size }, record) {
  * An update server for the rehearsal, not yet listening: it answers the
  * dry-run build's endpoint, GET /update/{target}/{arch}/{version}?bundle_type=…,
  * with release-assets.mjs's resolveUpdate over the release folder's
- * latest.json, offering `offerVersion` instead of the release's version, and
+ * latest.json, offering `offerVersion` instead of the release's version, with
  * the artifact's URL moved to its own /artifacts/<asset>, which serves the
- * file from the folder. It answers 204 when there is no update and 400 to a
- * malformed request, never a 2xx that isn't the update.
+ * file from the folder, and its signature taken from `signaturesDir`: the
+ * rehearsal's, <asset>.sig, made for `offerVersion`. The release's own
+ * signature names the release's version, which the updater refuses for an
+ * update offered as another. It answers 204 when there is no update, 400 to a
+ * malformed request, and 500 when the rehearsal has no signature of the
+ * artifact, never a 2xx that isn't the update.
  *
  * The server records each request's path and query in `requests`, each
  * artifact download in `downloads` ({ asset, size, bytes, complete, finished },
  * as sendFile counts them), and each refused request in `errors`. `manifest`
  * is the release's latest.json.
  *
- * @param {{ releaseDir: string, offerVersion?: string }} options
- * @throws when latest.json can't be read, or `offerVersion` isn't newer than the release
+ * @param {{ releaseDir: string, signaturesDir: string, offerVersion?: string }} options
+ * @throws when latest.json can't be read, `offerVersion` isn't newer than the
+ *   release, or `signaturesDir` isn't given
  */
-export function createUpdateServer({ releaseDir, offerVersion = OFFER_VERSION }) {
+export function createUpdateServer({ releaseDir, signaturesDir, offerVersion = OFFER_VERSION }) {
+  if (typeof signaturesDir !== "string" || signaturesDir === "") {
+    throw new Error("signaturesDir is required: the updater takes only a signature made for the version it is offered");
+  }
   let manifest;
   try {
     manifest = JSON.parse(readFileSync(join(releaseDir, MANIFEST), "utf8"));
@@ -785,8 +815,14 @@ export function createUpdateServer({ releaseDir, offerVersion = OFFER_VERSION })
         sendText(res, 500, "the release's entry for this platform has no usable url\n");
         return;
       }
+      const signature = rehearsalSignature(signaturesDir, asset);
+      if (signature.error !== undefined) {
+        errors.push(`${req.url}: ${signature.error}`);
+        sendText(res, 500, "the rehearsal has no signature of this platform's update\n");
+        return;
+      }
       if (releaseFile(releaseDir, asset) === null) errors.push(`${req.url}: offered ${asset}, which isn't in ${releaseDir}`);
-      const body = JSON.stringify({ ...update, url: `${baseUrl(server)}/artifacts/${encodeURIComponent(asset)}` });
+      const body = JSON.stringify({ ...update, url: `${baseUrl(server)}/artifacts/${encodeURIComponent(asset)}`, signature: signature.text });
       res.writeHead(200, { "content-type": "application/json", "content-length": Buffer.byteLength(body) }).end(body);
       return;
     }
@@ -1323,7 +1359,7 @@ const tail = (lines, n = 40) => lines.slice(-n).map((line) => `    ${clip(line)}
 
 /** Setup that can fail before the app starts: a SetupError for each problem. */
 async function prepare(options) {
-  const { app, home, cwd, port, rehearse, bundleType, updatePort } = options;
+  const { app, home, cwd, port, rehearse, rehearsalSignatures, bundleType, updatePort } = options;
   if (statOrNull(app)?.isFile() !== true) throw new SetupError(`--app ${app} is not a file`);
   const homeStat = statOrNull(home);
   if (homeStat !== null && !homeStat.isDirectory()) throw new SetupError(`--home ${home} is not a folder`);
@@ -1351,8 +1387,9 @@ async function prepare(options) {
   let updates = null;
   let expected = null;
   if (rehearse !== null) {
+    if (statOrNull(rehearsalSignatures)?.isDirectory() !== true) throw new SetupError(`--rehearsal-signatures ${rehearsalSignatures} is not a folder`);
     try {
-      updates = createUpdateServer({ releaseDir: rehearse });
+      updates = createUpdateServer({ releaseDir: rehearse, signaturesDir: rehearsalSignatures });
     } catch (err) {
       throw new SetupError(`--rehearse: ${err.message}`);
     }
@@ -1360,6 +1397,9 @@ async function prepare(options) {
     if (releaseFile(rehearse, expected.asset) === null) {
       throw new SetupError(`--rehearse: ${rehearse} has no ${expected.asset}, which its ${MANIFEST} offers to this platform`);
     }
+    // The signature of the update offered to this platform, the one the app will ask for.
+    const signature = rehearsalSignature(rehearsalSignatures, expected.asset);
+    if (signature.error !== undefined) throw new SetupError(`--rehearsal-signatures: ${signature.error}`);
     try {
       await listen(updates, updatePort);
     } catch (err) {
@@ -1370,14 +1410,14 @@ async function prepare(options) {
 }
 
 async function runSmoke(options, write) {
-  const { app: appPath, appArgs, home, port, cwd, legalDir, cspOrigin, expectPosthogSink, rehearse, updatePort, timeoutS, settleS } = options;
+  const { app: appPath, appArgs, home, port, cwd, legalDir, cspOrigin, expectPosthogSink, rehearse, rehearsalSignatures, updatePort, timeoutS, settleS } = options;
   const { env, logDir, updates, expected } = await prepare(options);
   const logs = new LogReader(logDir);
 
   write(`launch-smoke: ${[appPath, ...appArgs].map(shellWord).join(" ")}\n`);
   write(`  working directory ${cwd}; home ${home}; port ${port}\n`);
   write(`  log folder ${logDir}\n`);
-  if (updates !== null) write(`  update server http://127.0.0.1:${updatePort}, offering ${OFFER_VERSION} from ${rehearse}\n`);
+  if (updates !== null) write(`  update server http://127.0.0.1:${updatePort}, offering ${OFFER_VERSION} from ${rehearse}, signed for it in ${rehearsalSignatures}\n`);
   write("\n");
 
   let app;
