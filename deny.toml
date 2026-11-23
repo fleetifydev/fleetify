@@ -21,6 +21,9 @@ unsound = "all"
 # Each entry names its triage. Drop an entry once its crate is fixed or gone:
 # cargo-deny warns about an ignore that no longer matches anything.
 ignore = [
+  # cookie: the fixed release came out the day the advisory did.
+  { id = "RUSTSEC-2026-0594", reason = "cookie 0.18.1 via tauri, tauri-runtime and wry: the advisory covers PrivateJar, which needs cookie's private feature, and nothing in the tree enables it (cargo tree -e features -i cookie); take 0.18.3 once it is two weeks old, on 2026-12-07" },
+
   # rsa dev-only: fleetify-backend's integration tests sign JWTs with it.
   { id = "RUSTSEC-2023-0071", reason = "rsa dev-only: a fleetify-backend dev-dependency for signing test JWTs; no shipped binary links rsa" },
 
