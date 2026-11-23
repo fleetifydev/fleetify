@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/fleetifydev/fleetify/compare/v0.3.0...v0.3.1) (2026-11-23)
+
+
+### Bug Fixes
+
+* **shell:** keep running on the first close without asking ([#67](https://github.com/fleetifydev/fleetify/issues/67)) ([0a9dddb](https://github.com/fleetifydev/fleetify/commit/0a9dddb953af80ed1528800e09ea30c226eae99d))
+
 ## [0.3.0](https://github.com/fleetifydev/fleetify/compare/v0.2.1...v0.3.0) (2026-11-23)
 
 
