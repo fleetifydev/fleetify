@@ -85,6 +85,9 @@ winreg = "0.52"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 tempfile = "3"
 rsa = { version = "0.9", features = ["pem"] }
+# ES256 and EdDSA test keys for tests/auth_jwt.rs: the ring that jsonwebtoken
+# already signs and verifies with.
+ring = "0.17.14"
 rand = "0.8"
 tokio = { version = "1", features = ["full", "test-util"] }
 tokio-tungstenite = "0.29"

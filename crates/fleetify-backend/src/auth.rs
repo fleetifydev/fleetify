@@ -11,6 +11,8 @@ use axum::extract::{FromRef, FromRequestParts};
 use axum::http::request::Parts;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
 use fleetify_core::endpoints;
 use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use serde::Deserialize;
@@ -240,10 +242,14 @@ impl JwksCache {
                     _ => None,
                 },
                 // OKP = Ed25519 (better-auth's default). Dropping these
-                // historically made every Bearer fail kid lookup.
+                // historically made every Bearer fail kid lookup. An Ed25519
+                // public key is 32 bytes: leave out a JWK whose x is any other
+                // size (jsonwebtoken 10 and later panic when they verify with
+                // a shorter one).
                 "OKP" => jwk
                     .x
                     .as_deref()
+                    .filter(|x| URL_SAFE_NO_PAD.decode(x).is_ok_and(|b| b.len() == 32))
                     .and_then(|x| DecodingKey::from_ed_components(x).ok()),
                 _ => None,
             };
@@ -301,6 +307,10 @@ pub async fn validate_token(
     v.leeway = 60;
     v.set_audience(&[cfg.expected_audience.as_str()]);
     v.set_issuer(&[cfg.auth_base.as_str()]);
+    // jsonwebtoken treats a claim of the wrong JSON type as absent, and
+    // rejects an absent claim only when it is required: requiring `aud` and
+    // `iss` as well as `exp` keeps a malformed one from skipping its check.
+    v.set_required_spec_claims(&["exp", "aud", "iss"]);
 
     let data = decode::<serde_json::Value>(token, &key, &v).map_err(|e| {
         use jsonwebtoken::errors::ErrorKind::*;
