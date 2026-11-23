@@ -105,7 +105,7 @@ tauri-plugin-macos-fps = "0.1"
 # windows-sys's HKEY.
 [target.'cfg(windows)'.dependencies]
 tauri = { version = "2", features = ["tray-icon"] }
-winreg = "0.52"
+winreg = "0.55"
 windows-sys = { version = "0.48", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Registry", "Win32_System_Threading"] }
 
 # x11-dl: install a non-fatal X error handler (see setup() in lib.rs) — GDK
