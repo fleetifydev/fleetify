@@ -129,22 +129,33 @@ function signedFor(version) {
 const SIGNED_FOR_REHEARSAL = signedFor(REHEARSAL_VERSION);
 const SIGNED_FOR_RELEASE = signedFor(V);
 
-// ── Ports: handed out by the system, all held open together so they differ ──
+// ── Ports: handed out by the system, each held until a test takes it ──
+//
+// They're bound together, so they differ, and each stays bound until
+// takePort() releases it, just before a test hands it to the smoke. One
+// released early could go to another process meanwhile, such as another
+// test file of the run, and the smoke would then find it in use. unref():
+// the ports a run doesn't take don't keep it alive.
 
-let PORTS = [];
+let PORT_HOLDERS = [];
 before(async () => {
-  const servers = [];
   for (let i = 0; i < 48; i += 1) {
     const server = createNetServer();
     await new Promise((done) => server.listen(0, "127.0.0.1", done));
-    servers.push(server);
+    server.unref();
+    PORT_HOLDERS.push(server);
   }
-  PORTS = servers.map((server) => server.address().port);
-  await Promise.all(servers.map((server) => new Promise((done) => server.close(done))));
+});
+after(() => {
+  for (const server of PORT_HOLDERS) server.close();
+  PORT_HOLDERS = [];
 });
 const takePort = () => {
-  const port = PORTS.pop();
-  assert.ok(port, "out of test ports");
+  const server = PORT_HOLDERS.pop();
+  assert.ok(server, "out of test ports");
+  const { port } = server.address();
+  // close() frees the socket at once; only its callback waits for the next tick.
+  server.close();
   return port;
 };
 
