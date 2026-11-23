@@ -131,7 +131,7 @@ How the update installs:
 
 On Windows and macOS, closing Fleetify's window keeps Fleetify running, and your agents keep working:
 
-- **Windows:** Fleetify stays in the notification area, at the right end of the taskbar, where Windows may put its icon under the **^** arrow. Click the icon to open the window again. To quit, right-click it and choose **Quit Fleetify**. The first time you close the window, Fleetify says that it is still running, and offers to quit. If Fleetify couldn't add its icon, closing the window quits it, and **Settings → General → Window** says so.
+- **Windows:** Fleetify stays in the notification area, at the right end of the taskbar, where Windows may put its icon under the **^** arrow. Click the icon to open the window again. To quit, right-click it and choose **Quit Fleetify**. If Fleetify couldn't add its icon, closing the window quits it, and **Settings → General → Window** says so.
 - **macOS:** Fleetify stays in the Dock. Click its Dock icon to open the window again. To quit, press ⌘Q, or right-click the Dock icon and choose **Quit**.
 
 To make closing the window quit Fleetify, turn off **Settings → General → Window → Keep Fleetify running when you close the window**. On Linux, closing the window quits Fleetify.

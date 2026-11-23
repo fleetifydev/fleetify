@@ -103,16 +103,10 @@ tauri-plugin-macos-fps = "0.1"
 # needs Win32_Security for its attributes, and WaitForSingleObject. Both are
 # already in the tree. Bump them together: a RegKey handle is that
 # windows-sys's HKEY.
-# rfd shows the notice on the first close (shell::close_notice): the message
-# dialog tauri-plugin-dialog wraps, at the plugin's version and with its
-# features, so already in the tree. The plugin's own API reports Esc and the
-# dialog's close button as the second button, Quit Fleetify there; rfd
-# reports them as Cancel, which keeps Fleetify running.
 [target.'cfg(windows)'.dependencies]
 tauri = { version = "2", features = ["tray-icon"] }
 winreg = "0.52"
 windows-sys = { version = "0.48", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Registry", "Win32_System_Threading"] }
-rfd = { version = "0.16", default-features = false, features = ["common-controls-v6"] }
 
 # x11-dl: install a non-fatal X error handler (see setup() in lib.rs) — GDK
 # aborts the whole app on any async X error otherwise. Already in the

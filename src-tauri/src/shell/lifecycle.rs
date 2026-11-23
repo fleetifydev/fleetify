@@ -11,11 +11,6 @@
 //! quits, as before: a tray icon needs libayatana-appindicator at run time,
 //! and not every desktop shows one, so a hidden window could be stranded.
 //!
-//! On Windows the first close that would hide the window explains first,
-//! once (shell::close_notice): Windows puts a new notification-area icon
-//! under the ^ arrow, so a window that just disappeared would look as if
-//! Fleetify had quit.
-//!
 //! Quitting stays quitting. Nothing here prevents an exit request: only a
 //! close request hides the window, and Quit Fleetify, Cmd+Q, Restart to
 //! update and any other `AppHandle::exit` or restart exit without one. They
@@ -27,7 +22,7 @@ use serde_json::Value;
 use tauri::{AppHandle, CloseRequestApi, Manager, RunEvent, Window};
 
 use crate::shell::startup_window::{self, MAIN_WINDOW};
-use crate::shell::{close_notice, config, head_watcher, logging, tray};
+use crate::shell::{config, head_watcher, logging, tray};
 
 /// The desktop platforms, as [`close_action`] tells them apart.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,29 +104,13 @@ pub fn close_action(
 /// time, so a change in Settings counts at the next close. A window that
 /// can't be hidden closes, rather than stay on screen after its close
 /// button was pressed.
-///
-/// On Windows, the first close that would hide the main window shows the
-/// notice instead (shell::close_notice), and the window stays until it is
-/// answered; a notice that can't be shown hides the window, as before.
-/// While the notice is open, a close request changes nothing.
 pub fn on_close_requested(window: &Window, api: &CloseRequestApi) {
     let main_window = window.label() == MAIN_WINDOW;
-    if main_window && close_notice::is_open() {
-        api.prevent_close();
-        return;
-    }
     let dir = window.app_handle().path().app_data_dir().ok();
     let cfg = dir.as_deref().map(config::load_config_from);
     let keep_running = cfg.as_ref().is_none_or(keep_running_from);
     let action = close_action(main_window, PLATFORM, keep_running, tray::ready());
     if action == CloseAction::Close {
-        return;
-    }
-    #[cfg(windows)]
-    if close_notice::shows_notice(action, PLATFORM, close_notice::shown(cfg.as_ref()))
-        && close_notice::show(window, dir)
-    {
-        api.prevent_close();
         return;
     }
     match hide(window) {
@@ -145,7 +124,7 @@ pub fn on_close_requested(window: &Window, api: &CloseRequestApi) {
 /// Hides `window`. On macOS a window in full screen hides with the app, as
 /// Cmd+H does: hiding the window alone would leave its empty full-screen
 /// Space on screen.
-pub(crate) fn hide(window: &Window) -> tauri::Result<()> {
+fn hide(window: &Window) -> tauri::Result<()> {
     #[cfg(target_os = "macos")]
     if window.is_fullscreen()? {
         return window.app_handle().hide();
@@ -190,10 +169,9 @@ pub fn open_main_window(app: &AppHandle) {
 }
 
 /// Quits Fleetify, for Quit Fleetify in the notification-area icon's menu
-/// (shell::tray) and in the notice on the first close (shell::close_notice),
-/// `from` naming which, for the log. It exits through the event loop, as
-/// every quit does, so the shutdown at `RunEvent::Exit` runs ([`on_exit`])
-/// and Tauri removes the icon.
+/// (shell::tray), `from` naming it for the log. It exits through the event
+/// loop, as every quit does, so the shutdown at `RunEvent::Exit` runs
+/// ([`on_exit`]) and Tauri removes the icon.
 #[cfg(windows)]
 pub fn quit(app: &AppHandle, from: &str) {
     tracing::info!("quitting from {from}");
@@ -323,6 +301,29 @@ mod tests {
         }
     }
 
+    #[test]
+    fn the_first_close_on_windows_hides_the_window_without_asking() {
+        // The main window, on Windows, with the setting on and the
+        // notification-area icon there: a close hides the window, the first
+        // one as every later one, since nothing the decision reads remembers
+        // an earlier close. Fleetify 0.3.0 asked on the first close instead,
+        // and saved keepRunningNoticeShown once it had: a settings file may
+        // still hold that key, and the close hides the window all the same.
+        for cfg in [
+            json!({}),
+            json!({ "keepRunningOnClose": true }),
+            json!({ "keepRunningNoticeShown": true }),
+            json!({ "keepRunningOnClose": true, "keepRunningNoticeShown": true }),
+            json!({ "keepRunningOnClose": true, "keepRunningNoticeShown": false }),
+        ] {
+            assert_eq!(
+                close_action(true, Platform::Windows, keep_running_from(&cfg), true),
+                CloseAction::Hide,
+                "{cfg}"
+            );
+        }
+    }
+
     /// `source` up to its test module, with whitespace removed, so line
     /// wrapping doesn't matter. LF line endings, whatever the checkout has.
     fn code_of(source: &str) -> String {
@@ -407,5 +408,60 @@ mod tests {
         }
         assert!(walked > 10, "the walk found only {walked} source files");
         assert!(hits.is_empty(), "{hits:#?} prevent an exit request");
+    }
+
+    #[test]
+    fn no_close_asks_first() {
+        // on_close_requested goes from close_action's decision straight to
+        // hiding the window: nothing comes between to ask first, on the
+        // first close or any other, and it holds a close request back only
+        // once the window has hidden. Search strings built at run time, so
+        // this test never matches itself.
+        let code = code_of(include_str!("lifecycle.rs"));
+        let decide_then_hide = format!(
+            "letaction={}(main_window,PLATFORM,keep_running,tray::ready());\
+             ifaction==CloseAction::Close{{return;}}\
+             matchhide(window){{Ok(())=>api.{}(),",
+            "close_action", "prevent_close"
+        );
+        assert!(
+            code.contains(&decide_then_hide),
+            "on_close_requested must hide the window as soon as close_action says so"
+        );
+        assert_eq!(
+            code.matches(&format!(".{}(", "prevent_close")).count(),
+            1,
+            "on_close_requested must hold a close request back only once the window has hidden"
+        );
+    }
+
+    #[test]
+    fn nothing_reads_the_old_notice_key() {
+        // Fleetify 0.3.0 saved keepRunningNoticeShown once it had asked on
+        // the first close. A settings file may still hold it: it stays
+        // there, and no code reads or writes it. Tests may name it, to show
+        // that nothing reads it, so each file is searched up to its test
+        // module. The needle is put together at run time.
+        let key = ["keepRunning", "NoticeShown"].concat();
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut pending = vec![src];
+        let mut hits = Vec::new();
+        let mut walked = 0;
+        while let Some(dir) = pending.pop() {
+            for entry in std::fs::read_dir(&dir).expect("read a source directory") {
+                let path = entry.expect("read a directory entry").path();
+                if path.is_dir() {
+                    pending.push(path);
+                } else {
+                    walked += 1;
+                    let bytes = std::fs::read(&path).expect("read a source file");
+                    if code_of(&String::from_utf8_lossy(&bytes)).contains(&key) {
+                        hits.push(path.display().to_string());
+                    }
+                }
+            }
+        }
+        assert!(walked > 10, "the walk found only {walked} source files");
+        assert!(hits.is_empty(), "{hits:#?} name {key}");
     }
 }

@@ -30,9 +30,9 @@ pub fn ready() -> bool {
     READY.load(Ordering::SeqCst)
 }
 
-/// The menu item that quits. The notice on the first close names it too
-/// (shell::close_notice).
-pub const QUIT_LABEL: &str = "Quit Fleetify";
+/// The menu item that quits.
+#[cfg(windows)]
+const QUIT_LABEL: &str = "Quit Fleetify";
 
 /// The tray icon's image for the taskbar's theme, given the
 /// `SystemUsesLightTheme` value under
