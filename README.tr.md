@@ -16,6 +16,7 @@
 <p align="center">
   <a href="https://github.com/fleetifydev/fleetify/releases/latest"><img alt="Son sürüm" src="https://img.shields.io/github/v/release/fleetifydev/fleetify"></a>
   <a href="https://github.com/fleetifydev/fleetify/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/fleetifydev/fleetify/actions/workflows/ci.yml/badge.svg?branch=main"></a>
+  <a href="https://scorecard.dev/viewer/?uri=github.com/fleetifydev/fleetify"><img alt="OpenSSF Scorecard" src="https://api.scorecard.dev/projects/github.com/fleetifydev/fleetify/badge"></a>
   <a href="LICENSE"><img alt="Lisans: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue"></a><br><br>
   <a href="https://fleetify.dev/tr/download"><b>İndir</b></a> · <a href="https://fleetify.dev">Web sitesi</a> · <a href="#kaynaktan-derleme">Kaynaktan derleme</a> · <a href="https://github.com/fleetifydev/fleetify/discussions">Discussions</a> · <a href="CONTRIBUTING.md">Katkıda bulunma</a><br>
   <a href="README.md">English</a> · <b>Türkçe</b>

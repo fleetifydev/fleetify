@@ -4225,3 +4225,40 @@ describe("version check", () => {
     }
   });
 });
+
+describe("scorecard.yml", () => {
+  const SCORECARD = `${WORKFLOWS}/scorecard.yml`;
+  /** The steps Scorecard's API accepts in the job that publishes a result. */
+  const APPROVED = ["actions/checkout", "actions/upload-artifact", "github/codeql-action/upload-sarif", "ossf/scorecard-action"];
+  const WRITE = (permissions) => Object.entries(permissions ?? {}).filter(([, access]) => access === "write").map(([scope]) => scope);
+
+  yamlTest("keeps to what publishing a Scorecard result requires, or the API rejects it and the badge goes stale", () => {
+    const flow = workflow(SCORECARD);
+    assert.equal(flow.env, undefined, "no env at the top");
+    assert.equal(flow.defaults, undefined, "no defaults at the top");
+    assert.deepEqual(WRITE(flow.permissions), [], "no write permission at the top");
+    const jobs = Object.entries(flow.jobs ?? {});
+    const publishing = jobs.filter(([, job]) => (job.steps ?? []).some((step) => usesAction(step, "ossf/scorecard-action")));
+    assert.equal(publishing.length, 1, "one job runs the Scorecard action");
+    const [id, job] = publishing[0];
+    for (const [other, otherJob] of jobs) {
+      if (other !== id) assert.notEqual(otherJob.permissions?.["id-token"], "write", `only the Scorecard job may have id-token: write, not ${other}`);
+    }
+    assert.equal(job.permissions?.["id-token"], "write", "publishing needs id-token: write");
+    assert.deepEqual([job.env, job.defaults, job.container, job.services], [undefined, undefined, undefined, undefined], "no env, defaults, container or services in the job");
+    assert.match(String(job["runs-on"]), /^ubuntu-/, "an Ubuntu hosted runner");
+    for (const [i, step] of (job.steps ?? []).entries()) {
+      assert.equal(step.run, undefined, `step ${i + 1} must not run a script`);
+      assert.ok(APPROVED.some((name) => usesAction(step, name)), `step ${i + 1} uses ${step.uses}, which Scorecard doesn't accept`);
+    }
+    const run = job.steps.find((step) => usesAction(step, "ossf/scorecard-action"));
+    assert.equal(run.with?.publish_results, true, "the result is published for the badge");
+  });
+
+  yamlTest("runs on pushes to main and on a schedule, never on pull requests", () => {
+    const triggers = triggersOf(workflow(SCORECARD));
+    assert.deepEqual(triggers.push?.branches, ["main"]);
+    assert.ok(Array.isArray(triggers.schedule) && triggers.schedule.length > 0, "a schedule keeps the score current");
+    assert.equal(triggers.pull_request, undefined, "a pull request can't publish a result");
+  });
+});

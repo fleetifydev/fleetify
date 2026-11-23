@@ -18,6 +18,7 @@
 <p align="center">
   <a href="https://github.com/fleetifydev/fleetify/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/fleetifydev/fleetify"></a>
   <a href="https://github.com/fleetifydev/fleetify/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/fleetifydev/fleetify/actions/workflows/ci.yml/badge.svg?branch=main"></a>
+  <a href="https://scorecard.dev/viewer/?uri=github.com/fleetifydev/fleetify"><img alt="OpenSSF Scorecard" src="https://api.scorecard.dev/projects/github.com/fleetifydev/fleetify/badge"></a>
   <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue"></a>
 </p>
 
