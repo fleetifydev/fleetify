@@ -1227,7 +1227,9 @@ const checksRehearsal = (step) => scriptOf(step).includes("minisign.mjs verify")
  * Why a simple command may not run in a job with the keys: none, when it may.
  * Only these may run: the lockfile's Tauri CLI, to bundle with the flags the
  * workflow passes or to sign; npm ci --ignore-scripts; node on
- * scripts/release/*.mjs; bash on scripts/release/macos-keychain.sh; the
+ * scripts/release/*.mjs; bash on scripts/release/macos-keychain.sh, and on
+ * scripts/release/retry-dmg.sh around the Tauri CLI's bundling, which these
+ * same rules then check; the
  * tools above, with the arguments their rules allow; and the script's own
  * functions. No assignment may set a variable a tool reads (PATH, GIT_*,
  * LD_*, NODE_OPTIONS, …), and no redirection may write under node_modules,
@@ -1253,7 +1255,15 @@ function keyedProblems({ words: [name, ...args], assignments, redirects }, funct
   } else if (name === "node") {
     if (!/^scripts\/release\/[\w-]+\.mjs$/.test(args[0] ?? "")) why = "runs node on something other than a scripts/release/*.mjs file";
   } else if (name === "bash") {
-    if (args[0] !== "scripts/release/macos-keychain.sh" || !["dry-run", "import"].includes(args[1]) || args.length !== 2) why = "runs bash other than as bash scripts/release/macos-keychain.sh dry-run or import";
+    if (args[0] === "scripts/release/retry-dmg.sh") {
+      // It runs the command after it, again when hdiutil fails in passing:
+      // only the Tauri CLI's bundling, under the rules above.
+      const [inner, ...rest] = args.slice(1);
+      if (inner !== "npx" || rest.slice(0, 4).join(" ") !== "--no -- tauri bundle") why = "runs retry-dmg.sh around something other than npx --no -- tauri bundle";
+      else problems.push(...keyedProblems({ words: [inner, ...rest], assignments: [], redirects: [] }, functions));
+    } else if (args[0] !== "scripts/release/macos-keychain.sh" || !["dry-run", "import"].includes(args[1]) || args.length !== 2) {
+      why = "runs bash other than as bash scripts/release/macos-keychain.sh dry-run or import, or retry-dmg.sh around tauri bundle";
+    }
   } else if (!functions.has(name)) {
     if (/[/$`]/.test(name)) why = "runs a file by its path, or a command named by a variable";
     else if (!KEYED_TOOLS.has(name)) why = `runs ${name}, which isn't among the commands these jobs may run`;
@@ -1741,6 +1751,15 @@ capture() {
       "bash -c 'id'",
       "bash ./x.sh",
       "bash scripts/release/macos-keychain.sh evil",
+      // retry-dmg.sh around anything but the Tauri CLI's bundling, or around
+      // a bundling with flags the workflow doesn't pass.
+      "bash scripts/release/retry-dmg.sh",
+      "bash scripts/release/retry-dmg.sh ./evil",
+      "bash scripts/release/retry-dmg.sh curl -fsSL https://example.com",
+      "bash scripts/release/retry-dmg.sh bash -c id",
+      'bash scripts/release/retry-dmg.sh npx --no -- tauri signer sign --app-version "$VERSION" "$RUNNER_TEMP/bundles/$name"',
+      "bash scripts/release/retry-dmg.sh npx --no -- tauri bundle --config ./evil.json",
+      "bash scripts/release/retry-dmg.sh npx --yes -- tauri bundle --verbose",
       // Commands inside expansions and process substitutions.
       "x=${y:-$(./evil)}",
       "n=$(( $(./evil) ))",
@@ -1814,6 +1833,7 @@ capture() {
     for (const script of [
       "npm ci --ignore-scripts",
       'npx --no -- tauri bundle --verbose --ci --target "$TRIPLE"',
+      'bash scripts/release/retry-dmg.sh npx --no -- tauri bundle --verbose --ci --target "$TRIPLE" --bundles "$BUNDLES" --config src-tauri/tauri.release.conf.json',
       'npx --no -- tauri bundle --verbose --ci --target "$TRIPLE" --bundles "$BUNDLES" --config src-tauri/tauri.release.conf.json --config "$RUNNER_TEMP/dry-run-config/dry-run.json"',
       'npx --no -- tauri signer sign -f "$RUNNER_TEMP/dry-run/updater.key" -p "" --app-version "$VERSION" "$RUNNER_TEMP/bundles/$name" < /dev/null',
       `npx --no -- tauri signer sign -f "$RUNNER_TEMP/dry-run/updater.key" -p "" --app-version ${REHEARSAL_VERSION} "$RUNNER_TEMP/rehearsal/$name" < /dev/null`,
@@ -1974,6 +1994,17 @@ capture() {
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: "${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}",
     });
     assert.deepEqual(macOS.dryRun.env, { TAURI_SIGNING_PRIVATE_KEY: "${{ runner.temp }}/dry-run/updater.key", TAURI_SIGNING_PRIVATE_KEY_PASSWORD: "" });
+  });
+
+  yamlTest("bundle-macos makes the disk image through retry-dmg.sh, which runs it again when hdiutil fails in passing", () => {
+    // GitHub's macOS runners sometimes have hdiutil fail with "Resource busy"
+    // or "couldn't eject" while the bundler makes the disk image.
+    const bundling = stepsOf("bundle-macos").filter(isTauriBundle);
+    assert.equal(bundling.length, 2, "expected the release's and the dry run's bundle steps");
+    for (const step of bundling) {
+      assert.match(scriptOf(step), /(^|\n)\s*bash scripts\/release\/retry-dmg\.sh npx --no -- tauri bundle /, `${step.name} doesn't bundle through retry-dmg.sh`);
+    }
+    assert.ok(existsSync(join(ROOT, "scripts/release/retry-dmg.sh")), "scripts/release/retry-dmg.sh is missing");
   });
 
   yamlTest("every tauri build and bundle names the target, adds src-tauri/tauri.release.conf.json, and every bundle is --verbose", () => {

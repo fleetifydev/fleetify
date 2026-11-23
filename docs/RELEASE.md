@@ -47,7 +47,7 @@ The attestation step runs in a job that release.yml defines itself, so the attes
 | notices | `ubuntu-24.04` | none | writes `THIRD-PARTY-NOTICES` with cargo-about |
 | compile, ×4 | `ubuntu-24.04` (in an `ubuntu:22.04` container), `windows-2025`, `macos-15`, `macos-15-intel` | none | builds the app, its MCP sidecars and the UI, scans them for secrets, and checks the updater settings built in; on Linux and Windows it also makes the bundles, without signing them (`tauri bundle --no-sign`), and on Linux checks the glibc they need |
 | sign, ×2 | `ubuntu-24.04` | the caller's | signs the Linux and Windows updater artifacts with the Tauri CLI's signer, for the release's version (`--app-version`), and checks each signature |
-| bundle-macos, ×2 | `macos-15`, `macos-15-intel` | the caller's | bundles the macOS app and disk image, code-signs the app with the macOS identity and signs its updater archive with the updater key, which `tauri bundle` does for the version in tauri.conf.json, then checks both signatures |
+| bundle-macos, ×2 | `macos-15`, `macos-15-intel` | the caller's | bundles the macOS app and disk image, code-signs the app with the macOS identity and signs its updater archive with the updater key, which `tauri bundle` does for the version in tauri.conf.json, then checks both signatures; the bundling runs again, three attempts in all, when hdiutil fails in passing (`retry-dmg.sh`) |
 
 What keeps the keys away from the code that compiles:
 

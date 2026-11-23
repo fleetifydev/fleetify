@@ -783,6 +783,9 @@ jobs:
       # signs the app. tauri bundle bundles the binaries the compile job
       # built; it doesn't rebuild them.
       # --verbose logs each command the bundler runs (codesign, hdiutil).
+      # retry-dmg.sh runs the bundling again, up to three attempts in all,
+      # when hdiutil fails with one of the passing errors macOS runners hit
+      # ("Resource busy", "couldn't eject"); any other failure stops it.
       # None takes a secret as an argument: the updater key reaches the CLI
       # through the environment, and the identity is a certificate's name.
       # The updater key and its password are checked first, as in sign.
@@ -800,7 +803,7 @@ jobs:
             fi
           done
           if [ "$missing" = 1 ]; then exit 1; fi
-          npx --no -- tauri bundle --verbose --ci --target "$TRIPLE" --bundles "$BUNDLES" --config src-tauri/tauri.release.conf.json
+          bash scripts/release/retry-dmg.sh npx --no -- tauri bundle --verbose --ci --target "$TRIPLE" --bundles "$BUNDLES" --config src-tauri/tauri.release.conf.json
       # The run's own keys, and the overlay the app was compiled with.
       - name: Bundle (dry run)
         if: inputs.environment == 'dry-run'
@@ -808,7 +811,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ runner.temp }}/dry-run/updater.key
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         run: >-
-          npx --no -- tauri bundle --verbose --ci --target "$TRIPLE" --bundles "$BUNDLES"
+          bash scripts/release/retry-dmg.sh npx --no -- tauri bundle --verbose --ci --target "$TRIPLE" --bundles "$BUNDLES"
           --config src-tauri/tauri.release.conf.json --config "$RUNNER_TEMP/dry-run-config/dry-run.json"
       # Right after the bundling, whatever happened: nothing after it signs,
       # and codesign's checks don't need the key.
