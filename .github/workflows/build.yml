@@ -185,11 +185,16 @@ jobs:
     steps:
       # The container starts as Ubuntu's base system, without git, which
       # checkout clones with, or the tools that the next steps fetch with.
+      # Its sources point at archive.ubuntu.com and security.ubuntu.com,
+      # which can be slow for hours from GitHub's runners; the runner images
+      # themselves use Azure's mirror of the same archive, so the container
+      # does too, for this step and the system packages after it.
       - name: Base packages (Linux container)
         if: matrix.container
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
+          sed -i -e 's|http://archive.ubuntu.com/ubuntu|http://azure.archive.ubuntu.com/ubuntu|g' -e 's|http://security.ubuntu.com/ubuntu|http://azure.archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list
           apt-get update
           apt-get install -y --no-install-recommends ca-certificates curl git xz-utils
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

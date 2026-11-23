@@ -1422,6 +1422,13 @@ describe("build.yml", () => {
     assert.ok(rustup < toolchain, "rustup must come before the step that installs the toolchain with it");
     for (const i of [base, rustup]) assert.equal(steps[i].if, "matrix.container", `${steps[i].name} must run only in a container`);
     assert.deepEqual(aptPackages(scriptOf(steps[base])), ["ca-certificates", "curl", "git", "xz-utils"]);
+    // Azure's mirror of the Ubuntu archive, which the runner images use, before the first apt-get.
+    const lines = commandLines(steps[base]);
+    const mirror = lines.findIndex((line) => line.startsWith("sed -i ") && line.endsWith(" /etc/apt/sources.list"));
+    assert.ok(mirror !== -1 && mirror < lines.indexOf("apt-get update"), "the container's apt sources must move to Azure's mirror before apt-get update");
+    for (const host of ["archive.ubuntu.com", "security.ubuntu.com"]) {
+      assert.ok(lines[mirror].includes(`s|http://${host}/ubuntu|http://azure.archive.ubuntu.com/ubuntu|g`), `${host} must point at azure.archive.ubuntu.com`);
+    }
     const env = steps[rustup].env ?? {};
     assert.match(String(env.RUSTUP_VERSION), /^\d+\.\d+\.\d+$/, "rustup's installer must be pinned to a release");
     assert.match(String(env.RUSTUP_INIT_SHA256), /^[0-9a-f]{64}$/, "rustup's installer must be pinned by its SHA-256");
