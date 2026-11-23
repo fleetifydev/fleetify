@@ -405,14 +405,33 @@ jobs:
           (cd "$extract" && "${appimages[0]}" --appimage-extract > /dev/null)
           node scripts/release/appimage-libraries.mjs --root "$extract/squashfs-root" --out "$RUNNER_TEMP/unsigned/LINUX-APPIMAGE-LIBRARIES.txt"
       # Kept a week, as a release's approval can come days after the build.
+      # upload-artifact retries an HTTP error but gives up at once on a
+      # network error such as ENOTFOUND, which would throw away the whole
+      # compile. So a failed first upload doesn't fail the job: half a minute
+      # later a second one replaces whatever the first left, and fails the
+      # job if it fails too.
       - name: Upload the unsigned bundles (Linux and Windows)
+        id: upload-unsigned
         if: runner.os != 'macOS'
+        continue-on-error: true
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: unsigned-${{ matrix.triple }}
           path: ${{ runner.temp }}/unsigned
           if-no-files-found: error
           retention-days: 7
+      - name: Wait before uploading the unsigned bundles again
+        if: runner.os != 'macOS' && steps.upload-unsigned.outcome == 'failure'
+        run: sleep 30
+      - name: Upload the unsigned bundles again (Linux and Windows)
+        if: runner.os != 'macOS' && steps.upload-unsigned.outcome == 'failure'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: unsigned-${{ matrix.triple }}
+          path: ${{ runner.temp }}/unsigned
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
       # What the macOS bundler needs, as compiled-tar.mjs lists it: the app
       # and each sidecar Tauri bundles. In ustar, which the bundle job's
       # check reads, with no ._* entries for macOS's metadata; tar keeps the
@@ -427,14 +446,29 @@ jobs:
           tar --format ustar --no-mac-metadata -cf "$RUNNER_TEMP/compiled/compiled.tar" -T "$RUNNER_TEMP/compiled-files.txt"
           node scripts/release/compiled-tar.mjs unpack --target "$TRIPLE" --tar "$RUNNER_TEMP/compiled/compiled.tar" --out "$RUNNER_TEMP/compiled-check"
           rm -rf "$RUNNER_TEMP/compiled-check"
+      # Retried like the unsigned bundles above.
       - name: Upload the compiled files (macOS)
+        id: upload-compiled
         if: runner.os == 'macOS'
+        continue-on-error: true
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: compiled-${{ matrix.triple }}
           path: ${{ runner.temp }}/compiled/compiled.tar
           if-no-files-found: error
           retention-days: 7
+      - name: Wait before uploading the compiled files again
+        if: runner.os == 'macOS' && steps.upload-compiled.outcome == 'failure'
+        run: sleep 30
+      - name: Upload the compiled files again (macOS)
+        if: runner.os == 'macOS' && steps.upload-compiled.outcome == 'failure'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: compiled-${{ matrix.triple }}
+          path: ${{ runner.temp }}/compiled/compiled.tar
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
       # The jobs that sign do so with the run's key. Only this run's dry-run
       # builds trust it, so a copy among the run's own artifacts, kept for a
       # day, puts nothing else at risk.

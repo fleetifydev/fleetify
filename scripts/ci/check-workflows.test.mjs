@@ -2629,6 +2629,36 @@ capture() {
     });
   });
 
+  yamlTest("the compile job uploads its files again when the first upload fails, and a second failure still fails the job", () => {
+    // upload-artifact retries an HTTP error but gives up at once on a network
+    // error such as ENOTFOUND, which would throw away the whole compile.
+    const steps = stepsOf("compile");
+    for (const [name, os] of [["unsigned-${{ matrix.triple }}", NOT_MACOS], ["compiled-${{ matrix.triple }}", MACOS_ONLY]]) {
+      const uploads = steps.filter((step) => usesAction(step, "actions/upload-artifact") && step.with?.name === name);
+      assert.equal(uploads.length, 2, `${name}: one upload and one retry`);
+      const [first, retry] = uploads;
+      assert.ok(first.id, `${name}: the retry's condition needs the first upload's id`);
+      assert.equal(first["continue-on-error"], true, `${name}: the first upload may fail without failing the job`);
+      assert.equal(first.if, os, `${name}: the first upload runs on ${os}`);
+      assert.ok(
+        requires(retry.if, os) && requires(retry.if, `steps.${first.id}.outcome == 'failure'`),
+        `${name}: the retry runs only when the first upload failed: ${retry.if}`,
+      );
+      assert.equal(retry["continue-on-error"], undefined, `${name}: a failed retry must fail the job`);
+      assert.equal(retry.with?.overwrite, true, `${name}: the retry replaces whatever the first attempt left`);
+      const same = { ...retry.with };
+      delete same.overwrite;
+      assert.deepEqual(same, first.with, `${name}: the retry uploads the same files with the same settings`);
+      // Half a minute apart, so that a passing network or DNS blip has cleared.
+      const between = steps.slice(steps.indexOf(first) + 1, steps.indexOf(retry));
+      assert.deepEqual(
+        between.map((step) => [scriptOf(step).trim(), step.if]),
+        [["sleep 30", retry.if]],
+        `${name}: only a 30-second wait sits between the upload and its retry`,
+      );
+    }
+  });
+
   yamlTest("the compile job installs CONTRIBUTING's Linux packages", () => {
     // It builds against them, and the AppImage carries the libraries, which
     // linuxdeploy copies from the system.
