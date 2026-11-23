@@ -37,7 +37,7 @@ Four stdio JSON-RPC 2.0 MCP servers, each a workspace crate emitting a
 
 | Crate | Binary | Tools | Purpose |
 |---|---|---|---|
-| `crates/memory-mcp` | `fleet-memory-mcp` | `remember(title, content, kind?)`, `recall(query?, limit?)` | Project-scoped long-term memory that survives across sessions. Talks back to the backend at `/api/sessions/{id}/memory`. |
+| `crates/memory-mcp` | `fleet-memory-mcp` | `remember(title, content, kind?)`, `recall(query?, limit?)` | Project-scoped long-term memory that survives across sessions. Reads and writes its session's memory through `GET`/`POST /api/internal/memory`, with the internal secret and its session id (the window's `/api/sessions/{id}/memory` needs the per-run API token, which a sidecar never holds). |
 | `crates/dispatch-mcp` | `fleet-dispatch-mcp` | `dispatch_to_agent(agent, task)` | Agent-to-agent task routing without returning to the user. Rate-limited (5 / 60 s / session); self-dispatch refused. POSTs `/api/internal/dispatch`. |
 | `crates/reveng-mcp` | `fleet-reveng-mcp` | `fetch_url`, `discover_assets`, `find_endpoints`, `save_asset` | Reverse-engineering toolkit (scrape + asset/endpoint discovery). Pure-local; writes under `<project>/.fleetify/reveng-assets/`. |
 | `crates/browser-mcp` | `fleet-browser-mcp` | `navigate`, `read_page`, `click`, `fill`, `inspect`, `back`, `forward`, `reload`, `screenshot`, `eval` | Browser automation. Owns no browser: it forwards each call to the backend's shared browser service (`POST /api/internal/browser/action`), so the agent and the user's Browser panel drive the same page. Headless Chromium starts on the first call. |
@@ -48,17 +48,15 @@ vars in their MCP config (`builtin_mcp_config`, §3):
 
 - `FLEETIFY_SESSION_ID` — scopes memory / rate-limits dispatch.
 - `FLEETIFY_BACKEND_URL` — defaults to `http://127.0.0.1:8765`.
-- `FLEETIFY_INTERNAL_SECRET` — loopback shared secret, sent as `X-Fleet-Internal` (dispatch, browser). The permission MCP gets the same secret as `Authorization: Bearer` in its HTTP config.
+- `FLEETIFY_INTERNAL_SECRET` — loopback shared secret, sent as `X-Fleet-Internal` (memory, dispatch, browser). The permission MCP gets the same secret as `Authorization: Bearer` in its HTTP config.
 
 Exposed to the model as `mcp__<server>__<tool>`, e.g.
 `mcp__fleet_memory__remember`, `mcp__fleet_dispatch__dispatch_to_agent`.
 
 **Known issues:**
 
-- `fleet-memory-mcp` calls the backend with `Authorization: Bearer $FLEETIFY_BEARER`,
-  but nothing sets `FLEETIFY_BEARER`, so `remember` and `recall` currently fail.
 - `fleet-reveng-mcp`'s `save_asset` writes under `$FLEETIFY_PROJECT_PATH`, which
-  nothing sets either, so it fails too; the other reveng tools work.
+  nothing sets, so it fails; the other reveng tools work.
 
 ---
 

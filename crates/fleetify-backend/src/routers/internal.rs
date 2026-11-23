@@ -19,30 +19,37 @@
 //!   5. Spawn the target's bridge in the background (same path as
 //!      the staff `[[DISPATCH:]]` token).
 //!   6. Return `{ ok, target_session_id, task_dispatched }` to the MCP.
+//!
+//! `GET` and `POST /api/internal/memory` are the `fleet-memory-mcp`
+//! sidecar's way to the caller session's memory (`recall` and `remember`),
+//! with the same secret and the caller's session id.
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use axum::routing::post;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::access::constant_time_eq;
 use crate::models::session::Session;
+use crate::routers::sessions::{add_session_memory, list_session_memory, MEMORY_LIST_MAX};
 use crate::routers::{ApiError, AppState};
 
 pub fn router() -> Router<AppState> {
     // Mounted at `/api/internal` by `http::app`; this router just
     // adds the leaf routes so the final paths are
     // `POST /api/internal/dispatch`,
+    // `GET`/`POST /api/internal/memory`,
     // `POST /api/internal/permission_prompt`,
     // `POST /api/internal/routing/reload`, and
     // `POST /api/internal/providers/reload`.
     Router::new()
         .route("/dispatch", post(dispatch))
         .route("/spawn", post(spawn))
+        .route("/memory", get(memory_list).post(memory_create))
         .route("/permission_prompt", post(permission_prompt))
         // In-process MCP-over-HTTP permission server. Claude connects here as
         // a Streamable-HTTP MCP server (URL + Bearer baked into --mcp-config
@@ -56,6 +63,98 @@ pub fn router() -> Router<AppState> {
         .route("/providers/reload", post(providers_reload))
         .route("/providers/warm-health", post(providers_warm_health))
         .route("/accounts/http", axum::routing::get(http_accounts))
+}
+
+/// The memory routes' secret check, the one every route here makes:
+/// `X-Fleet-Internal` against the internal secret, in constant time.
+fn check_internal_secret(headers: &HeaderMap, secret: &str) -> Result<(), ApiError> {
+    let presented = headers
+        .get("x-fleet-internal")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if !constant_time_eq(presented.as_bytes(), secret.as_bytes()) {
+        return Err(ApiError::Forbidden("internal-secret mismatch".into()));
+    }
+    Ok(())
+}
+
+/// The caller's session, resolved as `spawn` resolves it: an empty id is a
+/// 400, an id no session has a 404.
+async fn caller_session(st: &AppState, caller_session_id: &str) -> Result<Session, ApiError> {
+    let caller = caller_session_id.trim();
+    if caller.is_empty() {
+        return Err(ApiError::BadRequest("caller_session_id is required".into()));
+    }
+    sqlx::query_as::<_, Session>("SELECT * FROM sessions WHERE id = ?")
+        .bind(caller)
+        .fetch_optional(&st.auth.pool)
+        .await?
+        .ok_or_else(|| ApiError::NotFound(format!("caller session {caller} not found")))
+}
+
+/// Body for `POST /api/internal/memory`, the memory sidecar's `remember`.
+/// Every field defaults to empty, so a body without one gets the handler's
+/// answer, after the secret check, rather than a deserialization error.
+#[derive(Deserialize)]
+struct MemoryCreateBody {
+    /// Caller session id (set from FLEETIFY_SESSION_ID on the MCP side).
+    #[serde(default)]
+    caller_session_id: String,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    content: String,
+    /// One of `MEMORY_KINDS`; anything else, empty included, saves `note`.
+    #[serde(default)]
+    kind: String,
+}
+
+/// Query for `GET /api/internal/memory`, the memory sidecar's `recall`.
+/// Like [`MemoryCreateBody`], a missing caller id gets the handler's answer.
+#[derive(Deserialize)]
+struct MemoryListQuery {
+    #[serde(default)]
+    caller_session_id: String,
+    /// At most this many notes, newest first; [`MEMORY_LIST_MAX`] when unset.
+    limit: Option<i64>,
+}
+
+/// `POST /api/internal/memory` — save a note in the caller session's
+/// memory, as `agent`, for the memory sidecar's `remember` tool. The sidecar
+/// can't use `POST /api/sessions/{id}/memory`: that needs this run's API
+/// token, which only the window holds.
+async fn memory_create(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(b): Json<MemoryCreateBody>,
+) -> Result<Json<Value>, ApiError> {
+    check_internal_secret(&headers, &st.internal_secret)?;
+    let caller = caller_session(&st, &b.caller_session_id).await?;
+    let note = add_session_memory(
+        &st.auth.pool,
+        &caller,
+        &b.title,
+        &b.content,
+        &b.kind,
+        "agent",
+    )
+    .await?;
+    Ok(Json(note))
+}
+
+/// `GET /api/internal/memory` — the caller session's memory, newest first,
+/// for the memory sidecar's `recall` tool: what `GET
+/// /api/sessions/{id}/memory` shows the window.
+async fn memory_list(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<MemoryListQuery>,
+) -> Result<Json<Value>, ApiError> {
+    check_internal_secret(&headers, &st.internal_secret)?;
+    let caller = caller_session(&st, &q.caller_session_id).await?;
+    let limit = q.limit.unwrap_or(MEMORY_LIST_MAX);
+    let notes = list_session_memory(&st.auth.pool, &caller, limit).await?;
+    Ok(Json(Value::Array(notes)))
 }
 
 /// Loopback-only: list every HTTP provider account (the ones whose API key
@@ -1111,6 +1210,265 @@ mod tests {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), 400);
+    }
+
+    const CALLER: &str = "aaaaaaaa-0000-0000-0000-000000000001";
+    /// A session on another project than [`CALLER`]'s.
+    const OTHER: &str = "bbbbbbbb-0000-0000-0000-000000000002";
+
+    /// `POST /api/internal/memory` with `body`, and `secret` in
+    /// `X-Fleet-Internal` unless it is `None`.
+    fn memory_post(secret: Option<&str>, body: Value) -> Request<Body> {
+        let mut req = Request::builder()
+            .method("POST")
+            .uri("/api/internal/memory")
+            .header("content-type", "application/json");
+        if let Some(secret) = secret {
+            req = req.header("X-Fleet-Internal", secret);
+        }
+        req.body(Body::from(body.to_string())).unwrap()
+    }
+
+    /// `GET /api/internal/memory` with `query`, and `secret` in
+    /// `X-Fleet-Internal` unless it is `None`.
+    fn memory_get(secret: Option<&str>, query: &[(&str, &str)]) -> Request<Body> {
+        let mut pairs = url::form_urlencoded::Serializer::new(String::new());
+        for (name, value) in query {
+            pairs.append_pair(name, value);
+        }
+        let mut req = Request::builder()
+            .method("GET")
+            .uri(format!("/api/internal/memory?{}", pairs.finish()));
+        if let Some(secret) = secret {
+            req = req.header("X-Fleet-Internal", secret);
+        }
+        req.body(Body::empty()).unwrap()
+    }
+
+    async fn json_body(resp: Response) -> Value {
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        serde_json::from_slice(&body).unwrap()
+    }
+
+    /// Every saved note: session, project, title, content, kind, author.
+    async fn memory_rows(
+        pool: &sqlx::SqlitePool,
+    ) -> Vec<(String, Option<String>, String, String, String, String)> {
+        sqlx::query_as(
+            "SELECT session_id, project_path, title, content, kind, created_by \
+             FROM session_memory",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn memory_saved_through_the_internal_route_lands_in_the_callers_session() {
+        let (app, pool, _sm) = build_app("s").await;
+        let resp = app
+            .clone()
+            .oneshot(memory_post(
+                Some("s"),
+                json!({
+                    "caller_session_id": CALLER,
+                    "title": "Use sqlx",
+                    "content": "The session store is SQLite.",
+                    "kind": "decision",
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let saved = json_body(resp).await;
+        assert_eq!(saved["title"], "Use sqlx");
+        assert_eq!(saved["kind"], "decision");
+        assert_eq!(saved["created_by"], "agent", "an agent's remember call");
+
+        assert_eq!(
+            memory_rows(&pool).await,
+            [(
+                CALLER.to_string(),
+                Some(format!("/tmp/{CALLER}")),
+                "Use sqlx".to_string(),
+                "The session store is SQLite.".to_string(),
+                "decision".to_string(),
+                "agent".to_string(),
+            )],
+            "the note belongs to the caller's session and project"
+        );
+
+        let resp = app
+            .clone()
+            .oneshot(memory_get(Some("s"), &[("caller_session_id", CALLER)]))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let notes = json_body(resp).await;
+        let notes = notes.as_array().expect("an array of notes");
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0]["id"], saved["id"]);
+        assert_eq!(notes[0]["content"], "The session store is SQLite.");
+        assert_eq!(notes[0]["from_other_session"], false);
+
+        // A session on another project doesn't see it.
+        let resp = app
+            .oneshot(memory_get(Some("s"), &[("caller_session_id", OTHER)]))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        assert_eq!(json_body(resp).await, json!([]));
+    }
+
+    #[tokio::test]
+    async fn memory_saved_by_one_session_is_recalled_by_a_later_one_on_the_project() {
+        let (app, pool, _sm) = build_app("s").await;
+        let resp = app
+            .clone()
+            .oneshot(memory_post(
+                Some("s"),
+                json!({ "caller_session_id": CALLER, "title": "t", "content": "c" }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+
+        let later = "cccccccc-0000-0000-0000-000000000003";
+        sqlx::query(
+            "INSERT INTO sessions \
+             (id,title,project_path,group_path,tool,command,status,\
+              use_worktree,permission_mode,session_mode,pinned,order_idx,\
+              budget_used,created_at,user_id) \
+             VALUES (?,'Later',?,'','claude-code','','idle',1,'default','new',0,0,0.0,?,'user-1')",
+        )
+        .bind(later)
+        .bind(format!("/tmp/{CALLER}"))
+        .bind(chrono::Utc::now().to_rfc3339())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let resp = app
+            .oneshot(memory_get(Some("s"), &[("caller_session_id", later)]))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let notes = json_body(resp).await;
+        assert_eq!(notes.as_array().map(Vec::len), Some(1), "{notes}");
+        assert_eq!(notes[0]["title"], "t");
+        assert_eq!(notes[0]["from_other_session"], true);
+    }
+
+    #[tokio::test]
+    async fn memory_recall_returns_the_newest_notes_up_to_the_limit() {
+        let (app, pool, _sm) = build_app("s").await;
+        for (i, title) in ["first", "second", "third"].into_iter().enumerate() {
+            sqlx::query(
+                "INSERT INTO session_memory \
+                 (id,session_id,project_path,title,content,kind,created_at,created_by) \
+                 VALUES (?,?,?,?,'c','note',?,'user')",
+            )
+            .bind(format!("note-{i}"))
+            .bind(CALLER)
+            .bind(format!("/tmp/{CALLER}"))
+            .bind(title)
+            .bind(format!("2026-01-01T00:00:0{i}Z"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        let resp = app
+            .oneshot(memory_get(
+                Some("s"),
+                &[("caller_session_id", CALLER), ("limit", "2")],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let notes = json_body(resp).await;
+        let titles: Vec<&str> = notes
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|n| n["title"].as_str().unwrap())
+            .collect();
+        assert_eq!(titles, ["third", "second"]);
+    }
+
+    #[tokio::test]
+    async fn memory_routes_refuse_a_missing_or_wrong_secret() {
+        let (app, pool, _sm) = build_app("correct-secret").await;
+        let note = json!({ "caller_session_id": CALLER, "title": "t", "content": "c" });
+        for secret in [None, Some("wrong")] {
+            let resp = app
+                .clone()
+                .oneshot(memory_post(secret, note.clone()))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), 403, "POST with secret {secret:?}");
+            let resp = app
+                .clone()
+                .oneshot(memory_get(secret, &[("caller_session_id", CALLER)]))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), 403, "GET with secret {secret:?}");
+        }
+        assert!(memory_rows(&pool).await.is_empty(), "a refused POST saved");
+    }
+
+    #[tokio::test]
+    async fn memory_routes_refuse_an_unknown_or_empty_caller() {
+        let (app, pool, _sm) = build_app("s").await;
+        for (caller, status) in [("", 400), ("   ", 400), ("no-such-session", 404)] {
+            let resp = app
+                .clone()
+                .oneshot(memory_post(
+                    Some("s"),
+                    json!({ "caller_session_id": caller, "title": "t", "content": "c" }),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), status, "POST for caller {caller:?}");
+            let resp = app
+                .clone()
+                .oneshot(memory_get(Some("s"), &[("caller_session_id", caller)]))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), status, "GET for caller {caller:?}");
+        }
+        // No caller at all.
+        let resp = app
+            .clone()
+            .oneshot(memory_post(
+                Some("s"),
+                json!({ "title": "t", "content": "c" }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 400, "POST without a caller");
+        let resp = app.oneshot(memory_get(Some("s"), &[])).await.unwrap();
+        assert_eq!(resp.status(), 400, "GET without a caller");
+        assert!(memory_rows(&pool).await.is_empty(), "a refused POST saved");
+    }
+
+    #[tokio::test]
+    async fn memory_save_needs_a_title_and_content() {
+        let (app, pool, _sm) = build_app("s").await;
+        for note in [
+            json!({ "caller_session_id": CALLER, "title": "  ", "content": "c" }),
+            json!({ "caller_session_id": CALLER, "title": "t", "content": "" }),
+            json!({ "caller_session_id": CALLER }),
+        ] {
+            let resp = app
+                .clone()
+                .oneshot(memory_post(Some("s"), note.clone()))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), 400, "{note}");
+        }
+        assert!(memory_rows(&pool).await.is_empty(), "a refused POST saved");
     }
 
     #[tokio::test]

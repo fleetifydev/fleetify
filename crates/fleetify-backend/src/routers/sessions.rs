@@ -1097,31 +1097,103 @@ async fn get_memory_files(
     Ok(Json(json!({ "files": files })))
 }
 
+/// The most notes [`list_session_memory`] returns.
+pub(crate) const MEMORY_LIST_MAX: i64 = 200;
+
+/// The memory session `s` sees, newest first: its own notes, and those any
+/// session on the same project saved (`from_other_session`). At most
+/// `limit` notes, `limit` held to 1..=[`MEMORY_LIST_MAX`].
+///
+/// The window reads it here (`GET /api/sessions/{id}/memory`), the memory
+/// sidecar's `recall` through `GET /api/internal/memory`.
+pub(crate) async fn list_session_memory(
+    pool: &sqlx::SqlitePool,
+    s: &Session,
+    limit: i64,
+) -> Result<Vec<Value>, ApiError> {
+    let rows: Vec<(String, String, String, String, String, String, String)> = sqlx::query_as(
+        "SELECT id,session_id,title,content,kind,created_at,created_by \
+             FROM session_memory WHERE session_id = ? \
+             OR (project_path IS NOT NULL AND project_path = ?) \
+             ORDER BY created_at DESC LIMIT ?",
+    )
+    .bind(&s.id)
+    .bind(&s.project_path)
+    .bind(limit.clamp(1, MEMORY_LIST_MAX))
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(rid, sid, title, content, kind, created_at, by)| {
+            json!({"id": rid, "title": title, "content": content, "kind": kind,
+                   "created_at": created_at, "created_by": by,
+                   "from_other_session": sid != s.id})
+        })
+        .collect())
+}
+
+/// Save a note in session `s`'s memory and return it. `created_by` says who
+/// wrote it: `user` from the window (`POST /api/sessions/{id}/memory`),
+/// `agent` from the memory sidecar's `remember` (`POST /api/internal/memory`).
+///
+/// The title and content are trimmed, and either one empty is a 400; they
+/// are cut to 300 and 4000 characters. A kind outside [`MEMORY_KINDS`] is
+/// saved as `note`. The note carries the session's project, so every
+/// session on that project recalls it.
+pub(crate) async fn add_session_memory(
+    pool: &sqlx::SqlitePool,
+    s: &Session,
+    title: &str,
+    content: &str,
+    kind: &str,
+    created_by: &str,
+) -> Result<Value, ApiError> {
+    let title = title.trim();
+    let content = content.trim();
+    if title.is_empty() || content.is_empty() {
+        return Err(ApiError::BadRequest(
+            "title and content are required".into(),
+        ));
+    }
+    let mut kind = kind.trim().to_lowercase();
+    if !MEMORY_KINDS.contains(&kind.as_str()) {
+        kind = "note".into();
+    }
+    let rid = uuid::Uuid::new_v4().to_string();
+    let created = chrono::Utc::now().to_rfc3339();
+    let pp: Option<&str> = if s.project_path.is_empty() {
+        None
+    } else {
+        Some(s.project_path.as_str())
+    };
+    let title_t = trunc(title, 300);
+    let content_t = trunc(content, 4000);
+    sqlx::query(
+        "INSERT INTO session_memory (id,session_id,project_path,title,content,kind,created_at,created_by) \
+         VALUES (?,?,?,?,?,?,?,?)",
+    )
+    .bind(&rid)
+    .bind(&s.id)
+    .bind(pp)
+    .bind(title_t.as_str())
+    .bind(content_t.as_str())
+    .bind(&kind)
+    .bind(&created)
+    .bind(created_by)
+    .execute(pool)
+    .await?;
+    Ok(json!({"id": rid, "title": title_t, "content": content_t,
+        "kind": kind, "created_at": created, "created_by": created_by}))
+}
+
 async fn get_memory(
     State(st): State<AppState>,
     AuthUser(user): AuthUser,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
     let s = owned(&st, &id, &user.id).await?;
-    let rows: Vec<(String, String, String, String, String, String, String)> = sqlx::query_as(
-        "SELECT id,session_id,title,content,kind,created_at,created_by \
-             FROM session_memory WHERE session_id = ? \
-             OR (project_path IS NOT NULL AND project_path = ?) \
-             ORDER BY created_at DESC LIMIT 200",
-    )
-    .bind(&id)
-    .bind(&s.project_path)
-    .fetch_all(&st.auth.pool)
-    .await?;
-    let out: Vec<Value> = rows
-        .into_iter()
-        .map(|(rid, sid, title, content, kind, created_at, by)| {
-            json!({"id": rid, "title": title, "content": content, "kind": kind,
-                   "created_at": created_at, "created_by": by,
-                   "from_other_session": sid != id})
-        })
-        .collect();
-    Ok(Json(Value::Array(out)))
+    let notes = list_session_memory(&st.auth.pool, &s, MEMORY_LIST_MAX).await?;
+    Ok(Json(Value::Array(notes)))
 }
 
 #[derive(Deserialize)]
@@ -1142,43 +1214,8 @@ async fn create_memory(
     Json(b): Json<MemCreate>,
 ) -> Result<Json<Value>, ApiError> {
     let s = owned(&st, &id, &user.id).await?;
-    let title = b.title.trim();
-    let content = b.content.trim();
-    if title.is_empty() || content.is_empty() {
-        return Err(ApiError::BadRequest(
-            "title and content are required".into(),
-        ));
-    }
-    let mut kind = b.kind.trim().to_lowercase();
-    if !MEMORY_KINDS.contains(&kind.as_str()) {
-        kind = "note".into();
-    }
-    let rid = uuid::Uuid::new_v4().to_string();
-    let created = chrono::Utc::now().to_rfc3339();
-    let pp: Option<&str> = if s.project_path.is_empty() {
-        None
-    } else {
-        Some(s.project_path.as_str())
-    };
-    let title_t = trunc(title, 300);
-    let content_t = trunc(content, 4000);
-    sqlx::query(
-        "INSERT INTO session_memory (id,session_id,project_path,title,content,kind,created_at,created_by) \
-         VALUES (?,?,?,?,?,?,?,'user')",
-    )
-    .bind(&rid)
-    .bind(&id)
-    .bind(pp)
-    .bind(title_t.as_str())
-    .bind(content_t.as_str())
-    .bind(&kind)
-    .bind(&created)
-    .execute(&st.auth.pool)
-    .await?;
-    Ok(Json(
-        json!({"id": rid, "title": title_t, "content": content_t,
-        "kind": kind, "created_at": created, "created_by": "user"}),
-    ))
+    let note = add_session_memory(&st.auth.pool, &s, &b.title, &b.content, &b.kind, "user").await?;
+    Ok(Json(note))
 }
 
 #[derive(Deserialize)]
