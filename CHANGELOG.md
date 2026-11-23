@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.3.0](https://github.com/fleetifydev/fleetify/compare/v0.2.1...v0.3.0) (2026-11-23)
+
+
+### Features
+
+* **shell:** keep running in the notification area when the window is closed ([#37](https://github.com/fleetifydev/fleetify/issues/37)) ([33308be](https://github.com/fleetifydev/fleetify/commit/33308be599d00a1aee663bece59e05b1c2e18e5a))
+
+
+### Bug Fixes
+
+* **auth:** require the sign-in token's audience and issuer ([#51](https://github.com/fleetifydev/fleetify/issues/51)) ([e6286f0](https://github.com/fleetifydev/fleetify/commit/e6286f080b246203a5ead979f0753aca0d173b03))
+* **updater:** bind each update's signature to its version ([#48](https://github.com/fleetifydev/fleetify/issues/48)) ([1587464](https://github.com/fleetifydev/fleetify/commit/1587464445e34fb28f6551bea8b8249597332c53))
+
+
+### Dependencies
+
+* drop sonner, which nothing uses ([#45](https://github.com/fleetifydev/fleetify/issues/45)) ([56ea42a](https://github.com/fleetifydev/fleetify/commit/56ea42adb75d1001bde25c7cbeb80e8e5bd361d5))
+* update react-router and fflate, and use one KaTeX everywhere ([#47](https://github.com/fleetifydev/fleetify/issues/47)) ([ee4d67c](https://github.com/fleetifydev/fleetify/commit/ee4d67c0aa0919a0408479928b62c29dbcc201f8))
+* update serde_with to 3.21 ([#52](https://github.com/fleetifydev/fleetify/issues/52)) ([f4af81b](https://github.com/fleetifydev/fleetify/commit/f4af81bed2e995485692dc3bbc27f0c726979284))
+* update the Rust and npm runtime dependencies ([#43](https://github.com/fleetifydev/fleetify/issues/43)) ([b0069f1](https://github.com/fleetifydev/fleetify/commit/b0069f1f0058399d27422677426272eb494b6f0b))
+* update tokio-tungstenite to 0.29 ([#44](https://github.com/fleetifydev/fleetify/issues/44)) ([626d4ee](https://github.com/fleetifydev/fleetify/commit/626d4eee0a9a45a07f5db4b21bd2ba888b0a9c3c))
+
 ## [0.2.1](https://github.com/fleetifydev/fleetify/compare/v0.2.0...v0.2.1) (2026-11-22)
 
 
