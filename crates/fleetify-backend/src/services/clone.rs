@@ -172,14 +172,38 @@ pub fn clone_dir_key(url: &str) -> String {
 
 /// Clone `url` into `~/.fleetify/clones/<host>/<owner>/<repo>/` or fetch
 /// if already present. Returns `(absolute_path, current_branch)`.
-pub async fn clone_or_pull(
-    url: &str,
-    branch: Option<&str>,
-) -> Result<(String, String), CloneError> {
+/// A remote URL as the user gave it, trimmed. One that starts with `-`
+/// would reach git as an option rather than a repository, so it's refused
+/// before git runs; every call also ends git's options with `--`.
+fn remote_url(url: &str) -> Result<&str, CloneError> {
     let url = url.trim();
     if url.is_empty() {
         return Err(CloneError::Failed("Empty URL".into()));
     }
+    if url.starts_with('-') {
+        return Err(CloneError::Failed(
+            "A repository URL can't start with '-'".into(),
+        ));
+    }
+    Ok(url)
+}
+
+/// `git clone`'s arguments: options, then `--`, then the URL and the folder.
+fn clone_args<'a>(url: &'a str, branch: Option<&'a str>, path: &'a str) -> Vec<&'a str> {
+    let mut args = vec!["-c", "credential.helper=", "clone", "--filter=blob:none"];
+    if let Some(b) = branch {
+        args.push("--branch");
+        args.push(b);
+    }
+    args.extend(["--", url, path]);
+    args
+}
+
+pub async fn clone_or_pull(
+    url: &str,
+    branch: Option<&str>,
+) -> Result<(String, String), CloneError> {
+    let url = remote_url(url)?;
     let key = clone_dir_key(url);
     let root = clones_root();
     let path = root.join(&key);
@@ -217,13 +241,7 @@ pub async fn clone_or_pull(
         // disables Git Credential Manager so a non-interactive run fails fast
         // instead of blocking on a username prompt.
         let auth_url = inject_github_token(url);
-        let mut args: Vec<&str> = vec!["-c", "credential.helper=", "clone", "--filter=blob:none"];
-        if let Some(b) = branch {
-            args.push("--branch");
-            args.push(b);
-        }
-        args.push(&auth_url);
-        args.push(&path_str);
+        let args = clone_args(&auth_url, branch, &path_str);
         let (rc, _out, err) = git_cmd(&args, None, 300).await;
         if rc != 0 {
             // Best-effort cleanup so a partial clone doesn't block the next
@@ -266,13 +284,10 @@ pub async fn clone_or_pull(
 /// through the system git credential helper, so private repos work
 /// exactly like `git clone` does.
 pub async fn check_accessible(url: &str) -> Result<(), CloneError> {
-    let url = url.trim();
-    if url.is_empty() {
-        return Err(CloneError::Failed("Empty URL".into()));
-    }
+    let url = remote_url(url)?;
     let mut cmd = fleetify_core::process::tokio_command("git");
     cmd.env("GIT_TERMINAL_PROMPT", "0");
-    cmd.args(["ls-remote", url]);
+    cmd.args(["ls-remote", "--", url]);
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
     let output = tokio::time::timeout(std::time::Duration::from_secs(20), cmd.output()).await;
@@ -343,10 +358,7 @@ fn parse_ls_remote(out: &str) -> RemoteBranches {
 /// clone itself (GitHub token injection for private repos, credential helper
 /// disabled so a missing credential fails fast instead of prompting).
 pub async fn list_remote_branches(url: &str) -> Result<RemoteBranches, CloneError> {
-    let url = url.trim();
-    if url.is_empty() {
-        return Err(CloneError::Failed("Empty URL".into()));
-    }
+    let url = remote_url(url)?;
     let auth_url = inject_github_token(url);
     let mut cmd = fleetify_core::process::tokio_command("git");
     cmd.env("GIT_TERMINAL_PROMPT", "0");
@@ -355,6 +367,7 @@ pub async fn list_remote_branches(url: &str) -> Result<RemoteBranches, CloneErro
         "credential.helper=",
         "ls-remote",
         "--symref",
+        "--",
         &auth_url,
         "HEAD",
         "refs/heads/*",
@@ -485,6 +498,60 @@ mod tests {
         // never produce an empty or path-traversing key.
         assert_eq!(clone_dir_key("weird-name"), "weird-name");
         assert_eq!(clone_dir_key("/"), "repo");
+    }
+
+    #[test]
+    fn remote_url_refuses_what_git_would_read_as_an_option() {
+        for url in ["-uhelp", "--upload-pack=touch marker", "  -x  "] {
+            let err = remote_url(url).expect_err(url);
+            assert!(
+                err.to_string().contains("can't start with '-'"),
+                "{url}: {err}"
+            );
+        }
+        assert!(remote_url("").is_err());
+        assert!(remote_url("   ").is_err());
+        assert_eq!(
+            remote_url("  https://github.com/a/b  ").unwrap(),
+            "https://github.com/a/b"
+        );
+        assert_eq!(
+            remote_url("git@github.com:a/b.git").unwrap(),
+            "git@github.com:a/b.git"
+        );
+    }
+
+    #[test]
+    fn clone_args_end_options_before_the_url() {
+        let args = clone_args("https://github.com/a/b", Some("main"), "/tmp/b");
+        let sep = args
+            .iter()
+            .position(|a| *a == "--")
+            .expect("a -- separator");
+        assert_eq!(&args[sep + 1..], ["https://github.com/a/b", "/tmp/b"]);
+        assert!(
+            args[..sep].contains(&"--branch"),
+            "options stay before --: {args:?}"
+        );
+        let plain = clone_args("https://github.com/a/b", None, "/tmp/b");
+        assert_eq!(
+            &plain[plain.len() - 3..],
+            ["--", "https://github.com/a/b", "/tmp/b"]
+        );
+    }
+
+    #[tokio::test]
+    async fn option_shaped_urls_never_reach_git() {
+        for url in ["-uhelp", "--upload-pack=touch marker"] {
+            let msg = |e: CloneError| e.to_string();
+            assert!(msg(check_accessible(url).await.unwrap_err()).contains("can't start with '-'"));
+            assert!(
+                msg(list_remote_branches(url).await.unwrap_err()).contains("can't start with '-'")
+            );
+            assert!(
+                msg(clone_or_pull(url, None).await.unwrap_err()).contains("can't start with '-'")
+            );
+        }
     }
 
     #[tokio::test]
