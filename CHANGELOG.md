@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.3.2](https://github.com/fleetifydev/fleetify/compare/v0.3.1...v0.3.2) (2026-11-23)
+
+
+### Bug Fixes
+
+* **backend:** end git's options before a repository URL ([#81](https://github.com/fleetifydev/fleetify/issues/81)) ([7995590](https://github.com/fleetifydev/fleetify/commit/7995590aae661d48609a99ed741ab97c0743c55a))
+* **memory:** let memory-mcp reach the backend in every build ([#82](https://github.com/fleetifydev/fleetify/issues/82)) ([3c218c7](https://github.com/fleetifydev/fleetify/commit/3c218c7fe0d4db0635bec139399a74231997c8b4))
+
+
+### Dependencies
+
+* bump arboard from 3.6.1 to 3.7.0 ([#65](https://github.com/fleetifydev/fleetify/issues/65)) ([f6ef78d](https://github.com/fleetifydev/fleetify/commit/f6ef78dc21b421eec45900330f8d41be8d2d0df3))
+* bump react-markdown from 9.1.0 to 10.1.0 ([#61](https://github.com/fleetifydev/fleetify/issues/61)) ([75d713a](https://github.com/fleetifydev/fleetify/commit/75d713ae5402f22d3a954b196282230b0563d3c0))
+* bump the npm-production group across 1 directory with 2 updates ([#70](https://github.com/fleetifydev/fleetify/issues/70)) ([0eaaaf1](https://github.com/fleetifydev/fleetify/commit/0eaaaf10acdd756b8ec5a91632a495c5c3cc9a7c))
+* bump tokio from 1.53.3 to 1.54.1 ([#64](https://github.com/fleetifydev/fleetify/issues/64)) ([ff1f1ec](https://github.com/fleetifydev/fleetify/commit/ff1f1ecd59fd64945de789ff84eccacd06a903cb))
+
 ## [0.3.1](https://github.com/fleetifydev/fleetify/compare/v0.3.0...v0.3.1) (2026-11-23)
 
 
