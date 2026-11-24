@@ -13,7 +13,8 @@
  *  mangling the input.
  */
 export function normalizeCloneUrl(input: string): string {
-  const trimmed = input.trim().replace(/\/+$/, "");
+  // Trailing slashes go, and any spaces mixed in with them (`owner/repo /`).
+  const trimmed = input.trim().replace(/[\s/]+$/, "");
   if (!trimmed) return trimmed;
 
   if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(trimmed)) return trimmed;
