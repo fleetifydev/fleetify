@@ -88,7 +88,7 @@ import { isDeepStrictEqual } from "node:util";
 import { compiledFiles } from "../release/compiled-tar.mjs";
 import { dryRunConfig } from "../release/dry-run-config.mjs";
 import { GLIBC_FLOOR } from "../release/glibc-floor.mjs";
-import { INSTALL_SCRIPTS, REHEARSAL_VERSION, TARGETS, UPDATER_KEY_ID, expectedAssets, unsignedAssets, updaterAssets } from "../release/release-assets.mjs";
+import { INSTALL_SCRIPTS, PROVENANCE, REHEARSAL_VERSION, TARGETS, UPDATER_KEY_ID, draftAssets, expectedAssets, unsignedAssets, updaterAssets } from "../release/release-assets.mjs";
 
 const ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const WORKFLOWS = ".github/workflows";
@@ -3408,7 +3408,7 @@ function ghRule(args) {
   }
   const forms = [
     ["api", "repos/$GITHUB_REPOSITORY/releases?per_page=100", "--jq", "map(select(.draft)) | length"],
-    ["release", "upload", "$TAG", "release/*", "--clobber"],
+    ["release", "upload", "$TAG", "release/*", `provenance/${PROVENANCE}`, "--clobber"],
     ["release", "edit", "$TAG", "--draft=false", "--latest"],
   ];
   if (forms.some((form) => sameWords(form, args))) return null;
@@ -3537,7 +3537,8 @@ const FAKE_SLEEP = "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$STUB_LOG.sleep\"\n";
  * Run a step of release.yml as the runner runs it (bash -eo pipefail), with
  * `env`, in a temporary folder that holds scripts/release/release-assets.mjs
  * and a release/ folder with `files`, each holding its name and a newline,
- * or what `contents` gives for it. node, jq and sha256sum are the real ones;
+ * or what `contents` gives for it, and `others`, files outside release/ by
+ * their path. node, jq and sha256sum are the real ones;
  * gh, git, curl and sleep are FAKE_GH, FAKE_GIT, FAKE_CURL and FAKE_SLEEP.
  * `release` and `latest` are what gh release view shows of the release `tag`
  * names and of the latest release, and `releases`, the list gh api gives;
@@ -3545,12 +3546,16 @@ const FAKE_SLEEP = "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$STUB_LOG.sleep\"\n";
  * { status, output, gh, git, curl, sleep, outputs }: the lines each stand-in
  * logged, and what the step wrote to GITHUB_OUTPUT.
  */
-function runReleaseStep(step, { env = {}, files = [], contents = {}, release, latest, releases, tag = "v1.2.3", served = [] } = {}) {
+function runReleaseStep(step, { env = {}, files = [], contents = {}, others = {}, release, latest, releases, tag = "v1.2.3", served = [] } = {}) {
   return inTempDir((dir) => {
     const bin = join(dir, "bin");
     for (const sub of ["bin", "release", "served", "scripts/release"]) mkdirSync(join(dir, sub), { recursive: true });
     copyFileSync(join(ROOT, "scripts/release/release-assets.mjs"), join(dir, "scripts/release/release-assets.mjs"));
     for (const name of files) writeFileSync(join(dir, "release", name), contents[name] ?? `${name}\n`);
+    for (const [path, text] of Object.entries(others)) {
+      mkdirSync(dirname(join(dir, path)), { recursive: true });
+      writeFileSync(join(dir, path), text);
+    }
     for (const [name, value] of [["release.json", release], ["latest-release.json", latest], ["releases.json", releases]]) {
       if (value !== undefined) writeFileSync(join(dir, name), JSON.stringify(value));
     }
@@ -3755,16 +3760,17 @@ describe("release.yml", () => {
     assert.doesNotMatch(scriptOf(step), /--per-target-pubkeys/);
   });
 
-  yamlTest("assemble downloads and assembles before any token exists, attests, then makes the token, uploads to the draft, checks it, and hands the release to the smoke", () => {
+  yamlTest("assemble downloads and assembles before any token exists, attests, keeps the provenance, then makes the token, uploads to the draft, checks it, and hands the release to the smoke", () => {
     const steps = releaseStepsOf("assemble");
     const at = (found) => steps.findIndex(found);
     const order = [
       at((step) => usesAction(step, "actions/download-artifact")),
       at((step) => scriptOf(step).includes("assemble.mjs")),
       at((step) => usesAction(step, "actions/attest-build-provenance")),
+      at((step) => scriptOf(step).includes("provenance.mjs")),
       at((step) => usesAction(step, "actions/create-github-app-token")),
       at((step) => scriptOf(step).includes("gh release upload")),
-      at((step) => scriptOf(step).includes("release-assets.mjs expected")),
+      at((step) => scriptOf(step).includes("release-assets.mjs draft")),
       at((step) => usesAction(step, "actions/upload-artifact")),
     ];
     assert.ok(order.every((i, n) => i !== -1 && (n === 0 || i > order[n - 1])), `assemble's steps are out of order: ${order.join(", ")}`);
@@ -3790,7 +3796,25 @@ describe("release.yml", () => {
     }
   });
 
-  scriptTest("assemble uploads the assembled files to the draft, and to nothing but a draft", () => {
+  yamlTest("the draft gets the attestation's bundle as release-assets.mjs's PROVENANCE, which provenance.mjs checks and keeps outside the release folder", () => {
+    // The release folder stays as it was attested: the provenance can't
+    // attest itself, so it isn't one of the files it attests.
+    const steps = releaseStepsOf("assemble");
+    const attest = steps.find((step) => usesAction(step, "actions/attest-build-provenance"));
+    assert.equal(attest.id, "attest");
+    const keep = releaseStep("assemble", "provenance.mjs");
+    assert.deepEqual(keep.env, { BUNDLE: "${{ steps.attest.outputs.bundle-path }}" });
+    const out = `provenance/${PROVENANCE}`;
+    assert.equal(scriptOf(keep), `node scripts/release/provenance.mjs --bundle "$BUNDLE" --release release --out ${out}`);
+    assert.ok(!out.startsWith("release/"));
+    assert.equal(commandLines(releaseStep("assemble", "gh release upload")).at(-1), `gh release upload "$TAG" release/* ${out} --clobber`);
+    const check = scriptOf(releaseStep("assemble", "release-assets.mjs draft"));
+    assert.ok(check.includes(`provenance=$(sha256sum < ${out})`), "the check must hash the provenance it uploads");
+    assert.ok(check.includes(`provenance="\${provenance%-}${PROVENANCE}"`), "the check must name the provenance as the draft does");
+    assert.ok(existsSync(join(ROOT, "scripts/release/provenance.mjs")));
+  });
+
+  scriptTest("assemble uploads the assembled files and their provenance to the draft, and to nothing but a draft", () => {
     // A published release's files are public: they stay as they are.
     const step = releaseStep("assemble", "gh release upload");
     const files = expectedAssets("1.2.3");
@@ -3801,27 +3825,36 @@ describe("release.yml", () => {
     assert.equal(draft.gh[0], "release view v1.2.3 --json isDraft --jq .isDraft");
     const uploaded = draft.gh[1].split(" ");
     assert.deepEqual([...uploaded.slice(0, 3), uploaded.at(-1)], ["release", "upload", "v1.2.3", "--clobber"]);
-    assert.deepEqual(uploaded.slice(3, -1).sort(), files.map((name) => `release/${name}`).sort());
+    assert.deepEqual(uploaded.slice(3, -1).sort(), [...files.map((name) => `release/${name}`), `provenance/${PROVENANCE}`].sort());
     const published = run(false);
     assert.equal(published.status, 1, published.output);
     assert.match(published.output, /::error::v1\.2\.3 is published already/);
     assert.deepEqual(published.gh, ["release view v1.2.3 --json isDraft --jq .isDraft"]);
   });
 
-  test("assemble's check passes a draft that holds exactly expectedAssets(), each uploaded in full with the bytes assembled, and fails one with an asset missing, extra, cut short or of other bytes", { skip: YAML_SKIP || BASH_SKIP || JQ_SKIP || SHA256SUM_SKIP }, () => {
-    const step = releaseStep("assemble", "release-assets.mjs expected");
-    const expected = expectedAssets("1.2.3");
+  test("assemble's check passes a draft that holds exactly draftAssets(), each uploaded in full with the bytes assembled and attested, and fails one with an asset missing, extra, cut short or of other bytes", { skip: YAML_SKIP || BASH_SKIP || JQ_SKIP || SHA256SUM_SKIP }, () => {
+    const step = releaseStep("assemble", "release-assets.mjs draft");
+    const assembled = expectedAssets("1.2.3");
+    const expected = draftAssets("1.2.3");
+    assert.deepEqual(expected, [...assembled, PROVENANCE].sort());
     const sha256 = (text) => createHash("sha256").update(text).digest("hex");
     // Each assembled file holds its name, and SHA256SUMS lists every other
-    // one's SHA-256, as assemble.mjs writes it.
-    const sums = expected
+    // one's SHA-256, as assemble.mjs writes it; the provenance, kept outside
+    // the release folder, holds its name too.
+    const sums = assembled
       .filter((name) => name !== "SHA256SUMS")
       .map((name) => `${sha256(`${name}\n`)}  ${name}\n`)
       .join("");
     /** A draft's asset, with the SHA-256 of the bytes it holds, as gh shows it. */
     const asset = (name, { state = "uploaded", bytes = name === "SHA256SUMS" ? sums : `${name}\n`, digest = `sha256:${sha256(bytes)}` } = {}) => ({ name, state, digest, size: 1 });
     const check = (assets, listed = sums) =>
-      runReleaseStep(step, { env: RELEASE_ENV, files: expected, contents: { SHA256SUMS: listed }, release: { tagName: "v1.2.3", isDraft: true, assets } });
+      runReleaseStep(step, {
+        env: RELEASE_ENV,
+        files: assembled,
+        contents: { SHA256SUMS: listed },
+        others: { [`provenance/${PROVENANCE}`]: `${PROVENANCE}\n` },
+        release: { tagName: "v1.2.3", isDraft: true, assets },
+      });
     // In whatever order GitHub lists them.
     const good = check([...expected].reverse().map((name) => asset(name)));
     assert.equal(good.status, 0, good.output);
@@ -3829,7 +3862,8 @@ describe("release.yml", () => {
       ["one missing", expected.slice(1).map((name) => asset(name))],
       ["one more", [...expected, "Fleetify_1.2.2_x64-setup.exe"].map((name) => asset(name))],
       ["one still uploading", expected.map((name, i) => asset(name, { state: i === 0 ? "open" : "uploaded" }))],
-      ["another version's", expectedAssets("1.2.2").map((name) => asset(name))],
+      ["the provenance missing", assembled.map((name) => asset(name))],
+      ["another version's", draftAssets("1.2.2").map((name) => asset(name))],
       ["none", []],
     ]) {
       const result = check(assets);
@@ -3841,6 +3875,7 @@ describe("release.yml", () => {
     for (const [why, assets, listed] of [
       ["an asset of other bytes", other("latest.json", { bytes: "another latest.json\n" })],
       ["SHA256SUMS of other bytes", other("SHA256SUMS", { bytes: "another SHA256SUMS\n" })],
+      ["a provenance of other bytes", other(PROVENANCE, { bytes: "another provenance\n" })],
       ["an asset without a SHA-256", other("install.sh", { digest: null })],
       ["a SHA-512 in place of the SHA-256", other("install.ps1", { digest: `sha512:${sha256("install.ps1\n")}` })],
       // The SHA256SUMS uploaded is the one assembled, but what it lists isn't what was uploaded.
@@ -4094,6 +4129,8 @@ describe("release.yml", () => {
       "gh release create v9.9.9",
       'gh release upload "$TAG" ./evil --clobber',
       'gh release upload "$TAG" release/*',
+      // The assembled files without their provenance.
+      'gh release upload "$TAG" release/* --clobber',
       'gh release edit "$TAG" --draft=false',
       'gh release edit "$TAG" --tag v9.9.9 --draft=false --latest',
       'gh release view "$TAG" --repo other/repo',
@@ -4171,8 +4208,9 @@ describe("release.yml", () => {
     }
     for (const script of [
       'draft=$(gh release view "$TAG" --json isDraft --jq .isDraft)',
-      'gh release upload "$TAG" release/* --clobber',
-      'expected=$(node scripts/release/release-assets.mjs expected "$VERSION")',
+      `gh release upload "$TAG" release/* provenance/${PROVENANCE} --clobber`,
+      'expected=$(node scripts/release/release-assets.mjs draft "$VERSION")',
+      `node scripts/release/provenance.mjs --bundle "$BUNDLE" --release release --out provenance/${PROVENANCE}`,
       "assets=$(gh release view \"$TAG\" --json assets --jq '.assets[] | select(.state == \"uploaded\") | .name' | LC_ALL=C sort)",
       'gh release edit "$TAG" --draft=false --latest',
       "state=$(gh release view \"$TAG\" --json isDraft,tagName --jq '\"draft \\(.isDraft), tag \\(.tagName)\"')",
@@ -4188,7 +4226,9 @@ describe("release.yml", () => {
       "uploaded=$(gh release view \"$TAG\" --json assets --jq '.assets[] | \"\\(.digest // \"none\" | ltrimstr(\"sha256:\"))  \\(.name)\"' | LC_ALL=C sort)",
       "own=$(sha256sum < release/SHA256SUMS)",
       'own="${own%-}SHA256SUMS"',
-      "assembled=$(printf '%s\\n' \"$(< release/SHA256SUMS)\" \"$own\" | LC_ALL=C sort)",
+      `provenance=$(sha256sum < provenance/${PROVENANCE})`,
+      `provenance="\${provenance%-}${PROVENANCE}"`,
+      "assembled=$(printf '%s\\n' \"$(< release/SHA256SUMS)\" \"$own\" \"$provenance\" | LC_ALL=C sort)",
       "printf -v line '%s' x",
     ]) {
       assert.deepEqual(refused(script), [], script);

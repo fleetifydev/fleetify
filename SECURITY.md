@@ -75,7 +75,7 @@ We don't run a bug bounty yet, so we can't pay for reports. We credit every vali
 Every release on the [Releases page](https://github.com/fleetifydev/fleetify/releases) is immutable: once it is published, GitHub lets no one change its files or move its tag. Each one comes with:
 
 - a `SHA256SUMS` file, which lists the SHA-256 checksum of each file in the release;
-- GitHub build provenance attestations, which show that a file was built by this repository's GitHub Actions;
+- GitHub build provenance attestations, which show that a file was built by this repository's GitHub Actions; releases after 0.3.2 also carry them as a file, `provenance.intoto.jsonl`, for `gh attestation verify --bundle`;
 - GitHub's attestation of the release itself, which records its tag and the checksum of each of its files.
 
 To check a download, compare its checksum with its line in `SHA256SUMS`, using `sha256sum <file>` on Linux, `shasum -a 256 <file>` on macOS or `Get-FileHash <file>` in PowerShell. Then check where it was built, and that it belongs to the release, with the [GitHub CLI](https://cli.github.com), where `<version>` is the release's version:

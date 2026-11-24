@@ -30,13 +30,15 @@ Releases come from release-please. It keeps a release pull request open, titled 
 
 1. **release-please**, in the `release-bot` environment, gets a token for the Fleetify Release Bot, a GitHub App, and runs release-please with it twice. The first run looks for a release pull request that has merged, and creates its release, as a draft whose `v<version>` tag doesn't exist yet. Only when it created none does the second run open or update the release pull request, if anything merged since the last release calls for one. So the push that merges the release pull request makes the release instead. The second run waits, with a warning, while a draft release is pending: release-please finds the last release by its tag, so until the draft is published it would offer a release of every commit it can reach. Events made with the App's token start workflows, unlike those made with the default token, so the release pull request gets its checks like any other.
 2. **build** runs build.yml on the merge commit in the `release` environment, when a release was created.
-3. **assemble**, in the `release-bot` environment, puts the release's 20 files together with `assemble.mjs`, which checks every updater signature against the key in [`src-tauri/tauri.conf.json`](../src-tauri/tauri.conf.json), requires its key id to be `44C694713A20D751`, and requires each signature to name the release's version. It attests the files' build provenance, uploads them to the draft, and checks that the draft holds exactly the assets that `expectedAssets()` in [`release-assets.mjs`](../scripts/release/release-assets.mjs) names.
+3. **assemble**, in the `release-bot` environment, puts the release's 20 files together with `assemble.mjs`, which checks every updater signature against the key in [`src-tauri/tauri.conf.json`](../src-tauri/tauri.conf.json), requires its key id to be `44C694713A20D751`, and requires each signature to name the release's version. It attests the files' build provenance, keeps the attestation's bundle beside them with `provenance.mjs`, uploads them all to the draft, and checks that the draft holds exactly the assets that `draftAssets()` in [`release-assets.mjs`](../scripts/release/release-assets.mjs) names.
 4. **smoke** runs smoke.yml on those files. The macOS app's designated requirement must equal the one pinned in [`scripts/release/macos-designated-requirement.txt`](../scripts/release/macos-designated-requirement.txt).
 5. **publish**, in the `release-bot` environment, once assemble and smoke have passed, checks that the draft points at the commit that was built and that its tag doesn't exist yet, as publishing would keep a tag that exists already. Then it publishes the draft and marks it as the latest release. Publishing creates the tag, as the Release Bot. The job then checks that the release is no longer a draft, that the tag exists, and that GitHub's `latest.json` for the latest release names the new version.
 
 Two rulesets guard the tags: only the organisation's admins and the Release Bot may create a `v*` tag, and no one may move or delete one. A tag created before the checks passed would be permanent, which is why the tag only comes into being at publish. Don't create a `v*` tag by hand. The one exception is publishing a checked draft by hand, as [The release run, before publish](#the-release-run-before-publish) describes, which makes its tag at the draft's commit.
 
 The attestation step runs in a job that release.yml defines itself, so the attestations name release.yml as their signer. That is what `--signer-workflow` checks when users [verify a download](INSTALL.md#verify-a-download).
+
+The draft also gets the attestation itself, as `provenance.intoto.jsonl`. `provenance.mjs` first checks that it attests exactly the assembled files, then keeps it outside the release folder, which stays as it was attested. With it, anyone can check a file without asking GitHub for the attestation: `gh attestation verify <file> --bundle provenance.intoto.jsonl`.
 
 ### The build
 
@@ -75,7 +77,7 @@ The hand-off artifacts between the jobs are kept for seven days, so approve a re
 [`release-dry-run.yml`](../.github/workflows/release-dry-run.yml) builds, assembles and smoke-tests a release without publishing anything. It runs on pull requests that change what a release build reads (the paths it lists), on pushes to `main`, every Monday at 05:00 UTC, and when dispatched. It doesn't block a merge, but treat a red run as red. A release commit, whose subject starts with `chore(main): release`, skips its push run, as the release workflow builds that commit itself.
 
 - **`signing: ephemeral`**, the default and what every automatic run uses, runs in the `dry-run` environment. Each build makes a throwaway updater key, and on macOS a throwaway signing identity, and its updater asks only the smoke test's local update server. The key also signs the rehearsal's signatures, which only that build trusts.
-- **`signing: release`** makes a release candidate: it builds from `main` only, with the release keys, in the `release` environment. Its `release` artifact, kept for 14 days, holds the 20 files a release would publish, under `main`'s current version. Nothing is tagged or published.
+- **`signing: release`** makes a release candidate: it builds from `main` only, with the release keys, in the `release` environment. Its `release` artifact, kept for 14 days, holds the 20 files a release assembles, under `main`'s current version. Nothing is tagged or published.
 
 ### The environments
 
@@ -243,12 +245,13 @@ gh release download "v$v" --dir "release-$v"
 cd "release-$v"
 sha256sum --check SHA256SUMS
 for f in *; do
+  [ "$f" = provenance.intoto.jsonl ] && continue   # the attestation itself, of every other file
   gh attestation verify "$f" --repo fleetifydev/fleetify --signer-workflow fleetifydev/fleetify/.github/workflows/release.yml
 done
 node -p 'const m = require("./latest.json"); `${m.version}: ${Object.keys(m.platforms).length} entries`'
 ```
 
-The release is no longer a draft and has 20 assets. It is the latest release, and its tag exists. Every checksum is OK (on macOS, run `shasum -a 256 --check SHA256SUMS`), every file's attestation verifies, and `latest.json` names the version, with 10 entries.
+The release is no longer a draft and has 21 assets (releases up to 0.3.2 have 20, as they came before `provenance.intoto.jsonl`). It is the latest release, and its tag exists. Every checksum is OK (on macOS, run `shasum -a 256 --check SHA256SUMS`), every file's attestation verifies, and `latest.json` names the version, with 10 entries.
 
 From the second release on, also check the update itself on a machine that runs the previous release: **Settings → General → Updates → Check now** finds the new version and downloads it, and **Restart to update** installs it, keeping the sign-in and, on macOS, the microphone permission. Once the front door serves updates, `curl -sS "https://fleetify.dev/api/desktop/update/linux/x86_64/<previous version>?bundle_type=appimage"` must show the new version too.
 
@@ -401,7 +404,7 @@ The install scripts then download the release's files from GitHub themselves.
 
 ## Release assets
 
-Every release has these 20 assets. `expectedAssets()` in [`release-assets.mjs`](../scripts/release/release-assets.mjs) names them, and the assemble and release jobs check the list. `<v>` is the version.
+Every release has these 21 assets: the 20 files that `expectedAssets()` in [`release-assets.mjs`](../scripts/release/release-assets.mjs) names, which `assemble.mjs` puts together, and their build provenance, which `draftAssets()` adds. The assemble job checks that the draft holds exactly them. Releases up to 0.3.2 came before the provenance file, so they have the 20 files alone. `<v>` is the version.
 
 | Asset | What it is | Its `latest.json` entries |
 |---|---|---|
@@ -424,12 +427,13 @@ Every release has these 20 assets. `expectedAssets()` in [`release-assets.mjs`](
 | `install.sh` | the install script for macOS and Linux | |
 | `install.ps1` | the install script for Windows | |
 | `latest.json` | the updater manifest: the 10 entries above, each with its file's URL and signature | |
-| `SHA256SUMS` | the SHA-256 of every other asset | |
+| `SHA256SUMS` | the SHA-256 of every other asset but the provenance | |
+| `provenance.intoto.jsonl` | the build provenance of the other 20: the Sigstore bundle of their attestation, for `gh attestation verify --bundle` | |
 
 - Tauri names both macOS app archives `Fleetify.app.tar.gz`, so the release adds the version and the architecture.
 - The disk images have no `latest.json` entry: an app installed from one reports its bundle type as `app` and updates through the app archive.
 - An updater artifact's first entry is the one the updater looks up first, `{os}-{arch}-{bundle type}`; the second, where there is one, is what it falls back to when it can't tell how it was installed.
-- The build provenance attestations cover all 20 assets.
+- The build provenance attestation covers the 20 assembled files. `provenance.intoto.jsonl` holds it, so it can't cover that file too; GitHub's attestation of the release, made when the release is published, covers all 21.
 
 ## Maintenance
 

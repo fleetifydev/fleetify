@@ -19,8 +19,9 @@
 #   release environment, whose deployments wait for the owner's approval.
 # - assemble puts the release together with assemble.mjs, which checks every
 #   updater signature against the key that src-tauri/tauri.conf.json ships.
-#   It attests the files' build provenance, uploads them to the draft and
-#   checks that the draft holds exactly the release's assets.
+#   It attests the files' build provenance, uploads them and the
+#   attestation's bundle to the draft, and checks that the draft holds
+#   exactly the release's assets.
 # - smoke runs smoke.yml on those files, with the release scripts of the
 #   draft's commit, against the pinned macOS designated requirement.
 # - publish, once assemble and smoke have passed, checks that the draft points
@@ -205,9 +206,19 @@ jobs:
           --pubkey-config src-tauri/tauri.conf.json --expect-key-id 44C694713A20D751
           --extra scripts/release/install.sh --extra scripts/release/install.ps1
       - name: Attest the build provenance
+        id: attest
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: release/*
+      # The attestation's bundle goes to the draft too, so that anyone can
+      # check a file of the release against it with gh attestation verify
+      # --bundle, without asking GitHub for the attestation. provenance.mjs
+      # checks that it attests exactly the assembled files, and keeps it
+      # outside the release folder, which stays as it was attested.
+      - name: Keep the build provenance
+        env:
+          BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+        run: node scripts/release/provenance.mjs --bundle "$BUNDLE" --release release --out provenance/provenance.intoto.jsonl
       # Made once the release is assembled and attested, for the draft's
       # assets alone.
       - name: Release Bot token
@@ -228,16 +239,16 @@ jobs:
             echo "::error::$TAG is published already, so its files can't change"
             exit 1
           fi
-          gh release upload "$TAG" release/* --clobber
-      # Exactly the assets expectedAssets() names, each uploaded in full, with
+          gh release upload "$TAG" release/* provenance/provenance.intoto.jsonl --clobber
+      # Exactly the assets draftAssets() names, each uploaded in full, with
       # the bytes that were assembled and attested: the SHA-256 GitHub works
       # out for each asset as it is uploaded must be the one SHA256SUMS lists,
-      # and SHA256SUMS's own, the file's.
+      # and for SHA256SUMS and the provenance, the file's own.
       - name: Check the draft's assets
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
-          expected=$(node scripts/release/release-assets.mjs expected "$VERSION")
+          expected=$(node scripts/release/release-assets.mjs draft "$VERSION")
           assets=$(gh release view "$TAG" --json assets --jq '.assets[] | select(.state == "uploaded") | .name' | LC_ALL=C sort)
           if [ "$assets" != "$expected" ]; then
             echo "::error::the draft $TAG doesn't hold exactly the release's assets, each uploaded in full"
@@ -253,7 +264,11 @@ jobs:
           # sha256sum names what it reads from its input "-".
           own=$(sha256sum < release/SHA256SUMS)
           own="${own%-}SHA256SUMS"
-          assembled=$(printf '%s\n' "$(< release/SHA256SUMS)" "$own" | LC_ALL=C sort)
+          # The provenance attests SHA256SUMS and the files it lists, so it
+          # isn't among them.
+          provenance=$(sha256sum < provenance/provenance.intoto.jsonl)
+          provenance="${provenance%-}provenance.intoto.jsonl"
+          assembled=$(printf '%s\n' "$(< release/SHA256SUMS)" "$own" "$provenance" | LC_ALL=C sort)
           if [ "$uploaded" != "$assembled" ]; then
             echo "::error::the draft $TAG's assets aren't the bytes that were assembled"
             echo "assembled:"

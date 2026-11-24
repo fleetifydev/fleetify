@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   INSTALL_SCRIPTS,
+  PROVENANCE,
   REHEARSAL_VERSION,
   REPO,
   TARGETS,
@@ -20,6 +21,7 @@ import {
   bundleFiles,
   compareVersions,
   downloadBase,
+  draftAssets,
   expectedAssets,
   latestJson,
   resolveUpdate,
@@ -196,6 +198,24 @@ describe("expectedAssets", () => {
     for (const { triple } of TARGETS) {
       for (const { to } of bundleFiles(triple, V)) assert.ok(assets.has(to), `${triple}: ${to}`);
     }
+  });
+});
+
+describe("draftAssets", () => {
+  test("the 21 assets of a release's draft: the 20 assembled files and their provenance, sorted", () => {
+    // `gh attestation verify --bundle` and the OpenSSF Scorecard know build
+    // provenance by the .intoto.jsonl it ends with.
+    assert.equal(PROVENANCE, "provenance.intoto.jsonl");
+    const assets = draftAssets(V);
+    assert.equal(assets.length, 21);
+    assert.deepEqual(assets, [...expectedAssets(V), PROVENANCE].sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b))));
+    assert.ok(!expectedAssets(V).includes(PROVENANCE), "the provenance attests the assembled files, so it can't be one of them");
+  });
+
+  test("each call returns a new list; a bad version throws", () => {
+    draftAssets(V).push("stray");
+    assert.equal(draftAssets(V).length, 21);
+    assert.throws(() => draftAssets("v0.2.0"), /invalid version/);
   });
 });
 
@@ -564,7 +584,7 @@ describe("before signing", () => {
     assert.throws(() => updaterAssets(LINUX, "v0.2.0"), /invalid version/);
   });
 
-  test("the CLI prints each list, one name a line: a target's unsigned files or updater artifacts, or a release's assets", () => {
+  test("the CLI prints each list, one name a line: a target's unsigned files or updater artifacts, a release's assembled files, or its draft's assets", () => {
     const cli = (...args) => spawnSync(process.execPath, [SCRIPT, ...args], { encoding: "utf8" });
     const unsigned = cli("unsigned", LINUX, V);
     assert.equal(unsigned.status, 0, unsigned.stderr);
@@ -576,8 +596,13 @@ describe("before signing", () => {
     const expected = cli("expected", V);
     assert.equal(expected.status, 0, expected.stderr);
     assert.equal(expected.stdout, `${expectedAssets(V).join("\n")}\n`);
-    const lines = expected.stdout.trimEnd().split("\n");
-    assert.deepEqual(lines, [...lines].sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b))), "the list isn't in byte order");
+    const draft = cli("draft", V);
+    assert.equal(draft.status, 0, draft.stderr);
+    assert.equal(draft.stdout, `${draftAssets(V).join("\n")}\n`);
+    for (const list of [expected, draft]) {
+      const lines = list.stdout.trimEnd().split("\n");
+      assert.deepEqual(lines, [...lines].sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b))), "the list isn't in byte order");
+    }
     for (const args of [
       [],
       ["unsigned"],
@@ -586,6 +611,8 @@ describe("before signing", () => {
       ["unsigned", LINUX, V, "extra"],
       ["expected"],
       ["expected", LINUX, V],
+      ["draft"],
+      ["draft", V, "extra"],
     ]) {
       const result = cli(...args);
       assert.equal(result.status, 2, `${args.join(" ")}: ${result.stderr}`);
@@ -595,6 +622,7 @@ describe("before signing", () => {
     for (const [args, says] of [
       [["updaters", "riscv64-unknown-linux-gnu", V], /unknown target triple/],
       [["expected", "v0.2.0"], /invalid version/],
+      [["draft", "0.2"], /invalid version/],
     ]) {
       const result = cli(...args);
       assert.equal(result.status, 1, `${args.join(" ")}: ${result.stderr}`);

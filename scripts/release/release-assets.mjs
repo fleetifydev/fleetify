@@ -2,17 +2,20 @@
  * release-assets.mjs — what a Fleetify release is made of: the targets CI
  * builds, the files each build produces and the names they are published
  * under, the install scripts, the updater manifest (latest.json), how an
- * update endpoint picks an entry from it, and SHA256SUMS.
+ * update endpoint picks an entry from it, SHA256SUMS, and the build
+ * provenance of all of them.
  *
  * The release scripts and workflows import these, so each name is defined in
- * one place. Workflow steps read three lists through the CLI:
+ * one place. Workflow steps read these lists through the CLI:
  *
  *   node scripts/release/release-assets.mjs unsigned <triple> <version>
  *   node scripts/release/release-assets.mjs updaters <triple> <version>
  *   node scripts/release/release-assets.mjs expected <version>
+ *   node scripts/release/release-assets.mjs draft <version>
  *
- * which print unsignedAssets(), updaterAssets() and expectedAssets(), one
- * name a line (exit 0; 1 for an unknown triple or a bad version; 2 usage).
+ * which print unsignedAssets(), updaterAssets(), expectedAssets() and
+ * draftAssets(), one name a line (exit 0; 1 for an unknown triple or a bad
+ * version; 2 usage).
  *
  * Asset names are the Tauri CLI's own (tauri-cli 2.11.5), with one exception:
  * both macOS builds write macos/Fleetify.app.tar.gz, so the updater archive is
@@ -46,6 +49,17 @@ export const MANIFEST = "latest.json";
 export const CHECKSUMS = "SHA256SUMS";
 export const NOTICES = "THIRD-PARTY-NOTICES";
 export const LIBRARY_LIST = "LINUX-APPIMAGE-LIBRARIES.txt";
+
+/**
+ * The build provenance of a release's files: the Sigstore bundle of the
+ * attestation release.yml's assemble job makes of the files expectedAssets()
+ * names, which provenance.mjs checks and keeps beside them, so that anyone
+ * can check a file with `gh attestation verify --bundle`, without asking
+ * GitHub for the attestation. It attests
+ * SHA256SUMS and every file SHA256SUMS lists, so it isn't one of them and
+ * SHA256SUMS doesn't list it: draftAssets() adds it to them.
+ */
+export const PROVENANCE = "provenance.intoto.jsonl";
 
 /**
  * The install scripts, scripts/release/install.sh and install.ps1, which a
@@ -209,8 +223,10 @@ export function updaterAssets(triple, version) {
 }
 
 /**
- * Every asset of a release, sorted: each target's bundle files, the AppImage
- * library list, the notices, the install scripts, latest.json and SHA256SUMS.
+ * Every file assemble.mjs puts together for a release, sorted: each target's
+ * bundle files, the AppImage library list, the notices, the install scripts,
+ * latest.json and SHA256SUMS. The release has their provenance as well
+ * (draftAssets()).
  *
  * @param {string} version
  * @returns {string[]}
@@ -225,6 +241,19 @@ export function expectedAssets(version) {
     MANIFEST,
     CHECKSUMS,
   ];
+  if (new Set(names).size !== names.length) throw new Error("two release assets have the same name");
+  return names.sort(compare);
+}
+
+/**
+ * Every asset of a release's draft, and so of the release, sorted: the
+ * files expectedAssets() names and PROVENANCE, which attests them.
+ *
+ * @param {string} version
+ * @returns {string[]}
+ */
+export function draftAssets(version) {
+  const names = [...expectedAssets(version), PROVENANCE];
   if (new Set(names).size !== names.length) throw new Error("two release assets have the same name");
   return names.sort(compare);
 }
@@ -402,10 +431,11 @@ const CLI_LISTS = {
   unsigned: { list: unsignedAssets, args: 2 },
   updaters: { list: updaterAssets, args: 2 },
   expected: { list: expectedAssets, args: 1 },
+  draft: { list: draftAssets, args: 1 },
 };
 const USAGE = [
   "usage: node scripts/release/release-assets.mjs unsigned|updaters <triple> <version>",
-  "       node scripts/release/release-assets.mjs expected <version>",
+  "       node scripts/release/release-assets.mjs expected|draft <version>",
 ].join("\n");
 
 function main(argv) {

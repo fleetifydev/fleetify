@@ -154,6 +154,8 @@ gh attestation verify <file> --repo fleetifydev/fleetify --signer-workflow fleet
 
 A pass shows that the file was built by this repository's release workflow and hasn't changed since.
 
+Releases after 0.3.2 also carry that attestation as a file, `provenance.intoto.jsonl`. Download it into the folder that holds the file and add `--bundle provenance.intoto.jsonl` to the command: the file is then checked against it, without asking GitHub for the attestation.
+
 **Check that it belongs to the release**, also with the GitHub CLI, where `<version>` is the release's version, such as `0.2.1`:
 
 ```bash
