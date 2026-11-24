@@ -1,0 +1,70 @@
+# Advisories that OSV, and the OpenSSF Scorecard through it, would count
+# against Fleetify but that don't affect the app: a feature or API nothing
+# uses, a dev-only crate, or a crate that is unmaintained but has no known
+# vulnerability. Each one mirrors an ignore in deny.toml, where cargo-deny's
+# triage lives, and scripts/ci/check-advisory-ignores.test.mjs keeps the two
+# files in step.
+#
+# Not here, so OSV keeps counting it: RUSTSEC-2026-0459 (sqlx-sqlite 0.8's
+# bundled SQLite), which the sqlx 0.9 bump fixes.
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0594"
+ignoreUntil = 2026-12-07
+reason = "cookie 0.18.1 via tauri, tauri-runtime and wry: the advisory covers PrivateJar, which needs cookie's private feature, and nothing in the tree enables it; 0.18.3 replaces it once it is two weeks old"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2023-0071"
+reason = "rsa is a fleetify-backend dev-dependency for signing test JWTs; no shipped binary links it"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0543"
+reason = "chrono is unmaintained, with no fixed release; no known vulnerability, used directly and through sqlx 0.8's chrono feature"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2017-0008"
+reason = "serial is unmaintained (no known vulnerability) and comes only from fleetify-backend's portable-pty 0.8, which it keeps until its PTY bridge answers 0.9's Windows ConPTY cursor-position query"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0441"
+reason = "pin-utils is unmaintained (no known vulnerability) and comes only from fleetify-backend's portable-pty 0.8, through nix 0.25"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2025-0075"
+reason = "unic-char-range is unmaintained (no known vulnerability), via urlpattern 0.3, a tauri-utils 2.9 dependency"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2025-0080"
+reason = "unic-common is unmaintained (no known vulnerability), via urlpattern 0.3, a tauri-utils 2.9 dependency"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2025-0081"
+reason = "unic-char-property is unmaintained (no known vulnerability), via urlpattern 0.3, a tauri-utils 2.9 dependency"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2025-0098"
+reason = "unic-ucd-version is unmaintained (no known vulnerability), via urlpattern 0.3, a tauri-utils 2.9 dependency"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2025-0100"
+reason = "unic-ucd-ident is unmaintained (no known vulnerability), via urlpattern 0.3, a tauri-utils 2.9 dependency"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0429"
+reason = "glib 0.18's VariantStrIter is unsound; gtk-rs 0.18 is tauri 2's Linux GTK3 stack (tao, wry, muda), and Fleetify doesn't use VariantStrIter"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0370"
+reason = "proc-macro-error is unmaintained and runs only at compile time, via glib-macros and gtk3-macros 0.18 in tauri 2's Linux GTK3 stack"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0370"
+reason = "zvariant 5 is unmaintained (merged into zbus 6; no known vulnerability), via tauri-plugin-single-instance 2.4.5; its zbus 4 copy in Cargo.lock is keyring upstream"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0371"
+reason = "zbus_names 4 is unmaintained (merged into zbus 6; no known vulnerability), via tauri-plugin-single-instance 2.4.5; its zbus 4 copy in Cargo.lock is keyring upstream"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0372"
+reason = "zvariant_derive 5 is unmaintained (merged into zbus 6; no known vulnerability), via tauri-plugin-single-instance 2.4.5; its zbus 4 copy in Cargo.lock is keyring upstream"
