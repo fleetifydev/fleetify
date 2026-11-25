@@ -5,6 +5,7 @@ import { SplashScreen } from "@/components/onboarding/splash-screen";
 import { WelcomeScreen } from "@/components/onboarding/welcome-screen";
 import { SetupScreen } from "@/components/onboarding/setup-screen";
 import { DashboardSyncNotice } from "@/components/onboarding/dashboard-sync-notice";
+import { OnboardingBackdrop } from "@/components/onboarding/onboarding-backdrop";
 import { UpdateBannerSlotContext, UpdateReadyBanner } from "@/components/layout/update-ready-banner";
 import { useAppStore } from "@/stores/app-store";
 import { usePluginStore } from "@/stores/plugin-store";
@@ -455,13 +456,20 @@ export function App() {
         />
       )}
 
-      {screen === "splash"          && <SplashScreen onDone={handleSplashDone} />}
-      {screen === "welcome"         && <WelcomeScreen onAuth={handleAuth} />}
-      {screen === "setup"           && <SetupScreen onDone={handleOnboardingDone} />}
-      {screen === "onboarding-chat" && (
-        <Suspense fallback={<div style={{ position: "fixed", inset: 0, background: "var(--background)" }} />}>
-          <OnboardingChat user={authedUser} onDone={handleOnboardingDone} />
-        </Suspense>
+      {/* The screens before the main shell share one moving backdrop,
+          mounted once so its motion carries on from screen to screen. */}
+      {screen !== "main" && (
+        <div className="onboarding-stage">
+          <OnboardingBackdrop />
+          {screen === "splash"          && <SplashScreen onDone={handleSplashDone} />}
+          {screen === "welcome"         && <WelcomeScreen onAuth={handleAuth} />}
+          {screen === "setup"           && <SetupScreen onDone={handleOnboardingDone} />}
+          {screen === "onboarding-chat" && (
+            <Suspense fallback={<div style={{ position: "fixed", inset: 0, background: "var(--background)" }} />}>
+              <OnboardingChat user={authedUser} onDone={handleOnboardingDone} />
+            </Suspense>
+          )}
+        </div>
       )}
 
       {/* The dashboard sync question for an install that finished
