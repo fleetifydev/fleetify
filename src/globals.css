@@ -817,6 +817,61 @@ body {
   100% { background-position: -200% 0; }
 }
 
+/* ─── Onboarding backdrop ───
+   Behind the screens before the main shell (OnboardingBackdrop): large,
+   soft pools of the theme's accent drifting slowly from side to side. Each
+   is a radial gradient that fades to nothing, so no blur filter is needed,
+   and only transform animates (GPU-composited, no layout or paint per
+   frame). Sits at z-index -1 inside .onboarding-stage, which isolates it, so
+   it paints over the page background and under the screen's content. */
+.onboarding-stage { position: relative; height: 100%; isolation: isolate; }
+.onboarding-backdrop {
+  position: absolute; inset: 0; z-index: -1;
+  overflow: hidden; pointer-events: none;
+  opacity: 0;
+  animation: onboarding-backdrop-in 1.6s ease-out 0.15s forwards;
+}
+.onboarding-backdrop__light {
+  position: absolute;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, var(--m-accent), transparent);
+  will-change: transform;
+}
+.onboarding-backdrop__light--a {
+  width: 95vmax; height: 95vmax; left: -48vmax; top: -40vmax;
+  opacity: 0.16;
+  animation: onboarding-drift-a 24s ease-in-out infinite alternate;
+}
+.onboarding-backdrop__light--b {
+  width: 85vmax; height: 85vmax; right: -44vmax; bottom: -42vmax;
+  opacity: 0.13;
+  animation: onboarding-drift-b 30s ease-in-out infinite alternate;
+}
+/* A faint, neutral glow that crosses behind the content. */
+.onboarding-backdrop__light--c {
+  width: 60vmax; height: 60vmax; left: calc(50% - 30vmax); top: calc(50% - 30vmax);
+  background: radial-gradient(closest-side, var(--m-text), transparent);
+  opacity: 0.035;
+  animation: onboarding-drift-c 19s ease-in-out infinite alternate;
+}
+@keyframes onboarding-backdrop-in { to { opacity: 1; } }
+@keyframes onboarding-drift-a {
+  from { transform: translate3d(0, 0, 0) scale(1); }
+  to   { transform: translate3d(38vmax, 10vmax, 0) scale(1.12); }
+}
+@keyframes onboarding-drift-b {
+  from { transform: translate3d(0, 0, 0) scale(1.08); }
+  to   { transform: translate3d(-36vmax, -12vmax, 0) scale(0.94); }
+}
+@keyframes onboarding-drift-c {
+  from { transform: translate3d(-22vmax, 4vmax, 0); }
+  to   { transform: translate3d(22vmax, -4vmax, 0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .onboarding-backdrop { animation: none; opacity: 1; }
+  .onboarding-backdrop__light { animation: none; }
+}
+
 /* ─── Soft fade-in ─── */
 @keyframes fade-in {
   from { opacity: 0; transform: translateY(3px); }
