@@ -48,7 +48,7 @@ describe("the sign-in screen", () => {
   it("leads with the headline", () => {
     render(<WelcomeScreen onAuth={vi.fn()} />);
     expect(
-      screen.getByRole("heading", { level: 1, name: "One developer. A whole fleet of agents." }),
+      screen.getByRole("heading", { level: 1, name: "Think it. Your fleet builds it." }),
     ).toBeInTheDocument();
   });
 
