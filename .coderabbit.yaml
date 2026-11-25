@@ -1,0 +1,261 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: en-US
+tone_instructions: 'Be concise, direct and constructive. Plain English, no praise, filler, emojis or jokes. Say why an issue matters and suggest a concrete fix. Authors may be first-time contributors: be respectful, never condescending.'
+early_access: false
+enable_free_tier: true
+inheritance: false
+reviews:
+  profile: chill
+  request_changes_workflow: false
+  auto_approvals:
+    enabled: false
+    allow_author_approval: false
+    approve_on_skipped_review: false
+  high_level_summary: true
+  high_level_summary_in_walkthrough: true
+  high_level_summary_instructions: Summarize what the pull request changes and why in at most five plain bullet points. No release-notes framing, no emojis, no marketing language. Do not propose a pull request title or a changelog entry.
+  high_level_summary_placeholder: '@coderabbitai-description-summary-disabled'
+  auto_title_placeholder: '@coderabbitai-title-generation-disabled'
+  auto_title_instructions: Do not generate or change pull request titles in this repository. The title is a Conventional Commits changelog entry written by the author; release-please reads it and CI enforces its format.
+  review_status: false
+  review_details: false
+  review_info: true
+  review_progress: true
+  commit_status: true
+  fail_commit_status: false
+  collapse_walkthrough: true
+  changed_files_summary: true
+  sequence_diagrams: false
+  estimate_code_review_effort: false
+  assess_linked_issues: true
+  related_issues: true
+  related_prs: true
+  suggested_labels: false
+  auto_apply_labels: false
+  suggested_reviewers: false
+  auto_assign_reviewers: false
+  in_progress_fortune: false
+  poem: false
+  enable_prompt_for_ai_agents: true
+  abort_on_close: true
+  disable_cache: false
+  auto_review:
+    enabled: true
+    drafts: false
+    auto_incremental_review: true
+    auto_pause_after_reviewed_commits: 5
+    base_branches: []
+    ignore_title_keywords:
+    - 'chore(main): release'
+    ignore_usernames:
+    - fleetify-release-bot[bot]
+    - fleetify-release-bot
+    - dependabot[bot]
+    - dependabot
+  slop_detection:
+    enabled: false
+  finishing_touches:
+    docstrings:
+      enabled: false
+    unit_tests:
+      enabled: false
+    simplify:
+      enabled: false
+    autofix:
+      enabled: false
+    fix_ci:
+      enabled: false
+    resolve_merge_conflict:
+      enabled: false
+    custom: []
+  pre_merge_checks:
+    title:
+      mode: 'off'
+    description:
+      mode: 'off'
+    docstrings:
+      mode: 'off'
+    issue_assessment:
+      mode: warning
+    custom_checks: []
+    override_requested_reviewers_only: false
+  path_filters:
+  - '!**/Cargo.lock'
+  - '!**/package-lock.json'
+  - '!crates/fleetify-backend/assets/models-snapshot.json'
+  - '!scripts/release/fixtures/**/*.txt'
+  - '!scripts/release/fixtures/**/*.json'
+  - '!scripts/release/fixtures/**/*.sig'
+  - '!scripts/release/fixtures/**/*.pub'
+  - '!**/*.svg'
+  - '!**/*.png'
+  - '!**/*.ico'
+  - '!**/*.icns'
+  path_instructions:
+  - path: crates/**/*.rs
+    instructions: |-
+      CI already runs rustfmt and `cargo clippy --workspace --all-targets -- -D warnings` on Windows, Linux and macOS, plus the tests: do not report formatting or lint-level style. Review logic, error handling, concurrency, security and cross-platform behaviour.
+      - Ports and paths: no hardcoded ports, `host:port` URLs or home-directory paths. Read the environment with a default (`FLEETIFY_BACKEND_PORT`, default 8765; `VITE_PORT`, default 3000; `FLEETIFY_HOME`) and build data paths from `fleetify_core::fleetify_home()` / `user_home()`.
+      - OS-specific code: anything behind `#[cfg(windows)]` or `#[cfg(target_os = "...")]` must leave every target (Windows, Linux, macOS) compiling and working: check for a missing counterpart or fallback, and for imports or helpers that become unused on the other targets.
+      - Child processes: start them with `fleetify_core::process::command` / `tokio_command`, never `std::process::Command::new` or `tokio::process::Command::new` (clippy.toml disallows both); open links and paths only through `fleetify_backend::open_external`. Code you suggest must follow this too. When an argument comes from a user or a remote (repository URL, branch name, path), check for option injection (`--` before positional arguments) and shell interpolation.
+      - Ollama: a request to the local Ollama daemon must take its base URL from `fleetify_core::resolve_ollama_base_url` (default `http://127.0.0.1:11434`), not `localhost`, which resolves to `::1` first on Windows and macOS while the daemon binds IPv4.
+      - Secrets: no tokens, keys or credentials in code, logs, error messages or telemetry. Provider API keys live in the OS keychain.
+      - A bug fix should come with a regression test that fails without it; say so once if it is missing.
+  - path: src-tauri/**/*.rs
+    instructions: |-
+      CI already runs rustfmt and `cargo clippy --workspace --all-targets -- -D warnings` on Windows, Linux and macOS, plus the tests: do not report formatting or lint-level style. Review logic, error handling, concurrency, security and cross-platform behaviour.
+      - Ports and paths: no hardcoded ports, `host:port` URLs or home-directory paths. Read the environment with a default (`FLEETIFY_BACKEND_PORT`, default 8765; `VITE_PORT`, default 3000; `FLEETIFY_HOME`).
+      - OS-specific code: anything behind `#[cfg(windows)]` or `#[cfg(target_os = "...")]` must leave every target (Windows, Linux, macOS) compiling and working: check for a missing counterpart or fallback, and for imports or helpers that become unused on the other targets.
+      - Child processes: start them with `fleetify_core::process::command` / `tokio_command`, never `std::process::Command::new` or `tokio::process::Command::new` (clippy.toml disallows both); open links and paths only through `fleetify_backend::open_external`. Code you suggest must follow this too. When an argument comes from a user or a remote (repository URL, branch name, path), check for option injection (`--` before positional arguments) and shell interpolation.
+      - Ollama: a request to the local Ollama daemon must take its base URL from `fleetify_core::resolve_ollama_base_url` (default `http://127.0.0.1:11434`), not `localhost`.
+      - Secrets: no tokens, keys or credentials in code, logs or error messages. Auth tokens live in the OS keyring, never in the webview.
+      - IPC contract: a new or changed Tauri command must be registered in `src-tauri/src/app_commands.rs` and listed in `src-tauri/permissions/app-commands.toml`. When a command's name, arguments or result change, the renderer callers and the tests and mocks that exercise it must change in the same pull request.
+      - A bug fix should come with a regression test that fails without it; say so once if it is missing.
+  - path: src-tauri/{capabilities,permissions}/**
+    instructions: These files decide what the webview may call. Flag any change that widens a capability, adds a remote origin or grants a permission the pull request does not need, and ask for the reason. `permissions/app-commands.toml` must list exactly the commands in `src/app_commands.rs` (a test checks it).
+  - path: src-tauri/tauri*.conf.json
+    instructions: Flag a loosened CSP, a new remote origin, or a changed updater endpoint or public key. `bundle.externalBin` must list the same sidecars as `SIDECARS` in `scripts/build-sidecars.mjs` (CI checks it). The `version` field is bumped by release-please only.
+  - path: crates/fleetify-backend/migrations/*.sql
+    instructions: 'SQLx embeds these migrations and records a checksum of each applied file, so an existing migration must never be edited, renamed or reordered: an installed app would refuse to start with "migration N was previously applied but has been modified". A schema change needs a new file with the next number. The dialect is SQLite. Files keep LF line endings (.gitattributes pins them). Check that a new migration is safe on a database that already holds user data.'
+  - path: crates/fleetify-backend/src/services/telemetry/**
+    instructions: 'Telemetry contract. If this change adds, renames or removes an event or a property (especially in `posthog/mapper.rs`), `docs/ANALYTICS.md` must be updated in the same pull request: flag it when the diff does not touch that file. Product analytics is opt-in, so nothing may reach PostHog unless the runtime gate is on. No property may carry user content, prompts, file paths, tokens or other personal data.'
+  - path: src/**
+    instructions: |-
+      CI already runs ESLint, `tsc` and Vitest: do not report lint, type-level or formatting issues. Review behaviour, state handling, error paths, accessibility and security.
+      - Linux runs this UI in WebKitGTK (Tauri), which has two known traps. (1) A native `<select>` ignores CSS `color` for its value text and becomes unreadable in dark mode: it needs `appearance: none` and `WebkitAppearance: none`, a custom chevron and explicit `<option>` colors, as in `src/components/settings/models/ollama-model-browser.tsx`. (2) Animating `background-position` on a `background-clip: text` element freezes: animate `mask-position` on an `::after` overlay instead, as `.thinking-shimmer-text` does in `src/globals.css`.
+      - Telemetry: a new or changed `capture(...)` call (the wrapper is `src/lib/posthog.ts`) needs `docs/ANALYTICS.md` updated in the same pull request, and its properties must not carry user content or personal data.
+      - Contracts: when component props, a store's shape, a WebSocket message or a Tauri IPC command's arguments or result change, the tests and mocks that exercise that contract must change in the same pull request. Flag mocks that no longer match.
+      - No hardcoded backend URL or port: the renderer and `vite.config.ts` read `VITE_PORT` and `FLEETIFY_BACKEND_PORT`.
+      - A bug fix should come with a regression test that fails without it; say so once if it is missing.
+  - path: scripts/**/*.mjs
+    instructions: 'Node 22 scripts, tested with `node --test`. A behaviour change needs its `*.test.mjs` updated in the same pull request. No hardcoded ports or paths: read the environment with a default. Release scripts handle signing material: never print or persist a key or token, and fail closed when a check cannot run.'
+  - path: scripts/release/install.*
+    instructions: Public installers that end users pipe into a shell. `install.sh` must stay POSIX `sh` (CI runs shellcheck on it as `sh`). Flag any change that skips or weakens an integrity or signature check on what is downloaded, widens what the script writes or deletes, or needs more privileges than before.
+  - path: .github/workflows/**
+    instructions: 'actionlint (with shellcheck) already runs in CI: skip syntax and lint. Review security and intent. Every action is pinned to a full commit SHA with a version comment. `permissions:` stay least-privilege. Untrusted input (pull request title, branch name, `github.event.*` text) must not be interpolated into `run:`. Secrets and signing keys stay scoped to the jobs that need them, and a pull request from a fork must not reach them. Flag a change that removes or weakens a hard gate, or adds `continue-on-error` to one, to make a pull request green.'
+  - path: '**/Cargo.toml'
+    instructions: '`tauri-runtime-wry` is patched from `vendor/` through `[patch.crates-io]`, and Cargo silently drops that patch once `tauri` asks for another version of the runtime. Flag any change to `tauri`, a `tauri-*` crate, `wry` or `tao` that does not also re-vendor the runtime (see `vendor/tauri-runtime-wry/FLEETIFY_PATCH.md`). The workspace version is bumped by release-please only.'
+  - path: package.json
+    instructions: '`@tauri-apps/api` and each `@tauri-apps/plugin-*` package must stay on the same major.minor as its Rust crate, or `tauri build` fails: flag a major or minor bump of an `@tauri-apps/*` package. The `version` field is bumped by release-please only. Node 22 is the supported engine.'
+  - path: vendor/tauri-runtime-wry/**
+    instructions: A verbatim copy of upstream `tauri-runtime-wry` with three Fleetify patches, each marked `FLEETIFY PATCH` in `src/lib.rs` and described in `FLEETIFY_PATCH.md`. Do not review or restyle upstream code. Check only that all three patches are still present and intact, that a change to a patch does not weaken the two security patches (`postmessage-ipc` and `ipc-free-webview`), and that `FLEETIFY_PATCH.md` is updated with it.
+  - path: '**/*.md'
+    instructions: 'Review for accuracy, not style: flag a command, path, environment variable or default that no longer matches the code in this pull request. Do not report grammar or wording preferences. `docs/ANALYTICS.md` must match the telemetry code.'
+  - path: CHANGELOG.md
+    instructions: release-please writes this file from pull request titles. Flag a manual edit and ask the author to remove it.
+  - path: .claude/**
+    instructions: 'Nothing under `.claude/` belongs in this repository: it is local agent state and is gitignored. Flag the file and ask the author to remove it from the pull request.'
+  - path: '**/.env*'
+    instructions: Only `.env.example` is committed, and it holds placeholders only. Flag any other `.env` file as leaked local configuration, and flag a real key or token in `.env.example`.
+  - path: src-tauri/gen/**
+    instructions: Generated by tauri-build and gitignored. Flag the file and ask the author to remove it from the pull request.
+  tools:
+    gitleaks:
+      enabled: true
+    trufflehog:
+      enabled: true
+    zizmor:
+      enabled: true
+    opengrep:
+      enabled: true
+    ast-grep:
+      enabled: true
+      essential_rules: true
+    psscriptanalyzer:
+      enabled: true
+    github-checks:
+      enabled: true
+    clippy:
+      enabled: false
+    eslint:
+      enabled: false
+    biome:
+      enabled: false
+    oxc:
+      enabled: false
+    reactDoctor:
+      enabled: false
+    actionlint:
+      enabled: false
+    shellcheck:
+      enabled: false
+    yamllint:
+      enabled: false
+    checkov:
+      enabled: false
+    osvScanner:
+      enabled: false
+    markdownlint:
+      enabled: false
+    languagetool:
+      enabled: false
+    dotenvLint:
+      enabled: false
+    stylelint:
+      enabled: false
+    checkmake:
+      enabled: false
+    sqlfluff:
+      enabled: false
+    squawk:
+      enabled: false
+    semgrep:
+      enabled: false
+    presidio:
+      enabled: false
+    pylint:
+      enabled: false
+    flake8:
+      enabled: false
+chat:
+  auto_reply: true
+  art: false
+  allow_non_org_members: true
+  integrations:
+    jira:
+      usage: disabled
+    linear:
+      usage: disabled
+knowledge_base:
+  opt_out: false
+  web_search:
+    enabled: true
+  code_guidelines:
+    enabled: true
+    filePatterns:
+    - CLAUDE.md
+    - CONTRIBUTING.md
+    - docs/ARCHITECTURE.md
+    - docs/RUNNING.md
+    - docs/ANALYTICS.md
+    - docs/AGENT_BRIDGES.md
+    - docs/MCP_INTEGRATION.md
+    - docs/PROVIDER_ARCHITECTURE.md
+    - docs/PERMISSIONS.md
+    - docs/RELEASE.md
+    - vendor/tauri-runtime-wry/FLEETIFY_PATCH.md
+  learnings:
+    scope: local
+  issues:
+    scope: local
+  pull_requests:
+    scope: local
+  jira:
+    usage: disabled
+  linear:
+    usage: disabled
+  mcp:
+    usage: disabled
+  automatic_linking_mode: disabled
+  linked_repositories: []
+issue_enrichment:
+  auto_enrich:
+    enabled: false
+  planning:
+    enabled: false
+    auto_planning:
+      enabled: false
+      labels: []
+  labeling:
+    auto_apply_labels: false
+    labeling_instructions: []
