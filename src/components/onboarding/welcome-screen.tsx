@@ -140,8 +140,8 @@ export function WelcomeScreen({ onAuth }: WelcomeScreenProps) {
             maxWidth: 320,
           }}
         >
-          One developer.{" "}
-          <span style={{ display: "block" }}>A whole fleet of agents.</span>
+          Think it.{" "}
+          <span style={{ display: "block" }}>Your fleet builds it.</span>
         </h1>
 
         {/* Description */}
