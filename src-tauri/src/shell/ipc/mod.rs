@@ -1396,12 +1396,11 @@ pub async fn window_close(app: tauri::AppHandle) -> serde_json::Value {
 /// issued immediately after a resize reads the still-stale outer size and
 /// places a just-grown window to the bottom-right. Computing placement from
 /// the size we're about to apply makes it correct regardless of when the GTK
-/// resize lands. Clamps non-negative so a window larger than the monitor pins
+/// resize lands. macOS has the same race: tao queues the resize on the main
+/// queue (`set_content_size_async`), so `center()` there also reads the old
+/// size, and AppKit's `-[NSWindow center]` sits the window above the middle
+/// on purpose. Clamps non-negative so a window larger than the monitor pins
 /// to the monitor origin rather than running off the top-left.
-///
-/// macOS centers with the window's own `center()` instead (`window_set_size`),
-/// so there only the tests call this.
-#[cfg_attr(target_os = "macos", allow(dead_code))]
 fn centered_top_left(
     mon_x: f64,
     mon_y: f64,
@@ -1414,6 +1413,21 @@ fn centered_top_left(
         mon_x + ((mon_w - width) / 2.0).max(0.0),
         mon_y + ((mon_h - height) / 2.0).max(0.0),
     )
+}
+
+/// Logical top-left that centers a `width`×`height` window on `monitor`.
+/// The window has no title bar of its own on any platform (macOS overlays
+/// its traffic lights on the content), so its outer size is its inner size.
+pub(crate) fn centered_on(
+    monitor: &tauri::Monitor,
+    width: f64,
+    height: f64,
+) -> tauri::LogicalPosition<f64> {
+    let scale = monitor.scale_factor();
+    let mpos = monitor.position().to_logical::<f64>(scale);
+    let msize = monitor.size().to_logical::<f64>(scale);
+    let (x, y) = centered_top_left(mpos.x, mpos.y, msize.width, msize.height, width, height);
+    tauri::LogicalPosition::new(x, y)
 }
 
 #[tauri::command]
@@ -1429,38 +1443,17 @@ pub async fn window_set_size(
         // main), so the window must recenter on every resize or it stays
         // pinned to its previous top-left.
         if center.unwrap_or(false) {
-            // macOS keeps decorations (custom traffic lights) and isn't
-            // subject to the async-resize race below, so its built-in
-            // center() — which accounts for the title bar — stays.
-            #[cfg(target_os = "macos")]
-            {
-                let _ = w.center();
-            }
-            // Linux/Windows run decorationless (inner == outer). On Linux/X11
-            // set_size() above is async, so w.center() would read the stale
-            // pre-resize size and shove the grown window into the bottom-right
-            // corner. Center on the current monitor using the TARGET size.
-            #[cfg(not(target_os = "macos"))]
-            {
-                match w.current_monitor() {
-                    Ok(Some(monitor)) => {
-                        let scale = monitor.scale_factor();
-                        let mpos = monitor.position().to_logical::<f64>(scale);
-                        let msize = monitor.size().to_logical::<f64>(scale);
-                        let (x, y) = centered_top_left(
-                            mpos.x,
-                            mpos.y,
-                            msize.width,
-                            msize.height,
-                            width,
-                            height,
-                        );
-                        let _ = w.set_position(tauri::LogicalPosition::new(x, y));
-                    }
-                    // No monitor info (rare) — fall back to the built-in.
-                    _ => {
-                        let _ = w.center();
-                    }
+            // Center on the current monitor using the TARGET size: set_size()
+            // above is asynchronous on every platform (GTK on Linux, the main
+            // queue on macOS), so w.center() would read the stale pre-resize
+            // size and leave the window where the old size was centered.
+            match w.current_monitor() {
+                Ok(Some(monitor)) => {
+                    let _ = w.set_position(centered_on(&monitor, width, height));
+                }
+                // No monitor info (rare) — fall back to the built-in.
+                _ => {
+                    let _ = w.center();
                 }
             }
         }
@@ -4958,6 +4951,22 @@ mod tests {
         assert!(
             correct_x < stale_x,
             "centering the target size must sit left of the stale-size placement"
+        );
+    }
+
+    #[test]
+    fn centered_top_left_shrinks_around_the_middle_on_any_monitor() {
+        // The macOS bug: signing out shrank the 1500×960 main window to the
+        // 760×740 sign-in screen around the old size's corner (x=530) on a
+        // 2560×1440 display. The target size puts it in the middle.
+        assert_eq!(
+            centered_top_left(0.0, 0.0, 2560.0, 1440.0, 760.0, 740.0),
+            (900.0, 350.0)
+        );
+        // A display left of and above the main one has a negative origin.
+        assert_eq!(
+            centered_top_left(-1728.0, -84.0, 1728.0, 1117.0, 760.0, 740.0),
+            (-1244.0, 104.5)
         );
     }
 
