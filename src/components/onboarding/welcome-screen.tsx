@@ -22,7 +22,7 @@ const PRIVACY_URL = "https://fleetify.dev/legal/privacy";
 function LegalLink({ href, children }: { href: string; children: ReactNode }) {
   return (
     <a
-      className="app-no-drag"
+      className="no-drag"
       href={href}
       rel="noreferrer"
       onClick={(event) => {
@@ -79,7 +79,7 @@ export function WelcomeScreen({ onAuth }: WelcomeScreenProps) {
 
   return (
     <div
-      className="app-drag"
+      className="drag-region"
       style={{
         height: "100vh",
         width: "100vw",
@@ -173,7 +173,7 @@ export function WelcomeScreen({ onAuth }: WelcomeScreenProps) {
 
         {/* Single CTA — Sign in with Fleetify */}
         <button
-          className="app-no-drag"
+          className="no-drag"
           onClick={handleSignIn}
           disabled={loading}
           style={{

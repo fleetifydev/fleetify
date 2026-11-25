@@ -233,7 +233,7 @@ function ProvidersStep({ onDone }: { onDone: () => void }) {
 
   return (
     <div
-      className="app-drag"
+      className="drag-region"
       style={{
         height: "100vh",
         width: "100vw",
@@ -245,7 +245,7 @@ function ProvidersStep({ onDone }: { onDone: () => void }) {
       }}
     >
       <div
-        className="app-no-drag"
+        className="no-drag"
         style={{
           width: "100%",
           maxWidth: 360,

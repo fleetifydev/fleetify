@@ -798,7 +798,7 @@ export function OnboardingChat({ user, onDone, startAt }: Props) {
 
   return (
     <div
-      className="app-drag"
+      className="drag-region"
       style={{
         height: "100vh",
         width: "100vw",
@@ -839,7 +839,7 @@ export function OnboardingChat({ user, onDone, startAt }: Props) {
 
       <div
         ref={scrollRef}
-        className="app-no-drag"
+        className="no-drag"
         onContextMenu={(e) => {
           // Right-click anywhere in the chat skips the typewriter — reveal
           // the in-flight line's full text instead of waiting it out. When
@@ -885,7 +885,7 @@ export function OnboardingChat({ user, onDone, startAt }: Props) {
       </div>
 
       <div
-        className="app-no-drag"
+        className="no-drag"
         style={{
           width: "100%",
           maxWidth: 640,
