@@ -102,6 +102,15 @@ const MAIN_SIZE = { w: 1500, h: 960 };
 
 export function App() {
   const [screen, setScreen] = useState<Screen>("splash");
+  // Entering the main shell, the onboarding backdrop fades out over it
+  // instead of vanishing, and goes away when its fade ends. Set while
+  // rendering when the screen changes (no effect, no extra paint).
+  const [prevScreen, setPrevScreen] = useState<Screen>(screen);
+  const [backdropExiting, setBackdropExiting] = useState(false);
+  if (screen !== prevScreen) {
+    setPrevScreen(screen);
+    setBackdropExiting(screen === "main" && prevScreen !== "main");
+  }
   const [introReveal, setIntroReveal] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<string>("General");
@@ -457,9 +466,16 @@ export function App() {
       )}
 
       {/* The screens before the main shell share one moving backdrop,
-          mounted once so its motion carries on from screen to screen. */}
-      {screen !== "main" && (
-        <div className="onboarding-stage">
+          mounted once so its motion carries on from screen to screen. On
+          the way into the main shell the same element stays, lifted over
+          the shell, and fades out there (onboarding-stage--exit). */}
+      {(screen !== "main" || backdropExiting) && (
+        <div
+          className={screen === "main" ? "onboarding-stage onboarding-stage--exit" : "onboarding-stage"}
+          onAnimationEnd={(e) => {
+            if (e.animationName === "onboarding-stage-out") setBackdropExiting(false);
+          }}
+        >
           <OnboardingBackdrop />
           {screen === "splash"          && <SplashScreen onDone={handleSplashDone} />}
           {screen === "welcome"         && <WelcomeScreen onAuth={handleAuth} />}
