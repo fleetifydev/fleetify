@@ -40,6 +40,11 @@ function followedInPlace(link: HTMLElement): boolean {
 }
 
 describe("the sign-in screen", () => {
+  it("doesn't narrate the browser hand-off", () => {
+    render(<WelcomeScreen onAuth={vi.fn()} />);
+    expect(screen.queryByText(/open your browser/i)).toBeNull();
+  });
+
   it("leads with the headline", () => {
     render(<WelcomeScreen onAuth={vi.fn()} />);
     expect(
