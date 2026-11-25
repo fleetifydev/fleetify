@@ -44,15 +44,16 @@ interface CuratedModel {
 // `model:tag` remains pullable).
 const CURATED_LOCAL_MODELS: CuratedModel[] = [
   { name: "llama3.2", blurb: "Meta's compact general-purpose model", caps: ["tools"], sizes: ["1b", "3b"] },
-  { name: "llama3.1", blurb: "Meta's flagship general model", caps: ["tools"], sizes: ["8b", "70b"] },
-  { name: "qwen2.5", blurb: "Alibaba's multilingual general model", caps: ["tools"], sizes: ["0.5b", "1.5b", "3b", "7b", "14b", "32b"] },
-  { name: "qwen2.5-coder", blurb: "Code-specialized Qwen2.5", caps: ["tools"], sizes: ["1.5b", "7b", "14b", "32b"] },
-  { name: "gemma2", blurb: "Google's open general model", caps: [], sizes: ["2b", "9b", "27b"] },
-  { name: "phi3.5", blurb: "Microsoft's small high-quality model", caps: [], sizes: ["3.8b"] },
-  { name: "mistral", blurb: "Mistral 7B general model", caps: ["tools"], sizes: ["7b"] },
-  { name: "deepseek-r1", blurb: "Open reasoning model", caps: ["thinking"], sizes: ["1.5b", "7b", "8b", "14b", "32b", "70b"] },
-  { name: "llava", blurb: "Vision-language multimodal model", caps: ["vision"], sizes: ["7b", "13b", "34b"] },
-  { name: "nomic-embed-text", blurb: "High-quality text embeddings", caps: ["embedding"], sizes: [] },
+  { name: "qwen3.5", blurb: "Alibaba's multimodal general-purpose model", caps: ["vision", "tools", "thinking"], sizes: ["0.8b", "2b", "4b", "9b", "27b"] },
+  { name: "gemma4", blurb: "Google's multimodal reasoning model", caps: ["vision", "tools", "thinking"], sizes: ["e2b", "e4b", "12b", "26b", "31b"] },
+  { name: "ministral-3", blurb: "Mistral's compact vision-language model family", caps: ["vision", "tools"], sizes: ["3b", "8b", "14b"] },
+  { name: "qwen2.5-coder", blurb: "Compact Qwen models for coding", caps: ["tools"], sizes: ["0.5b", "1.5b"] },
+  { name: "qwen3-coder", blurb: "Code-specialized Qwen with tool calling", caps: ["tools"], sizes: ["30b"] },
+  { name: "gpt-oss", blurb: "OpenAI's open-weight reasoning model", caps: ["tools", "thinking"], sizes: ["20b", "120b"] },
+  { name: "deepseek-r1", blurb: "Open reasoning model", caps: ["thinking"], sizes: ["1.5b", "7b", "8b", "14b", "32b"] },
+  { name: "qwen3-vl", blurb: "Qwen model for understanding images and text", caps: ["vision", "tools", "thinking"], sizes: ["2b", "4b", "8b"] },
+  { name: "nomic-embed-text", blurb: "Compact text embedding model", caps: ["embedding"], sizes: [] },
+  { name: "qwen3-embedding", blurb: "Text embeddings for retrieval", caps: ["embedding"], sizes: ["0.6b", "4b", "8b"] },
 ];
 
 /** Where the "Ollama library" link goes: every tag the free-text pull takes. */

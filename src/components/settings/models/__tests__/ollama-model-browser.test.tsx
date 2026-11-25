@@ -47,6 +47,31 @@ beforeEach(() => {
 });
 
 describe("OllamaModelBrowser", () => {
+  it("pulls a selected tag from a current curated model", async () => {
+    render(<OllamaModelBrowser baseUrl={null} installed={[]} onChanged={() => {}} />);
+
+    fireEvent.change(screen.getByLabelText("Size for qwen3.5"), {
+      target: { value: "4b" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Download qwen3.5:4b" }));
+
+    await waitFor(() => expect(apiMock.ollamaPull).toHaveBeenCalledWith("qwen3.5:4b", null));
+  });
+
+  it("offers a lightweight coding model in the curated list", async () => {
+    render(<OllamaModelBrowser baseUrl={null} installed={[]} onChanged={() => {}} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Download qwen2.5-coder:0.5b" }));
+
+    await waitFor(() => expect(apiMock.ollamaPull).toHaveBeenCalledWith("qwen2.5-coder:0.5b", null));
+  });
+
+  it("shows the thinking capability for Qwen3-VL", () => {
+    render(<OllamaModelBrowser baseUrl={null} installed={[]} onChanged={() => {}} />);
+
+    expect(screen.getByText("qwen3-vl").parentElement).toHaveTextContent(/thinking/i);
+  });
+
   it("typing a model:tag and clicking Download starts a pull with the base URL", async () => {
     render(
       <OllamaModelBrowser
