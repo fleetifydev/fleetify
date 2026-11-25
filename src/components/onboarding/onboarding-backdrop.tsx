@@ -1,7 +1,8 @@
 /**
- * The moving backdrop behind the screens before the main shell: soft, calm
- * blue light (`--m-ambient`) drifting slowly from side to side. App mounts it
- * once for all of those screens, so it carries on from one to the next.
+ * The moving backdrop behind the screens before the main shell: soft light in
+ * the brand blue (`--m-brand`, docs/BRAND.md) drifting slowly from side to
+ * side. App mounts it once for all of those screens, so it carries on from
+ * one to the next.
  *
  * Decoration only: hidden from assistive technology and never in the way of
  * a click or a window drag (`pointer-events: none`). Still, without motion,
