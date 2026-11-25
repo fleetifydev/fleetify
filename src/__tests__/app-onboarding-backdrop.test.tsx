@@ -117,9 +117,30 @@ it("leaves the light fading over the main shell until its fade ends", async () =
   const stage = backdrop()!.parentElement!;
   // On top of the shell, out of the way of every click.
   expect(stage).toHaveClass("onboarding-stage--exit");
-  // Another animation ending (the backdrop's own fade-in) changes nothing.
-  fireEvent.animationEnd(stage, { animationName: "onboarding-backdrop-in" });
+  // Another animation ending inside it changes nothing.
+  fireEvent.animationEnd(stage, { animationName: "onboarding-drift-a" });
   expect(backdrop()).toBeInTheDocument();
   fireEvent.animationEnd(stage, { animationName: "onboarding-stage-out" });
   expect(backdrop()).toBeNull();
+});
+
+// The splash keeps the window at the size it opened with (the shell opens it
+// at the last screen's size), so a launch into the main shell never shrinks
+// the window for the splash and grows it again.
+it("leaves the window size alone during the splash", async () => {
+  launch({ signedIn: false });
+  expect(await screen.findByText("splash")).toBeInTheDocument();
+  await settle();
+  expect(api.setWindowSize).not.toHaveBeenCalled();
+
+  act(() => splash.finish?.());
+  expect(await screen.findByText("welcome")).toBeInTheDocument();
+  expect(api.setWindowSize).toHaveBeenLastCalledWith(760, 740, { center: true, animate: true });
+});
+
+it("sizes the window for the main shell", async () => {
+  launch({ signedIn: true });
+  expect(await screen.findByText("main")).toBeInTheDocument();
+  expect(api.setWindowSize).toHaveBeenLastCalledWith(1500, 960, { center: true, animate: true });
+  expect(api.setWindowSize).not.toHaveBeenCalledWith(760, 740, expect.anything());
 });

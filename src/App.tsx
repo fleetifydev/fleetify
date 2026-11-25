@@ -160,8 +160,12 @@ export function App() {
   }, [screen]);
 
   // Size the window to match the active screen mode. Onboarding screens
-  // share one small size; entering main grows + recenters once.
+  // share one small size; entering main grows + recenters once. The splash
+  // leaves the window as it opened: the shell opens it at the last screen's
+  // size, so a launch straight into main doesn't shrink for the splash and
+  // grow again.
   useEffect(() => {
+    if (screen === "splash") return;
     const target =
       screen === "main"
         ? MAIN_SIZE

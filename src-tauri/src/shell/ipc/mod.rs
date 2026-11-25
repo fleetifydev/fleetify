@@ -1430,6 +1430,35 @@ pub(crate) fn centered_on(
     tauri::LogicalPosition::new(x, y)
 }
 
+/// File in `fleetify_home()` that keeps the main window's last size, so the
+/// next launch opens at the screen it left (setup() in lib.rs): a launch into
+/// the main shell doesn't open small and jump.
+pub(crate) const WINDOW_SIZE_FILE: &str = "window-size.json";
+
+/// What `window_set_size` writes to [`WINDOW_SIZE_FILE`].
+fn window_size_json(width: f64, height: f64) -> String {
+    serde_json::json!({ "width": width, "height": height }).to_string()
+}
+
+/// The size a [`WINDOW_SIZE_FILE`] holds, if it is a sane one; anything else
+/// (missing, unreadable, hand-edited) opens at the first-launch size.
+pub(crate) fn parse_window_size(text: &str) -> Option<(f64, f64)> {
+    let v: serde_json::Value = serde_json::from_str(text).ok()?;
+    let width = v.get("width")?.as_f64()?;
+    let height = v.get("height")?.as_f64()?;
+    let sane = |x: f64| x.is_finite() && (400.0..=8000.0).contains(&x);
+    (sane(width) && sane(height)).then_some((width, height))
+}
+
+/// The main window's size for this launch: the last one it had, else
+/// `first_launch`.
+pub(crate) fn startup_window_size(first_launch: (f64, f64)) -> (f64, f64) {
+    std::fs::read_to_string(fleetify_core::fleetify_home().join(WINDOW_SIZE_FILE))
+        .ok()
+        .and_then(|text| parse_window_size(&text))
+        .unwrap_or(first_launch)
+}
+
 #[tauri::command]
 pub async fn window_set_size(
     app: tauri::AppHandle,
@@ -1439,6 +1468,11 @@ pub async fn window_set_size(
 ) -> serde_json::Value {
     if let Some(w) = main_window(&app) {
         let _ = w.set_size(tauri::LogicalSize::new(width, height));
+        // Best effort: without it the next launch opens at the first size.
+        let home = fleetify_core::fleetify_home();
+        if std::fs::create_dir_all(&home).is_ok() {
+            let _ = std::fs::write(home.join(WINDOW_SIZE_FILE), window_size_json(width, height));
+        }
         // Each screen mode has its own size (760×740 onboarding vs 1500×960
         // main), so the window must recenter on every resize or it stays
         // pinned to its previous top-left.
@@ -4952,6 +4986,30 @@ mod tests {
             correct_x < stale_x,
             "centering the target size must sit left of the stale-size placement"
         );
+    }
+
+    #[test]
+    fn a_remembered_window_size_is_read_back_only_when_sane() {
+        assert_eq!(
+            parse_window_size(r#"{"width":1500,"height":960}"#),
+            Some((1500.0, 960.0))
+        );
+        // What window_set_size writes reads back as the same size.
+        assert_eq!(
+            parse_window_size(&window_size_json(760.0, 740.0)),
+            Some((760.0, 740.0))
+        );
+        // Anything else opens at the first-launch size instead.
+        for bad in [
+            "",
+            "not json",
+            r#"{"width":1500}"#,
+            r#"{"width":"1500","height":960}"#,
+            r#"{"width":10,"height":960}"#,
+            r#"{"width":1500,"height":99999}"#,
+        ] {
+            assert_eq!(parse_window_size(bad), None, "{bad}");
+        }
     }
 
     #[test]

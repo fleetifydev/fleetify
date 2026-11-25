@@ -21,8 +21,9 @@ use tauri::{Manager, WebviewUrl};
 /// Boot shim reconstructing `window.electronAPI` / `window.fleetify`.
 const PRELOAD: &str = include_str!("preload.js");
 
-/// The main window's size when it opens: the onboarding size, which
-/// `ONBOARDING_SIZE` in src/App.tsx matches (see the builder in setup()).
+/// The main window's size on a first launch: the onboarding size, which
+/// `ONBOARDING_SIZE` in src/App.tsx matches. Later launches open at the last
+/// size the window had (shell::ipc::startup_window_size).
 const STARTUP_SIZE: (f64, f64) = (760.0, 740.0);
 
 /// Parse `VITE_PORT` with a 3000 fallback, as `vite.config.ts` does. Debug
@@ -450,6 +451,7 @@ pub fn run() {
                 .parse()
                 .expect("valid webview url");
             let app_page_loaded = std::sync::Arc::new(tokio::sync::Notify::new());
+            let (open_width, open_height) = shell::ipc::startup_window_size(STARTUP_SIZE);
             let builder = WebviewWindowBuilder::new(
                 app,
                 shell::startup_window::MAIN_WINDOW,
@@ -465,16 +467,15 @@ pub fn run() {
             ))
             .on_navigation(shell::startup_window::guard_main_navigation)
             .title("Fleetify")
-            // Cold-start at the ONBOARDING size (760×740) rather than
-            // the MAIN size (1500×960). Reveal-when-ready paints the
-            // first React frame straight into this small window, so
-            // new users (splash → welcome → onboarding-chat) never see
-            // a giant white frame that then shrinks. Returning users
-            // who land on main get a small-to-large grow on first
-            // paint instead, which reads as an expand rather than the
-            // current jarring shrink. Both sizes are kept in sync with
+            // Open at the size of the screen the app will show: the last
+            // size the window had (window_set_size keeps it), so a launch
+            // into the main shell opens at MAIN size (1500×960) and the
+            // splash leaves it alone, with no small-to-large jump. A first
+            // launch opens at the ONBOARDING size (760×740), so new users
+            // (splash → welcome → onboarding-chat) never see a large frame
+            // that then shrinks. Both sizes are kept in sync with
             // ONBOARDING_SIZE / MAIN_SIZE in src/App.tsx.
-            .inner_size(STARTUP_SIZE.0, STARTUP_SIZE.1)
+            .inner_size(open_width, open_height)
             .visible(false)
             // Required for HTML5 drag-and-drop on Windows/WebView2. With Tauri's
             // OS-level drag-drop handler ENABLED (the default) WebView2 intercepts
@@ -494,7 +495,7 @@ pub fn run() {
             // change (window_set_size), so the first frame doesn't jump.
             let builder = match app.handle().primary_monitor() {
                 Ok(Some(monitor)) => {
-                    let pos = shell::ipc::centered_on(&monitor, STARTUP_SIZE.0, STARTUP_SIZE.1);
+                    let pos = shell::ipc::centered_on(&monitor, open_width, open_height);
                     builder.position(pos.x, pos.y)
                 }
                 _ => builder.center(),
