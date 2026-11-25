@@ -1,6 +1,6 @@
 /**
- * The moving backdrop behind the screens before the main shell: soft light
- * in the theme's accent drifting slowly from side to side. App mounts it
+ * The moving backdrop behind the screens before the main shell: soft, calm
+ * blue light (`--m-ambient`) drifting slowly from side to side. App mounts it
  * once for all of those screens, so it carries on from one to the next.
  *
  * Decoration only: hidden from assistive technology and never in the way of

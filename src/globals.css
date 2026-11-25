@@ -112,6 +112,10 @@
   --m-btn-bg: #000;
   --m-btn-text: #fff;
   --m-accent: #22c55e;
+  /* Light of the onboarding backdrop: a calm, low-saturation blue that is
+     none of the agents' brand colours and not a status colour (green means
+     Running). Only .onboarding-backdrop reads it. */
+  --m-ambient: #3d6ad6;
   --m-input-bg: #f7f7f7;
   --m-logo: #808080;
   --m-onboarding-bg: #fff;
@@ -134,6 +138,7 @@
   --m-btn-bg: #fff;
   --m-btn-text: #000;
   --m-accent: #d97757;
+  --m-ambient: #6f8fe8;
   --m-input-bg: #161616;
   --m-logo: #888888;
   --m-onboarding-bg: #0C0C0C;
@@ -819,8 +824,8 @@ body {
 
 /* ─── Onboarding backdrop ───
    Behind the screens before the main shell (OnboardingBackdrop): large,
-   soft pools of the theme's accent drifting slowly from side to side. Each
-   is a radial gradient that fades to nothing, so no blur filter is needed,
+   soft pools of calm blue (--m-ambient) drifting slowly from side to side.
+   Each is a radial gradient that fades to nothing, so no blur filter is needed,
    and only transform animates (GPU-composited, no layout or paint per
    frame). Sits at z-index -1 inside .onboarding-stage, which isolates it, so
    it paints over the page background and under the screen's content. */
@@ -834,7 +839,7 @@ body {
 .onboarding-backdrop__light {
   position: absolute;
   border-radius: 50%;
-  background: radial-gradient(closest-side, var(--m-accent), transparent);
+  background: radial-gradient(closest-side, var(--m-ambient), transparent);
   will-change: transform;
 }
 .onboarding-backdrop__light--a {
