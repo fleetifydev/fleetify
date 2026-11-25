@@ -41,7 +41,6 @@ ignore = [
   # (older than 3.54) can return uninitialized memory for a database and -wal
   # file with different page sizes. The backend's database runs in WAL mode
   # (crates/fleetify-backend/src/db.rs).
-  { id = "RUSTSEC-2026-0459", reason = "fleetify-backend still on sqlx 0.8 (sqlx-sqlite 0.8 caps libsqlite3-sys below the fixed 0.39); sqlx 0.9.1 admits it — bump tracked in the post-release backlog (pre-RC if cheap)" },
 
   # Upstream: the fix needs a dependency release Fleetify can't take yet.
   { id = "RUSTSEC-2025-0075", reason = "tauri-utils upstream: unic-char-range (unmaintained) via urlpattern 0.3, a tauri-utils 2.9 dependency" },

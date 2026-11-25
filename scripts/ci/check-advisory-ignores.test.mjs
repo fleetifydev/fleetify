@@ -22,10 +22,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const read = (rel) => readFileSync(join(ROOT, rel), "utf8");
 
 /** Advisories deny.toml ignores that OSV keeps counting: they may affect the app, and their fix is pending. */
-const COUNTED = [
-  // sqlx-sqlite 0.8's bundled SQLite and a WAL file with a different page size; fixed by the sqlx 0.9 bump.
-  "RUSTSEC-2026-0459",
-];
+const COUNTED = [];
 
 /** deny.toml's `[advisories] ignore` entries. */
 function denyIgnores() {

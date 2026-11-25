@@ -169,7 +169,8 @@ async fn list_sessions(
     if !unclaimed.is_empty() {
         let placeholders = vec!["?"; unclaimed.len()].join(",");
         let update_sql = format!("UPDATE sessions SET user_id = ? WHERE id IN ({placeholders})");
-        let mut q = sqlx::query(&update_sql).bind(&user.id);
+        // Safe: only `?` placeholders are formatted in; the ids are bound.
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(update_sql)).bind(&user.id);
         for sid in &unclaimed {
             q = q.bind(sid);
         }
@@ -1910,12 +1911,13 @@ mod tests {
             ("session_activity", "session_id"),
             ("session_memory", "session_id"),
         ] {
-            let (n,): (i64,) =
-                sqlx::query_as(&format!("SELECT COUNT(*) FROM {table} WHERE {col} = ?"))
-                    .bind(sid)
-                    .fetch_one(&pool)
-                    .await
-                    .unwrap();
+            let (n,): (i64,) = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "SELECT COUNT(*) FROM {table} WHERE {col} = ?"
+            )))
+            .bind(sid)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
             assert_eq!(n, 0, "{table} still holds rows for the deleted session");
         }
     }
