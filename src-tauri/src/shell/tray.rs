@@ -255,7 +255,7 @@ mod notification_area {
             // process can open it. Auto-reset (bManualReset FALSE): a wait
             // that returns resets it. Not signaled (bInitialState FALSE).
             let handle = unsafe { CreateEventW(std::ptr::null(), 0, 0, std::ptr::null()) };
-            if handle == 0 {
+            if handle.is_null() {
                 // SAFETY: reads the error CreateEventW just set.
                 Err(unsafe { GetLastError() })
             } else {
