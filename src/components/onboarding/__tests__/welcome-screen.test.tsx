@@ -40,6 +40,13 @@ function followedInPlace(link: HTMLElement): boolean {
 }
 
 describe("the sign-in screen", () => {
+  it("leads with the headline", () => {
+    render(<WelcomeScreen onAuth={vi.fn()} />);
+    expect(
+      screen.getByRole("heading", { level: 1, name: "One developer. A whole fleet of agents." }),
+    ).toBeInTheDocument();
+  });
+
   it("says that signing in accepts the Terms of Service, and points to the Privacy Policy", () => {
     render(<WelcomeScreen onAuth={vi.fn()} />);
     const line = screen.getByRole("link", { name: "Terms of Service" }).closest("p");

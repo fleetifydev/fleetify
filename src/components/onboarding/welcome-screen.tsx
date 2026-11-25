@@ -140,7 +140,8 @@ export function WelcomeScreen({ onAuth }: WelcomeScreenProps) {
             maxWidth: 320,
           }}
         >
-          The command center for AI-native development
+          One developer.{" "}
+          <span style={{ display: "block" }}>A whole fleet of agents.</span>
         </h1>
 
         {/* Description */}
