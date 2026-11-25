@@ -828,13 +828,14 @@ body {
    Each is a radial gradient that fades to nothing, so no blur filter is needed,
    and only transform animates (GPU-composited, no layout or paint per
    frame). Sits at z-index -1 inside .onboarding-stage, which isolates it, so
-   it paints over the page background and under the screen's content. */
+   it paints over the page background and under the screen's content. It is
+   on from the first frame, picking up where the static first frame in
+   index.html (and the shell's placeholder page) left the light: keep those
+   in step with the sizes, positions and opacities here. */
 .onboarding-stage { position: relative; height: 100%; isolation: isolate; }
 .onboarding-backdrop {
   position: absolute; inset: 0; z-index: -1;
   overflow: hidden; pointer-events: none;
-  opacity: 0;
-  animation: onboarding-backdrop-in 1.6s ease-out 0.15s forwards;
 }
 .onboarding-backdrop__light {
   position: absolute;
@@ -860,21 +861,18 @@ body {
   animation: onboarding-drift-c 19s ease-in-out infinite alternate;
 }
 /* Entering the main shell: the stage, now holding only the backdrop, lifts
-   over the shell (above its reveal overlay) on the onboarding background and
-   fades out, so the light dissolves into the app instead of cutting away.
-   App removes it on this animation's end. */
+   over the shell (above its reveal overlay) on the onboarding background,
+   holds a moment so the light registers, and fades out, so it dissolves
+   into the app instead of cutting away. App removes it on this animation's
+   end. */
 .onboarding-stage--exit {
   position: fixed; inset: 0; z-index: 9500;
   height: auto;
   background: var(--m-bg);
   pointer-events: none;
-  animation: onboarding-stage-out 0.9s cubic-bezier(0.4, 0, 0.2, 1) 0.1s forwards;
+  animation: onboarding-stage-out 0.8s cubic-bezier(0.4, 0, 0.2, 1) 0.35s forwards;
 }
-/* A signed-in launch reaches the shell before the backdrop's own fade-in is
-   done: show the light at full strength for the hand-off. */
-.onboarding-stage--exit .onboarding-backdrop { animation: none; opacity: 1; }
 @keyframes onboarding-stage-out { to { opacity: 0; } }
-@keyframes onboarding-backdrop-in { to { opacity: 1; } }
 @keyframes onboarding-drift-a {
   from { transform: translate3d(0, 0, 0) scale(1); }
   to   { transform: translate3d(38vmax, 10vmax, 0) scale(1.12); }
@@ -888,7 +886,6 @@ body {
   to   { transform: translate3d(22vmax, -4vmax, 0); }
 }
 @media (prefers-reduced-motion: reduce) {
-  .onboarding-backdrop { animation: none; opacity: 1; }
   .onboarding-backdrop__light { animation: none; }
   /* Still ends (and fires animationend) so App removes it, without a fade. */
   .onboarding-stage--exit { animation-duration: 1ms; animation-delay: 0s; }

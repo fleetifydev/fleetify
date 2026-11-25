@@ -101,11 +101,13 @@ body {
   -webkit-user-select: none;
   user-select: none;
 }
+/* The brand light, where the app's onboarding backdrop starts (index.html,
+   src/globals.css), so a slow start shows the same first frame. */
 @media (prefers-color-scheme: light) {
-  body { background: #ffffff; color: #111111; }
+  body { background: radial-gradient(circle 30vmax at calc(50% - 22vmax) calc(50% + 4vmax), rgba(31, 31, 31, 0.035), rgba(31, 31, 31, 0)), radial-gradient(circle 45.9vmax at calc(100% + 1.5vmax) calc(100% - 0.5vmax), rgba(61, 106, 214, 0.13), rgba(61, 106, 214, 0)), radial-gradient(circle 47.5vmax at -0.5vmax 7.5vmax, rgba(61, 106, 214, 0.16), rgba(61, 106, 214, 0)), #ffffff; color: #111111; }
 }
 @media (prefers-color-scheme: dark) {
-  body { background: #0c0c0c; color: #d8d8d8; }
+  body { background: radial-gradient(circle 30vmax at calc(50% - 22vmax) calc(50% + 4vmax), rgba(240, 240, 240, 0.035), rgba(240, 240, 240, 0)), radial-gradient(circle 45.9vmax at calc(100% + 1.5vmax) calc(100% - 0.5vmax), rgba(111, 143, 232, 0.13), rgba(111, 143, 232, 0)), radial-gradient(circle 47.5vmax at -0.5vmax 7.5vmax, rgba(111, 143, 232, 0.16), rgba(111, 143, 232, 0)), #0c0c0c; color: #d8d8d8; }
 }
 </style>
 </head>
@@ -733,12 +735,19 @@ mod tests {
     #[test]
     fn the_placeholder_colours_follow_the_system_colour_scheme() {
         // The app's background and foreground: the light theme, and the
-        // default dark theme (zinc), from src/globals.css.
+        // default dark theme (zinc), from src/globals.css. The background
+        // is the brand light (--m-brand) over the app's base colour, as the
+        // onboarding backdrop starts (src/__tests__/first-frame.test.ts
+        // checks the colour against globals.css).
         let light = scheme_block("light");
-        assert!(light.contains("background: #ffffff"), "{light}");
+        assert!(light.contains("background: radial-gradient("), "{light}");
+        assert!(light.contains("rgba(61, 106, 214, 0.16)"), "{light}");
+        assert!(light.contains(", #ffffff;"), "{light}");
         assert!(light.contains("color: #111111"), "{light}");
         let dark = scheme_block("dark");
-        assert!(dark.contains("background: #0c0c0c"), "{dark}");
+        assert!(dark.contains("background: radial-gradient("), "{dark}");
+        assert!(dark.contains("rgba(111, 143, 232, 0.16)"), "{dark}");
+        assert!(dark.contains(", #0c0c0c;"), "{dark}");
         assert!(dark.contains("color: #d8d8d8"), "{dark}");
     }
 
