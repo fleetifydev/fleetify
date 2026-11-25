@@ -705,7 +705,8 @@ function BrowserNavBtn({
 
 /* Two-tone URL display (Cursor-style): scheme + path dimmed, host bright. */
 function UrlText({ url }: { url: string }) {
-  let scheme = "", host = "", rest = "";
+  let scheme = "", rest = "";
+  let host: string;
   try {
     const u = new URL(/^https?:\/\//i.test(url) ? url : "https://" + url);
     scheme = u.protocol + "//";

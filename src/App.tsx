@@ -68,7 +68,7 @@ const queryClient = new QueryClient({
 // strand the user, so failures fall through to "not complete".
 async function resolveIntroComplete(): Promise<boolean> {
   const legacySetupDone = localStorage.getItem("fleet:setup-done") === "1";
-  let cfg: FleetConfig | null = null;
+  let cfg: FleetConfig | null;
   try {
     cfg = (await window.electronAPI?.getConfig?.()) ?? null;
   } catch {
@@ -269,7 +269,7 @@ export function App() {
     // read-merge-write (config_set is a full replace), and crucially we do
     // NOT mark onboardingComplete on sign-in — that flag means "the user
     // finished the intro" and is set only in handleOnboardingDone.
-    let cfg: FleetConfig | null = null;
+    let cfg: FleetConfig | null;
     try {
       cfg = (await window.electronAPI?.getConfig?.()) ?? null;
     } catch {
