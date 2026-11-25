@@ -89,6 +89,9 @@ hound = { version = "3.5.1", optional = true }
 # anyway (DMG + Homebrew + GitHub releases per Phase 5 packaging).
 [target.'cfg(target_os = "macos")'.dependencies]
 tauri-plugin-macos-fps = "0.1"
+# The main window's open animation (setup() in lib.rs). Already in the tree
+# through tauri-runtime-wry and tao; this names the NSWindow API it uses.
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSResponder", "NSWindow"] }
 
 # Windows only: the notification-area icon (shell::tray), which opens the
 # window again once a close has hidden it, and quits. Not on Linux, where

@@ -1626,6 +1626,7 @@ dependencies = [
  "keyring",
  "notify",
  "notify-debouncer-mini",
+ "objc2-app-kit",
  "percent-encoding",
  "portable-pty 0.9.0",
  "rand 0.8.6",

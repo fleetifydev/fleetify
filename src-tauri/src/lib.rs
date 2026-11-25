@@ -515,6 +515,20 @@ pub fn run() {
 
             let main_window = builder.build()?;
 
+            // macOS: the zoom-in that AppKit plays when a document window
+            // comes on screen, as new windows of native apps do. The window
+            // first comes on screen in the startup task's reveal(), shown
+            // hidden until the app has loaded.
+            #[cfg(target_os = "macos")]
+            if let Ok(ns_window) = main_window.ns_window() {
+                // SAFETY: setup() runs on the main thread, and the pointer is
+                // the NSWindow the window just built owns.
+                let ns_window: &objc2_app_kit::NSWindow = unsafe { &*ns_window.cast() };
+                ns_window.setAnimationBehavior(
+                    objc2_app_kit::NSWindowAnimationBehavior::DocumentWindow,
+                );
+            }
+
             // macOS: set the dock icon programmatically so the transparent
             // PNG is shown as-is (floating bars) without macOS adding its
             // adaptive rounded-rect background — that background is only
