@@ -1,10 +1,11 @@
 import { it, expect, vi, beforeEach, afterEach } from "vitest";
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 
 // The screens before the main shell (splash, sign-in, setup, the onboarding
 // chat) share one moving backdrop behind them. It stays mounted from one of
 // these screens to the next, so its motion carries on instead of starting
-// over, and it goes away with them once the main shell shows.
+// over. When the main shell shows, it fades out over the shell and then
+// goes away.
 
 const splash = vi.hoisted(() => ({ finish: null as (() => void) | null }));
 
@@ -110,8 +111,15 @@ it("shows it during onboarding", async () => {
   expect(backdrop()).toBeInTheDocument();
 });
 
-it("removes it once the main shell shows", async () => {
+it("leaves the light fading over the main shell until its fade ends", async () => {
   launch({ signedIn: true });
   expect(await screen.findByText("main")).toBeInTheDocument();
+  const stage = backdrop()!.parentElement!;
+  // On top of the shell, out of the way of every click.
+  expect(stage).toHaveClass("onboarding-stage--exit");
+  // Another animation ending (the backdrop's own fade-in) changes nothing.
+  fireEvent.animationEnd(stage, { animationName: "onboarding-backdrop-in" });
+  expect(backdrop()).toBeInTheDocument();
+  fireEvent.animationEnd(stage, { animationName: "onboarding-stage-out" });
   expect(backdrop()).toBeNull();
 });

@@ -859,6 +859,21 @@ body {
   opacity: 0.035;
   animation: onboarding-drift-c 19s ease-in-out infinite alternate;
 }
+/* Entering the main shell: the stage, now holding only the backdrop, lifts
+   over the shell (above its reveal overlay) on the onboarding background and
+   fades out, so the light dissolves into the app instead of cutting away.
+   App removes it on this animation's end. */
+.onboarding-stage--exit {
+  position: fixed; inset: 0; z-index: 9500;
+  height: auto;
+  background: var(--m-bg);
+  pointer-events: none;
+  animation: onboarding-stage-out 0.9s cubic-bezier(0.4, 0, 0.2, 1) 0.1s forwards;
+}
+/* A signed-in launch reaches the shell before the backdrop's own fade-in is
+   done: show the light at full strength for the hand-off. */
+.onboarding-stage--exit .onboarding-backdrop { animation: none; opacity: 1; }
+@keyframes onboarding-stage-out { to { opacity: 0; } }
 @keyframes onboarding-backdrop-in { to { opacity: 1; } }
 @keyframes onboarding-drift-a {
   from { transform: translate3d(0, 0, 0) scale(1); }
@@ -875,6 +890,8 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .onboarding-backdrop { animation: none; opacity: 1; }
   .onboarding-backdrop__light { animation: none; }
+  /* Still ends (and fires animationend) so App removes it, without a fade. */
+  .onboarding-stage--exit { animation-duration: 1ms; animation-delay: 0s; }
 }
 
 /* ─── Soft fade-in ─── */
