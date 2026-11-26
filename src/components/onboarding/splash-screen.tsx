@@ -24,7 +24,7 @@ export function SplashScreen({ onDone }: SplashScreenProps) {
 
   return (
     <div
-      className="app-drag"
+      className="drag-region"
       style={{
         height: "100vh",
         width: "100vw",

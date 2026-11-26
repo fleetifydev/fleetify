@@ -42,14 +42,14 @@ export function AuthScreen({ onAuth, onBack }: AuthScreenProps) {
   };
 
   return (
-    <div className="app-drag" style={{
+    <div className="drag-region" style={{
       height: "100vh", width: "100vw",
       display: "flex", alignItems: "center", justifyContent: "center",
       background: "transparent", padding: "32px", position: "relative",
     }}>
       {onBack && (
         <button
-          className="app-no-drag"
+          className="no-drag"
           onClick={onBack}
           aria-label="Back"
           style={{
@@ -63,7 +63,7 @@ export function AuthScreen({ onAuth, onBack }: AuthScreenProps) {
         </button>
       )}
 
-      <div className="app-no-drag" style={{
+      <div className="no-drag" style={{
         width: "100%", maxWidth: 340,
         opacity: show ? 1 : 0,
         transform: show ? "translateY(0)" : "translateY(12px)",

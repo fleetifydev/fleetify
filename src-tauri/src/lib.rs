@@ -21,6 +21,10 @@ use tauri::{Manager, WebviewUrl};
 /// Boot shim reconstructing `window.electronAPI` / `window.fleetify`.
 const PRELOAD: &str = include_str!("preload.js");
 
+/// The main window's size when it opens: the onboarding size, which
+/// `ONBOARDING_SIZE` in src/App.tsx matches (see the builder in setup()).
+const STARTUP_SIZE: (f64, f64) = (760.0, 740.0);
+
 /// Parse `VITE_PORT` with a 3000 fallback, as `vite.config.ts` does. Debug
 /// builds load the app from the Vite dev server on this port (see
 /// `shell::startup_window::app_origin`).
@@ -470,12 +474,7 @@ pub fn run() {
             // paint instead, which reads as an expand rather than the
             // current jarring shrink. Both sizes are kept in sync with
             // ONBOARDING_SIZE / MAIN_SIZE in src/App.tsx.
-            .inner_size(760.0, 740.0)
-            // Open on the current monitor's centre on first launch.
-            // Without this Tauri falls back to the OS WM's default
-            // placement (Windows lands somewhere top-left-ish, looks
-            // misaligned on wide displays).
-            .center()
+            .inner_size(STARTUP_SIZE.0, STARTUP_SIZE.1)
             .visible(false)
             // Required for HTML5 drag-and-drop on Windows/WebView2. With Tauri's
             // OS-level drag-drop handler ENABLED (the default) WebView2 intercepts
@@ -486,6 +485,20 @@ pub fn run() {
             // turning the handler off is safe and restores DnD. (No-op on macOS.)
             .disable_drag_drop_handler()
             .initialization_script(PRELOAD);
+
+            // Open in the middle of the main display. Without a position Tauri
+            // falls back to the OS WM's default placement (Windows lands
+            // somewhere top-left-ish). Not `.center()`: on macOS that is
+            // -[NSWindow center], which sits the window above the middle on
+            // purpose. The renderer recenters the same way on every screen
+            // change (window_set_size), so the first frame doesn't jump.
+            let builder = match app.handle().primary_monitor() {
+                Ok(Some(monitor)) => {
+                    let pos = shell::ipc::centered_on(&monitor, STARTUP_SIZE.0, STARTUP_SIZE.1);
+                    builder.position(pos.x, pos.y)
+                }
+                _ => builder.center(),
+            };
 
             // macOS: keep native traffic lights (close/min/max) with
             // overlay style — hides the title bar background but leaves
@@ -501,6 +514,20 @@ pub fn run() {
             let builder = builder.decorations(false);
 
             let main_window = builder.build()?;
+
+            // macOS: the zoom-in that AppKit plays when a document window
+            // comes on screen, as new windows of native apps do. The window
+            // first comes on screen in the startup task's reveal(), shown
+            // hidden until the app has loaded.
+            #[cfg(target_os = "macos")]
+            if let Ok(ns_window) = main_window.ns_window() {
+                // SAFETY: setup() runs on the main thread, and the pointer is
+                // the NSWindow the window just built owns.
+                let ns_window: &objc2_app_kit::NSWindow = unsafe { &*ns_window.cast() };
+                ns_window.setAnimationBehavior(
+                    objc2_app_kit::NSWindowAnimationBehavior::DocumentWindow,
+                );
+            }
 
             // macOS: set the dock icon programmatically so the transparent
             // PNG is shown as-is (floating bars) without macOS adding its
