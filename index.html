@@ -5,6 +5,16 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Fleetify — AI Agent Orchestrator</title>
+    <!-- The first frame, before the app draws: the onboarding backdrop's light
+         where it starts (.onboarding-backdrop in src/globals.css, also in the
+         shell's placeholder page), so the window never opens on a blank
+         screen. Off once the app renders into #root. -->
+    <style>
+      html { background: #ffffff; }
+      html.dark { background: #0c0c0c; }
+      #root:empty { position: fixed; inset: 0; background: radial-gradient(circle 30vmax at calc(50% - 22vmax) calc(50% + 4vmax), rgba(31, 31, 31, 0.035), rgba(31, 31, 31, 0)), radial-gradient(circle 45.9vmax at calc(100% + 1.5vmax) calc(100% - 0.5vmax), rgba(61, 106, 214, 0.13), rgba(61, 106, 214, 0)), radial-gradient(circle 47.5vmax at -0.5vmax 7.5vmax, rgba(61, 106, 214, 0.16), rgba(61, 106, 214, 0)), #ffffff; }
+      html.dark #root:empty { background: radial-gradient(circle 30vmax at calc(50% - 22vmax) calc(50% + 4vmax), rgba(240, 240, 240, 0.035), rgba(240, 240, 240, 0)), radial-gradient(circle 45.9vmax at calc(100% + 1.5vmax) calc(100% - 0.5vmax), rgba(111, 143, 232, 0.13), rgba(111, 143, 232, 0)), radial-gradient(circle 47.5vmax at -0.5vmax 7.5vmax, rgba(111, 143, 232, 0.16), rgba(111, 143, 232, 0)), #0c0c0c; }
+    </style>
   </head>
   <body class="bg-zinc-950 text-zinc-100 antialiased">
     <div id="root"></div>

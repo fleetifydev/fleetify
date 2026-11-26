@@ -112,6 +112,10 @@
   --m-btn-bg: #000;
   --m-btn-text: #fff;
   --m-accent: #22c55e;
+  /* Fleetify's brand colour, "calm blue" (docs/BRAND.md): low-saturation,
+     none of the agents' brand colours and never a status colour (green
+     means Running). The .dark block holds its dark-theme tone. */
+  --m-brand: #3d6ad6;
   --m-input-bg: #f7f7f7;
   --m-logo: #808080;
   --m-onboarding-bg: #fff;
@@ -134,6 +138,7 @@
   --m-btn-bg: #fff;
   --m-btn-text: #000;
   --m-accent: #d97757;
+  --m-brand: #6f8fe8;
   --m-input-bg: #161616;
   --m-logo: #888888;
   --m-onboarding-bg: #0C0C0C;
@@ -817,6 +822,77 @@ body {
   100% { background-position: -200% 0; }
 }
 
+/* ─── Onboarding backdrop ───
+   Behind the screens before the main shell (OnboardingBackdrop): large,
+   soft pools of the brand blue (--m-brand) drifting slowly from side to side.
+   Each is a radial gradient that fades to nothing, so no blur filter is needed,
+   and only transform animates (GPU-composited, no layout or paint per
+   frame). Sits at z-index -1 inside .onboarding-stage, which isolates it, so
+   it paints over the page background and under the screen's content. It is
+   on from the first frame, picking up where the static first frame in
+   index.html (and the shell's placeholder page) left the light: keep those
+   in step with the sizes, positions and opacities here. */
+.onboarding-stage { position: relative; height: 100%; isolation: isolate; }
+.onboarding-backdrop {
+  position: absolute; inset: 0; z-index: -1;
+  overflow: hidden; pointer-events: none;
+}
+.onboarding-backdrop__light {
+  position: absolute;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, var(--m-brand), transparent);
+  will-change: transform;
+}
+.onboarding-backdrop__light--a {
+  width: 95vmax; height: 95vmax; left: -48vmax; top: -40vmax;
+  opacity: 0.16;
+  animation: onboarding-drift-a 24s ease-in-out infinite alternate;
+}
+.onboarding-backdrop__light--b {
+  width: 85vmax; height: 85vmax; right: -44vmax; bottom: -42vmax;
+  opacity: 0.13;
+  animation: onboarding-drift-b 30s ease-in-out infinite alternate;
+}
+/* A faint, neutral glow that crosses behind the content. */
+.onboarding-backdrop__light--c {
+  width: 60vmax; height: 60vmax; left: calc(50% - 30vmax); top: calc(50% - 30vmax);
+  background: radial-gradient(closest-side, var(--m-text), transparent);
+  opacity: 0.035;
+  animation: onboarding-drift-c 19s ease-in-out infinite alternate;
+}
+/* Entering the main shell: the stage, now holding only the backdrop, lifts
+   over the shell (above its reveal overlay) on the onboarding background,
+   holds a moment so the light registers, and fades out, so it dissolves
+   into the app instead of cutting away. App removes it on this animation's
+   end. */
+.onboarding-stage--exit {
+  position: fixed; inset: 0; z-index: 9500;
+  height: auto;
+  background: var(--m-bg);
+  pointer-events: none;
+  animation: onboarding-stage-out 0.8s cubic-bezier(0.4, 0, 0.2, 1) 0.35s forwards;
+}
+@keyframes onboarding-stage-out { to { opacity: 0; } }
+@keyframes onboarding-drift-a {
+  from { transform: translate3d(0, 0, 0) scale(1); }
+  to   { transform: translate3d(38vmax, 10vmax, 0) scale(1.12); }
+}
+@keyframes onboarding-drift-b {
+  from { transform: translate3d(0, 0, 0) scale(1.08); }
+  to   { transform: translate3d(-36vmax, -12vmax, 0) scale(0.94); }
+}
+@keyframes onboarding-drift-c {
+  from { transform: translate3d(-22vmax, 4vmax, 0); }
+  to   { transform: translate3d(22vmax, -4vmax, 0); }
+}
+/* Reduced motion: the global reset at the end of this file cancels these
+   animations, the exit fade too, so App skips the exit stage altogether
+   (prefersReducedMotion in App.tsx) instead of waiting for an animationend
+   that never comes. */
+@media (prefers-reduced-motion: reduce) {
+  .onboarding-backdrop__light { animation: none; }
+}
+
 /* ─── Soft fade-in ─── */
 @keyframes fade-in {
   from { opacity: 0; transform: translateY(3px); }
@@ -1055,8 +1131,9 @@ textarea:focus { outline: none; }
    KDE Animations: None, and Windows "Show animations" all flip
    prefers-reduced-motion to "reduce". We cancel motion outright
    instead of running it at 0.01ms — the 0.01ms pattern only exists
-   to keep `transitionend`/`animationend` listeners firing, and this
-   codebase has none (verified with rg). WCAG 2.3.3. */
+   to keep `transitionend`/`animationend` listeners firing. The one such
+   listener, App's onboarding backdrop exit, checks for reduced motion
+   itself and never starts its fade then. WCAG 2.3.3. */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation: none !important;

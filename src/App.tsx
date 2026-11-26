@@ -5,6 +5,7 @@ import { SplashScreen } from "@/components/onboarding/splash-screen";
 import { WelcomeScreen } from "@/components/onboarding/welcome-screen";
 import { SetupScreen } from "@/components/onboarding/setup-screen";
 import { DashboardSyncNotice } from "@/components/onboarding/dashboard-sync-notice";
+import { OnboardingBackdrop } from "@/components/onboarding/onboarding-backdrop";
 import { UpdateBannerSlotContext, UpdateReadyBanner } from "@/components/layout/update-ready-banner";
 import { useAppStore } from "@/stores/app-store";
 import { usePluginStore } from "@/stores/plugin-store";
@@ -99,8 +100,25 @@ const ONBOARDING_SIZE = { w: 760, h: 740 };
 const ONBOARDING_CHAT_SIZE = { w: 760, h: 820 };
 const MAIN_SIZE = { w: 1500, h: 960 };
 
+/** Whether the system asks for reduced motion. The global reset in
+ *  globals.css then cancels every animation, the backdrop's exit fade
+ *  included, so that fade would never end (and never fire animationend). */
+function prefersReducedMotion(): boolean {
+  return typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
+}
+
 export function App() {
   const [screen, setScreen] = useState<Screen>("splash");
+  // Entering the main shell, the onboarding backdrop fades out over it
+  // instead of vanishing, and goes away when its fade ends. Under reduced
+  // motion it goes at once: no fade would run to end it. Set while
+  // rendering when the screen changes (no effect, no extra paint).
+  const [prevScreen, setPrevScreen] = useState<Screen>(screen);
+  const [backdropExiting, setBackdropExiting] = useState(false);
+  if (screen !== prevScreen) {
+    setPrevScreen(screen);
+    setBackdropExiting(screen === "main" && prevScreen !== "main" && !prefersReducedMotion());
+  }
   const [introReveal, setIntroReveal] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<string>("General");
@@ -150,8 +168,12 @@ export function App() {
   }, [screen]);
 
   // Size the window to match the active screen mode. Onboarding screens
-  // share one small size; entering main grows + recenters once.
+  // share one small size; entering main grows + recenters once. The splash
+  // leaves the window as it opened: the shell opens it at the last screen's
+  // size, so a launch straight into main doesn't shrink for the splash and
+  // grow again.
   useEffect(() => {
+    if (screen === "splash") return;
     const target =
       screen === "main"
         ? MAIN_SIZE
@@ -455,13 +477,27 @@ export function App() {
         />
       )}
 
-      {screen === "splash"          && <SplashScreen onDone={handleSplashDone} />}
-      {screen === "welcome"         && <WelcomeScreen onAuth={handleAuth} />}
-      {screen === "setup"           && <SetupScreen onDone={handleOnboardingDone} />}
-      {screen === "onboarding-chat" && (
-        <Suspense fallback={<div style={{ position: "fixed", inset: 0, background: "var(--background)" }} />}>
-          <OnboardingChat user={authedUser} onDone={handleOnboardingDone} />
-        </Suspense>
+      {/* The screens before the main shell share one moving backdrop,
+          mounted once so its motion carries on from screen to screen. On
+          the way into the main shell the same element stays, lifted over
+          the shell, and fades out there (onboarding-stage--exit). */}
+      {(screen !== "main" || backdropExiting) && (
+        <div
+          className={screen === "main" ? "onboarding-stage onboarding-stage--exit" : "onboarding-stage"}
+          onAnimationEnd={(e) => {
+            if (e.animationName === "onboarding-stage-out") setBackdropExiting(false);
+          }}
+        >
+          <OnboardingBackdrop />
+          {screen === "splash"          && <SplashScreen onDone={handleSplashDone} />}
+          {screen === "welcome"         && <WelcomeScreen onAuth={handleAuth} />}
+          {screen === "setup"           && <SetupScreen onDone={handleOnboardingDone} />}
+          {screen === "onboarding-chat" && (
+            <Suspense fallback={<div style={{ position: "fixed", inset: 0, background: "var(--background)" }} />}>
+              <OnboardingChat user={authedUser} onDone={handleOnboardingDone} />
+            </Suspense>
+          )}
+        </div>
       )}
 
       {/* The dashboard sync question for an install that finished

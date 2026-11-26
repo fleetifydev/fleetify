@@ -140,7 +140,8 @@ export function WelcomeScreen({ onAuth }: WelcomeScreenProps) {
             maxWidth: 320,
           }}
         >
-          The command center for AI-native development
+          Think it.{" "}
+          <span style={{ display: "block" }}>Your fleet builds it.</span>
         </h1>
 
         {/* Description */}
@@ -239,22 +240,10 @@ export function WelcomeScreen({ onAuth }: WelcomeScreenProps) {
           </div>
         )}
 
-        {/* Helper line */}
-        <p
-          style={{
-            marginTop: 14,
-            fontSize: 11.5,
-            color: "var(--m-text-3)",
-            lineHeight: 1.5,
-          }}
-        >
-          We'll open your browser to fleetify.dev — no password needed here.
-        </p>
-
         {/* Legal line — what signing in accepts */}
         <p
           style={{
-            marginTop: 8,
+            marginTop: 14,
             fontSize: 11.5,
             color: "var(--m-text-3)",
             lineHeight: 1.5,
