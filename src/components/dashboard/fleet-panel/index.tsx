@@ -79,7 +79,7 @@ function useSpinnerSyncDelay(): string {
   return delay;
 }
 
-function StatusRing({ status, size = 12 }: { status: string; size?: number }) {
+export function StatusRing({ status, size = 12 }: { status: string; size?: number }) {
   const ring = Math.max(8, Math.round(size * 0.66));
   const stroke = 1;
   const inset = ring / 2 - stroke;
@@ -136,7 +136,7 @@ function StatusRing({ status, size = 12 }: { status: string; size?: number }) {
   );
 }
 
-function StatPair({ value, label, accent }: { value: number | string; label: string; accent?: string }) {
+export function StatPair({ value, label, accent }: { value: number | string; label: string; accent?: string }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 2, minWidth: 0 }}>
       <span style={{
@@ -220,7 +220,7 @@ function fmtTokens(n: number | null | undefined): string {
   return `${(v / 1_000_000).toFixed(1)}M`;
 }
 
-function shortModel(m: string | null | undefined): string | null {
+export function shortModel(m: string | null | undefined): string | null {
   if (!m) return null;
   if (m.includes("opus"))   return "Opus";
   if (m.includes("sonnet")) return "Sonnet";

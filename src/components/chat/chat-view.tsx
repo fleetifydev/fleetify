@@ -30,6 +30,7 @@ import { BatchProgressCard } from "@/components/dashboard/fleet-panel/batch-prog
 import { useFleetStore, AUTO_CHAIN_CAP } from "@/stores/fleet-store";
 import { OpenInMenu } from "@/components/layout/open-in-menu";
 import { isLandingLayout } from "./landing-layout";
+import { OrbitMap } from "@/components/fleet/orbit-map";
 import { PanelLeft, PanelRight, Trash2, X, Check, GitCompareArrows, ListTodo, Terminal as TerminalIcon, Play, FolderOpen, Layers, Copy, GitBranch, Sparkles, HelpCircle, Globe, Scissors, Loader2 } from "lucide-react";
 import type { ContentBlock, ChatMessage } from "@/types/chat";
 import type { Session } from "@/types/session";
@@ -2082,6 +2083,9 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
     && !(s as Session & { archived_at?: string | null }).archived_at
     && (s.title || "").trim() !== "New chat"
   );
+  // Fleet's home: with agents to show, the empty Fleet chat opens on the orbit
+  // map instead of the centred headline; the composer docks below it.
+  const orbit = landing && isControlCenter && agentSessions.length > 0;
 
   // When Fleet is open, pre-load messages for ALL agents in the background
   // so IdleRow and RunningPanel can show last activity without user navigating.
@@ -2383,17 +2387,18 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
         <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
           {/* Top spacer — pushes the centered block down in landing,
               collapses to nothing in normal mode. Always present. */}
-          <div style={{ flex: landing ? 1 : 0, transition: "flex-grow 0.3s ease", flexShrink: 0 }} aria-hidden />
+          <div style={{ flex: landing && !orbit ? 1 : 0, transition: "flex-grow 0.3s ease", flexShrink: 0 }} aria-hidden />
+          {orbit && <OrbitMap sessions={agentSessions} onOpen={(id) => useAppStore.getState().setActiveSession(id)} />}
           {/* Headline — fades + collapses out of the flow when leaving
               landing. maxHeight gives the height collapse something to
               animate; overflow hidden clips it as it shrinks. */}
           <div
-            aria-hidden={!landing}
+            aria-hidden={!landing || orbit}
             style={{
               flexShrink: 0,
               overflow: "hidden",
-              opacity: landing ? 1 : 0,
-              maxHeight: landing ? 80 : 0,
+              opacity: landing && !orbit ? 1 : 0,
+              maxHeight: landing && !orbit ? 80 : 0,
               transform: landing ? "none" : "translateY(-6px)",
               transition: "opacity 0.25s ease, max-height 0.3s ease, transform 0.3s ease",
               pointerEvents: landing ? "auto" : "none",
@@ -2898,7 +2903,7 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
               composer. Always present (mirrors the top spacer) so it can
               animate flex-grow 1→0 in lockstep; collapses to nothing in
               normal mode. */}
-          <div style={{ flex: landing ? 1 : 0, transition: "flex-grow 0.3s ease", flexShrink: 0 }} aria-hidden />
+          <div style={{ flex: landing && !orbit ? 1 : 0, transition: "flex-grow 0.3s ease", flexShrink: 0 }} aria-hidden />
         </div>
       </div>
       {chatCtxMenu && (
