@@ -68,6 +68,12 @@ AI, Grok (xAI) and Ollama Cloud. Returns `{ id, models:[{id,label,ctx?}] }`;
 longer TTL. Every other HTTP provider, or a live call that comes back empty,
 falls through to the remote catalog; empty there too → curated fallback.
 
+Local Ollama is an exception. Its installed models come from its daemon probe,
+while Settings uses `GET /providers/ollama/suggestions` for remote pull
+suggestions. That route uses the remote catalog and its last-good disk cache.
+If neither returns suggestions, Settings keeps its built-in list and still
+accepts custom tags.
+
 ### The remote catalog
 
 The key-less baseline both endpoints fall back to: the published lineup from

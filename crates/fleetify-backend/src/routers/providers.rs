@@ -115,6 +115,10 @@ pub fn router() -> Router<AppState> {
         .route("/agents/scan", get(scan_agents_cached))
         .route("/agents/{id}/models", get(list_agent_models))
         .route("/providers/{id}/models", get(list_provider_models))
+        .route(
+            "/providers/ollama/suggestions",
+            get(list_ollama_suggestions),
+        )
         .route("/providers/cloudflare/verify", post(cloudflare_verify))
         .route("/providers/catalog/revalidate", post(revalidate_catalog))
 }
@@ -456,6 +460,14 @@ fn prettify_model_label(id: &str) -> String {
 // payload is large.
 
 #[derive(Clone, Serialize, Deserialize)]
+struct CatalogModalities {
+    #[serde(default)]
+    input: Vec<String>,
+    #[serde(default)]
+    output: Vec<String>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
 struct ProviderModel {
     id: String,
     label: String,
@@ -490,6 +502,15 @@ struct ProviderModel {
     /// disk-cache files still deserialize.
     #[serde(default)]
     priority: Option<i64>,
+    // Optional so catalogs and disk caches from older versions remain readable.
+    #[serde(default)]
+    tags: Option<Vec<String>>,
+    #[serde(default)]
+    tool_call: Option<bool>,
+    #[serde(default)]
+    reasoning: Option<bool>,
+    #[serde(default)]
+    modalities: Option<CatalogModalities>,
 }
 type ProviderModelList = Vec<ProviderModel>;
 
@@ -510,6 +531,10 @@ impl ProviderModel {
             default: false,
             active: None,
             priority: None,
+            tags: None,
+            tool_call: None,
+            reasoning: None,
+            modalities: None,
         }
     }
 }
@@ -528,6 +553,11 @@ fn provider_models_cache() -> &'static RwLock<HashMap<String, (Instant, Provider
 /// or the provider has no live catalog, and the renderer keeps its static
 /// fallback. `?refresh=1` bypasses the TTL cache.
 async fn list_provider_models(Path(id): Path<String>, Query(q): Query<ModelsQuery>) -> Json<Value> {
+    // Local installed models are discovered by the Ollama probe. The remote
+    // catalog lists pull targets, which must never enter session model discovery.
+    if id == "ollama" {
+        return Json(provider_models_json(&id, &[]));
+    }
     let refresh = q.refresh.unwrap_or(0) == 1;
     if !refresh {
         if let Some((at, models)) = provider_models_cache().read().await.get(&id).cloned() {
@@ -546,7 +576,16 @@ async fn list_provider_models(Path(id): Path<String>, Query(q): Query<ModelsQuer
     Json(provider_models_json(&id, &models))
 }
 
-fn provider_models_json(id: &str, models: &ProviderModelList) -> Value {
+async fn list_ollama_suggestions() -> Json<Value> {
+    let models: ProviderModelList = fetch_remote_catalog("ollama")
+        .await
+        .into_iter()
+        .filter(|model| model.active != Some(false))
+        .collect();
+    Json(provider_models_json("ollama", &models))
+}
+
+fn provider_models_json(id: &str, models: &[ProviderModel]) -> Value {
     json!({
         "id": id,
         "models": models.iter().map(provider_model_json).collect::<Vec<_>>(),
@@ -585,6 +624,18 @@ fn provider_model_json(m: &ProviderModel) -> Value {
     }
     if let Some(p) = m.priority {
         o.insert("priority".into(), json!(p));
+    }
+    if let Some(tags) = &m.tags {
+        o.insert("tags".into(), json!(tags));
+    }
+    if let Some(tool_call) = m.tool_call {
+        o.insert("tool_call".into(), json!(tool_call));
+    }
+    if let Some(reasoning) = m.reasoning {
+        o.insert("reasoning".into(), json!(reasoning));
+    }
+    if let Some(modalities) = &m.modalities {
+        o.insert("modalities".into(), json!(modalities));
     }
     Value::Object(o)
 }
@@ -1037,6 +1088,14 @@ fn parse_remote_catalog(body: &Value) -> ProviderModelList {
                 default: m.get("default").and_then(|x| x.as_bool()).unwrap_or(false),
                 active: m.get("active").and_then(|x| x.as_bool()),
                 priority: m.get("priority").and_then(|x| x.as_i64()),
+                tags: m
+                    .get("tags")
+                    .and_then(|x| serde_json::from_value(x.clone()).ok()),
+                tool_call: m.get("tool_call").and_then(|x| x.as_bool()),
+                reasoning: m.get("reasoning").and_then(|x| x.as_bool()),
+                modalities: m
+                    .get("modalities")
+                    .and_then(|x| serde_json::from_value(x.clone()).ok()),
             })
         })
         .collect()
@@ -2354,6 +2413,10 @@ mod tests {
             default: false,
             active: None,
             priority: None,
+            tags: None,
+            tool_call: None,
+            reasoning: None,
+            modalities: None,
         }]
     }
 
@@ -2958,6 +3021,64 @@ mod tests {
         assert!(parse_remote_catalog(&json!({ "models": [{ "label": "x" }] })).is_empty());
     }
 
+    #[tokio::test]
+    async fn ollama_suggestions_are_separate_from_installed_model_discovery() {
+        let models = parse_remote_catalog(&json!({
+            "provider": { "models": [
+                {
+                    "id": "qwen3-vl",
+                    "label": "Qwen3-VL",
+                    "tags": ["2b", "4b"],
+                    "tool_call": true,
+                    "reasoning": true,
+                    "modalities": { "input": ["text", "image"], "output": ["text"] },
+                    "priority": 20
+                },
+                {
+                    "id": "nomic-embed-text",
+                    "modalities": { "input": ["text"], "output": ["embedding"] }
+                },
+                { "id": "retired", "active": false }
+            ] }
+        }));
+        let cached = serde_json::to_string(&models).unwrap();
+        let models = serde_json::from_str(&cached).unwrap();
+        let previous = remote_catalog_cache()
+            .write()
+            .await
+            .insert("ollama".into(), (Instant::now(), models));
+
+        let Json(suggestions) = list_ollama_suggestions().await;
+        let Json(discovery) = list_provider_models(
+            Path("ollama".into()),
+            Query(ModelsQuery {
+                cwd: None,
+                refresh: Some(1),
+            }),
+        )
+        .await;
+
+        let mut cache = remote_catalog_cache().write().await;
+        if let Some(previous) = previous {
+            cache.insert("ollama".into(), previous);
+        } else {
+            cache.remove("ollama");
+        }
+
+        assert_eq!(discovery, json!({ "id": "ollama", "models": [] }));
+        assert_eq!(suggestions["models"].as_array().unwrap().len(), 2);
+        let model = &suggestions["models"][0];
+        assert_eq!(model["id"], "qwen3-vl");
+        assert_eq!(model["tags"], json!(["2b", "4b"]));
+        assert_eq!(model["tool_call"], true);
+        assert_eq!(model["reasoning"], true);
+        assert_eq!(model["modalities"]["input"], json!(["text", "image"]));
+        assert_eq!(model["priority"], 20);
+        let embedding = &suggestions["models"][1];
+        assert_eq!(embedding["modalities"]["output"], json!(["embedding"]));
+        assert!(embedding.get("tags").is_none());
+    }
+
     #[test]
     fn models_api_base_defaults_to_prod() {
         // Only assert the default when the override isn't set in this process,
@@ -3065,6 +3186,10 @@ mod tests {
                 default: true,
                 active: None,
                 priority: Some(50),
+                tags: None,
+                tool_call: None,
+                reasoning: None,
+                modalities: None,
             },
             ProviderModel::basic("c/d".into(), "D".into(), None),
         ];

@@ -13,6 +13,16 @@ import { apiFetch } from "@/lib/api";
 
 export type ProviderKind = "api" | "local_http" | "cli";
 
+export interface OllamaSuggestion {
+  id: string;
+  note?: string;
+  priority?: number;
+  tags?: string[];
+  tool_call?: boolean;
+  reasoning?: boolean;
+  modalities?: { input: string[]; output: string[] };
+}
+
 export type AuthSpec =
   | { kind: "bearer"; env_hint?: string | null }
   | { kind: "api_key"; header: string; env_hint?: string | null }
@@ -443,6 +453,16 @@ export const providers = {
   setConnectedBulk: (connected: Record<string, boolean>, enabledAgents?: string[] | null) =>
     api().setConnectedBulk(connected, enabledAgents ?? null),
   testConnection: (id: string, key: string) => api().testConnection(id, key),
+  ollamaSuggestions: async (signal: AbortSignal): Promise<OllamaSuggestion[]> => {
+    try {
+      const res = await apiFetch("/api/providers/ollama/suggestions", { signal });
+      if (!res.ok) return [];
+      const data = (await res.json()) as { models?: OllamaSuggestion[] };
+      return Array.isArray(data.models) ? data.models : [];
+    } catch {
+      return [];
+    }
+  },
   ollamaProbe: (baseUrl?: string | null) => api().ollamaProbe(baseUrl ?? null),
   ollamaPs: (baseUrl?: string | null) => api().ollamaPs(baseUrl ?? null),
   ollamaPull: (model: string, baseUrl?: string | null) => api().ollamaPull(model, baseUrl ?? null),

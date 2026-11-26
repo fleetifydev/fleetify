@@ -40,8 +40,7 @@ interface CuratedModel {
 }
 
 // Baked curated catalog. These are real models from the Ollama library.
-// TODO: source from remote catalog (keep the free-text box either way so any
-// `model:tag` remains pullable).
+// Offline fallback while the remote catalog is unavailable.
 const CURATED_LOCAL_MODELS: CuratedModel[] = [
   { name: "llama3.2", blurb: "Meta's compact general-purpose model", caps: ["tools"], sizes: ["1b", "3b"] },
   { name: "qwen3.5", blurb: "Alibaba's multimodal general-purpose model", caps: ["vision", "tools", "thinking"], sizes: ["0.8b", "2b", "4b", "9b", "27b"] },
@@ -174,6 +173,26 @@ export function OllamaModelBrowser({
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [sizeSel, setSizeSel] = useState<Record<string, string>>({});
   const [freeText, setFreeText] = useState("");
+  const [catalog, setCatalog] = useState(CURATED_LOCAL_MODELS);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void providersApi.ollamaSuggestions(controller.signal).then((suggestions) => {
+      if (controller.signal.aborted || suggestions.length === 0) return;
+      const models = [...suggestions]
+        .sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0))
+        .map((model): CuratedModel => {
+          const caps: Cap[] = [];
+          if (model.modalities?.input.includes("image")) caps.push("vision");
+          if (model.tool_call) caps.push("tools");
+          if (model.reasoning) caps.push("thinking");
+          if (model.modalities?.output.includes("embedding")) caps.push("embedding");
+          return { name: model.id, blurb: model.note ?? "", caps, sizes: model.tags ?? [] };
+        });
+      setCatalog(models);
+    });
+    return () => controller.abort();
+  }, []);
 
   // Keep the latest onChanged reachable from the once-subscribed progress
   // callback without re-subscribing on every render.
@@ -365,7 +384,25 @@ export function OllamaModelBrowser({
     );
   }
 
+  function renderError(target: string) {
+    return errors[target] && (
+      <div style={{ fontSize: 11, color: "rgb(248,113,113)", marginTop: 6 }}>
+        {errors[target]}
+      </div>
+    );
+  }
+
   const trimmed = freeText.trim();
+  const rows = catalog.map((model) => {
+    const previous = sizeSel[model.name];
+    const size = previous && model.sizes.includes(previous) ? previous : (model.sizes[0] ?? "");
+    const target = size ? `${model.name}:${size}` : model.name;
+    return { model, size, target };
+  });
+  // A catalog refresh can remove a target while its pull is running or failed.
+  const targetsOutsideRows = [...new Set([...Object.keys(pulls), ...Object.keys(errors)])].filter(
+    (target) => target !== trimmed && !rows.some((row) => row.target === target),
+  );
 
   return (
     <div style={{ padding: "14px 0 2px 0", borderTop: "1px solid var(--c-brd)" }}>
@@ -385,10 +422,7 @@ export function OllamaModelBrowser({
 
       {/* Curated rows — hairline separators, no filled boxes. */}
       <div style={{ marginTop: 6 }}>
-        {CURATED_LOCAL_MODELS.map((m, i) => {
-          const hasSizes = m.sizes.length > 0;
-          const sel = sizeSel[m.name] ?? m.sizes[0] ?? "";
-          const target = hasSizes ? `${m.name}:${sel}` : m.name;
+        {rows.map(({ model: m, size, target }, i) => {
           const pulling = !!pulls[target];
           return (
             <div
@@ -415,11 +449,11 @@ export function OllamaModelBrowser({
               </div>
               <div style={{ fontSize: 11, color: "var(--c-low)", marginTop: 3 }}>{m.blurb}</div>
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8 }}>
-                {hasSizes && !pulling && (
+                {m.sizes.length > 0 && !pulling && (
                   <div style={{ position: "relative", display: "inline-flex", flexShrink: 0 }}>
                     <select
                       aria-label={`Size for ${m.name}`}
-                      value={sel}
+                      value={size}
                       onChange={(e) => setSizeSel((s) => ({ ...s, [m.name]: e.target.value }))}
                       style={selectStyle}
                     >
@@ -444,14 +478,19 @@ export function OllamaModelBrowser({
                 )}
                 {renderAction(target)}
               </div>
-              {errors[target] && (
-                <div style={{ fontSize: 11, color: "rgb(248,113,113)", marginTop: 6 }}>
-                  {errors[target]}
-                </div>
-              )}
+              {renderError(target)}
             </div>
           );
         })}
+        {targetsOutsideRows.map((target) => (
+          <div key={target} style={{ padding: "10px 0", borderTop: "1px solid var(--c-brd)" }}>
+            <div style={{ fontSize: 12, color: "var(--c-high)", fontFamily: "var(--font-mono, monospace)" }}>
+              {target}
+            </div>
+            <div style={{ marginTop: 8 }}>{renderAction(target)}</div>
+            {renderError(target)}
+          </div>
+        ))}
       </div>
 
       {/* Free-text pull — any model:tag, kept as a quiet affordance below the
@@ -481,11 +520,7 @@ export function OllamaModelBrowser({
             </button>
           )}
         </div>
-        {trimmed && errors[trimmed] && (
-          <div style={{ fontSize: 11, color: "rgb(248,113,113)", marginTop: 6 }}>
-            {errors[trimmed]}
-          </div>
-        )}
+        {trimmed && renderError(trimmed)}
       </div>
     </div>
   );

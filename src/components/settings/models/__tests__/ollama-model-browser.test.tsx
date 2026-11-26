@@ -10,12 +10,13 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import { OllamaModelBrowser } from "../ollama-model-browser";
-import type { OllamaPullEvent } from "@/lib/providers-api";
+import type { OllamaPullEvent, OllamaSuggestion } from "@/lib/providers-api";
 
 const apiMock = vi.hoisted(() => ({
   ollamaPull: vi.fn(),
   ollamaPullCancel: vi.fn(),
   ollamaDelete: vi.fn(),
+  ollamaSuggestions: vi.fn(),
   onOllamaPullProgress: vi.fn(),
 }));
 
@@ -38,6 +39,7 @@ beforeEach(() => {
   apiMock.ollamaPull.mockResolvedValue({ ok: true });
   apiMock.ollamaPullCancel.mockResolvedValue({ ok: true });
   apiMock.ollamaDelete.mockResolvedValue({ ok: true });
+  apiMock.ollamaSuggestions.mockResolvedValue([]);
   apiMock.onOllamaPullProgress.mockImplementation(
     (cb: (e: OllamaPullEvent) => void) => {
       progressCb = cb;
@@ -200,5 +202,67 @@ describe("OllamaModelBrowser", () => {
     await waitFor(() =>
       expect(apiMock.ollamaPull).toHaveBeenCalledWith("nomic-embed-text", null),
     );
+  });
+
+  it("loads ordered catalog suggestions with capabilities and pullable tags", async () => {
+    apiMock.ollamaSuggestions.mockResolvedValue([
+      { id: "embed-test", modalities: { input: ["text"], output: ["embedding"] } },
+      {
+        id: "vision-test",
+        note: "Vision catalog entry",
+        priority: 20,
+        tags: ["2b", "4b"],
+        tool_call: true,
+        reasoning: true,
+        modalities: { input: ["text", "image"], output: ["text"] },
+      },
+    ]);
+    render(<OllamaModelBrowser baseUrl={null} installed={[]} onChanged={() => {}} />);
+
+    const size = await screen.findByLabelText("Size for vision-test");
+    const buttons = screen.getAllByRole("button", { name: /Download (vision-test|embed-test)/ });
+    expect(buttons.map((button) => button.getAttribute("aria-label"))).toEqual([
+      "Download vision-test:2b",
+      "Download embed-test",
+    ]);
+    expect(screen.queryByLabelText("Size for llama3.2")).not.toBeInTheDocument();
+    expect(screen.getByText("Vision catalog entry")).toBeInTheDocument();
+    expect(screen.getByText("vision-test").parentElement).toHaveTextContent(/vision.*tools.*thinking/i);
+    expect(screen.getByText("embed-test").parentElement).toHaveTextContent(/embedding/i);
+
+    fireEvent.change(size, { target: { value: "4b" } });
+    fireEvent.click(screen.getByRole("button", { name: "Download vision-test:4b" }));
+    await waitFor(() => expect(apiMock.ollamaPull).toHaveBeenCalledWith("vision-test:4b", null));
+  });
+
+  it("keeps the built-in list and free-text pull for an empty catalog", async () => {
+    render(<OllamaModelBrowser baseUrl={null} installed={[]} onChanged={() => {}} />);
+    await waitFor(() => expect(apiMock.ollamaSuggestions).toHaveBeenCalledOnce());
+
+    expect(screen.getByRole("button", { name: "Download llama3.2:1b" })).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Model to pull" })).toBeInTheDocument();
+  });
+
+  it("keeps progress, errors, and retry available after a fallback row is replaced", async () => {
+    let publish!: (suggestions: OllamaSuggestion[]) => void;
+    apiMock.ollamaSuggestions.mockReturnValue(new Promise<OllamaSuggestion[]>((resolve) => {
+      publish = resolve;
+    }));
+    render(<OllamaModelBrowser baseUrl={null} installed={[]} onChanged={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "Download llama3.2:1b" }));
+    await waitFor(() => expect(apiMock.ollamaPull).toHaveBeenCalledWith("llama3.2:1b", null));
+
+    await act(async () => publish([{ id: "new-model", tags: ["2b"] }]));
+    expect(screen.getByRole("button", { name: "Download new-model:2b" })).toBeInTheDocument();
+    expect(screen.getByRole("progressbar", { name: "Pulling llama3.2:1b" })).toBeInTheDocument();
+    act(() => progressCb?.({ model: "llama3.2:1b", status: "error", error: "Registry unavailable" }));
+    expect(screen.getByText("Registry unavailable")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Download llama3.2:1b" }));
+    await waitFor(() => expect(apiMock.ollamaPull).toHaveBeenCalledTimes(2));
+    expect(screen.queryByText("Registry unavailable")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel llama3.2:1b" }));
+    await waitFor(() => expect(apiMock.ollamaPullCancel).toHaveBeenCalledWith("llama3.2:1b"));
+    expect(screen.queryByRole("button", { name: "Cancel llama3.2:1b" })).not.toBeInTheDocument();
   });
 });

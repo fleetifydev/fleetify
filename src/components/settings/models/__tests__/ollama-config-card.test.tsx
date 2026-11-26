@@ -20,6 +20,7 @@ vi.mock("@/hooks/use-providers-config", () => ({
 
 const apiMock = vi.hoisted(() => ({
   ollamaProbe: vi.fn(),
+  ollamaSuggestions: vi.fn(),
   ollamaPs: vi.fn(),
   getKeyPreview: vi.fn(),
   setKey: vi.fn(),
@@ -37,6 +38,7 @@ vi.mock("@/lib/providers-api", async () => {
 
 beforeEach(() => {
   apiMock.ollamaProbe.mockReset();
+  apiMock.ollamaSuggestions.mockResolvedValue([]);
   apiMock.ollamaPs.mockReset();
   apiMock.getKeyPreview.mockReset();
   apiMock.setKey.mockReset();
