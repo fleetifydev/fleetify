@@ -84,8 +84,10 @@ fn cache_dir() -> PathBuf {
 /// fetched: already inline, not https, or pointed somewhere a third-party
 /// manifest has no business sending the backend (credentials, IP literals,
 /// local names). Apart from an inline icon, such an icon is then dropped.
+/// An Iconify icon in the old `prefix:name.svg` form comes back as
+/// `prefix/name.svg`, where Iconify serves it now.
 pub fn fetch_target(icon: &str) -> Option<reqwest::Url> {
-    let url = reqwest::Url::parse(icon.trim()).ok()?;
+    let mut url = reqwest::Url::parse(icon.trim()).ok()?;
     if url.scheme() != "https" || !url.username().is_empty() || url.password().is_some() {
         return None;
     }
@@ -106,6 +108,25 @@ pub fn fetch_target(icon: &str) -> Option<reqwest::Url> {
         || LOCAL_SUFFIXES.iter().any(|s| host.ends_with(s))
     {
         return None;
+    }
+    // api.iconify.design answers its old `prefix:name.svg` form with 404; the
+    // same icon is at `prefix/name.svg`. Catalogs, and caches of them, still
+    // carry the old form.
+    if host == "api.iconify.design" {
+        let iconify_path = url
+            .path()
+            .strip_prefix('/')
+            .and_then(|rest| rest.split_once(':'))
+            .filter(|(prefix, name)| {
+                !prefix.is_empty()
+                    && !name.is_empty()
+                    && !prefix.contains('/')
+                    && !name.contains(['/', ':'])
+            })
+            .map(|(prefix, name)| format!("/{prefix}/{name}"));
+        if let Some(path) = iconify_path {
+            url.set_path(&path);
+        }
     }
     Some(url)
 }
@@ -556,6 +577,29 @@ mod tests {
         // A fully qualified name, root dot included, is still fetchable.
         let u = fetch_target("https://example.com./x.svg").unwrap();
         assert_eq!(u.host_str(), Some("example.com."));
+    }
+
+    /// api.iconify.design answers its old `prefix:name.svg` form with 404,
+    /// and catalogs (or caches of them) still carry it. The same icon is at
+    /// `prefix/name.svg`, so that is what gets fetched.
+    #[test]
+    fn fetch_target_rewrites_iconifys_old_prefix_name_form() {
+        let u = fetch_target("https://api.iconify.design/logos:asana-icon.svg").unwrap();
+        assert_eq!(
+            u.as_str(),
+            "https://api.iconify.design/logos/asana-icon.svg"
+        );
+        // A query, such as a colour, stays.
+        let u = fetch_target("https://api.iconify.design/mdi:home.svg?color=red").unwrap();
+        assert_eq!(
+            u.as_str(),
+            "https://api.iconify.design/mdi/home.svg?color=red"
+        );
+        // Only Iconify's API, and only that one-segment shape.
+        let u = fetch_target("https://example.com/logos:asana-icon.svg").unwrap();
+        assert_eq!(u.path(), "/logos:asana-icon.svg");
+        let u = fetch_target("https://api.iconify.design/logos/aws.svg").unwrap();
+        assert_eq!(u.path(), "/logos/aws.svg");
     }
 
     #[test]
@@ -1334,7 +1378,9 @@ mod tests {
 
     /// Live network. Proves the premise of this module end to end: the
     /// backend's client is NOT blocked by the CDN that blocks the WebView.
-    /// Run with `cargo test -p fleetify-backend --lib icons -- --ignored`.
+    /// The icon uses Iconify's old `prefix:name` form, so it also proves that
+    /// form is still inlined. Run with
+    /// `cargo test -p fleetify-backend --lib icons -- --ignored`.
     #[tokio::test]
     #[ignore = "hits api.iconify.design"]
     async fn live_iconify_icon_is_inlined() {
