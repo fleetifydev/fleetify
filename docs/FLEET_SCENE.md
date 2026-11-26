@@ -46,7 +46,7 @@ other blend modes; avoid blur.
 | `id` | string | | stable; never shown |
 | `phase` | enum | `spawning`, `working`, `needs`, `done`, `leaving` | what the session is doing |
 | `ring` | enum | `needs`, `working`, `done` | which orbit it rests on (inner, middle, outer) |
-| `slotAngle` | number | 0 to 360 | where on the ring it rests, in degrees, 0 = right, clockwise |
+| `slotAngle` | number | 0 to 360 | where on the ring it rests, in degrees, 0 = right, clockwise. Rive binds rotation in radians, so the file converts it (a formula converter, then an interpolator for the smooth move) |
 | `activity` | number | 0 to 1 | how much the agent is producing right now (tool calls and tokens); 0 when nothing flows |
 | `accent` | color | | the agent's brand colour, for its mark only |
 | `arrive` | trigger | | fired once when the session first appears |
@@ -65,6 +65,10 @@ other blend modes; avoid blur.
 Colours for light and dark: `background`, `ring`, `label`, `core`, `waiting`
 (`#fb923c`), `working` (`#4ade80`), `done`, `brand` (`--m-brand`). The app sets
 them from the current theme; the file never hard-codes them.
+
+In the file, scale is a percentage (100 = full size) and the orbits are circles
+of radius 130, 235 and 335 on a 1200 by 720 artboard; the app lays its labels
+out on the same geometry (`SCENE_RADIUS` in `rive-scene.tsx`).
 
 ## Labels, cards and input stay in HTML
 

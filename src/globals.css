@@ -1156,6 +1156,10 @@ textarea:focus { outline: none; }
 .orbit-ring-label span { font-size: 10px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--c-ghost); }
 .orbit-ring-label b { font-size: 10px; font-weight: 400; color: var(--c-dim); font-variant-numeric: tabular-nums; }
 .orbit-anchor { position: absolute; transform: translate(-50%, -50%); z-index: 3; }
+.orbit-anchor--right { transform: translate(18px, -50%); }
+.orbit-anchor--left { transform: translate(calc(-100% - 18px), -50%); }
+.orbit-anchor--right .orbit-chip, .orbit-anchor--left .orbit-chip { background: color-mix(in srgb, var(--card) 82%, transparent); backdrop-filter: none; }
+.orbit-core--over { transform: translate(-50%, 0); }
 .orbit-chip {
   position: relative; display: flex; flex-direction: column; gap: 4px; max-width: 230px;
   padding: 8px 12px 8px 11px; border-radius: 9px; cursor: pointer; text-align: left; font-family: inherit;
