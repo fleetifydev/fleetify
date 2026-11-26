@@ -124,6 +124,32 @@ it("leaves the light fading over the main shell until its fade ends", async () =
   expect(backdrop()).toBeNull();
 });
 
+// Under reduced motion the global reset in globals.css cancels every
+// animation (`animation: none !important`), so the fade would never end and
+// its opaque stage would stay over the main shell. The light goes at once.
+it("drops the light at once when the system asks for reduced motion", async () => {
+  const matchMedia = vi.spyOn(window, "matchMedia").mockImplementation(
+    (query: string) =>
+      ({
+        matches: query === "(prefers-reduced-motion: reduce)",
+        media: query,
+        onchange: null,
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      }) as unknown as MediaQueryList,
+  );
+  try {
+    launch({ signedIn: true });
+    expect(await screen.findByText("main")).toBeInTheDocument();
+    expect(backdrop()).toBeNull();
+  } finally {
+    matchMedia.mockRestore();
+  }
+});
+
 // The splash keeps the window at the size it opened with (the shell opens it
 // at the last screen's size), so a launch into the main shell never shrinks
 // the window for the splash and grows it again.

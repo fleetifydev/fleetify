@@ -885,10 +885,12 @@ body {
   from { transform: translate3d(-22vmax, 4vmax, 0); }
   to   { transform: translate3d(22vmax, -4vmax, 0); }
 }
+/* Reduced motion: the global reset at the end of this file cancels these
+   animations, the exit fade too, so App skips the exit stage altogether
+   (prefersReducedMotion in App.tsx) instead of waiting for an animationend
+   that never comes. */
 @media (prefers-reduced-motion: reduce) {
   .onboarding-backdrop__light { animation: none; }
-  /* Still ends (and fires animationend) so App removes it, without a fade. */
-  .onboarding-stage--exit { animation-duration: 1ms; animation-delay: 0s; }
 }
 
 /* ─── Soft fade-in ─── */
@@ -1129,8 +1131,9 @@ textarea:focus { outline: none; }
    KDE Animations: None, and Windows "Show animations" all flip
    prefers-reduced-motion to "reduce". We cancel motion outright
    instead of running it at 0.01ms — the 0.01ms pattern only exists
-   to keep `transitionend`/`animationend` listeners firing, and this
-   codebase has none (verified with rg). WCAG 2.3.3. */
+   to keep `transitionend`/`animationend` listeners firing. The one such
+   listener, App's onboarding backdrop exit, checks for reduced motion
+   itself and never starts its fade then. WCAG 2.3.3. */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation: none !important;

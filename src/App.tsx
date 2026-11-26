@@ -100,16 +100,24 @@ const ONBOARDING_SIZE = { w: 760, h: 740 };
 const ONBOARDING_CHAT_SIZE = { w: 760, h: 820 };
 const MAIN_SIZE = { w: 1500, h: 960 };
 
+/** Whether the system asks for reduced motion. The global reset in
+ *  globals.css then cancels every animation, the backdrop's exit fade
+ *  included, so that fade would never end (and never fire animationend). */
+function prefersReducedMotion(): boolean {
+  return typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
+}
+
 export function App() {
   const [screen, setScreen] = useState<Screen>("splash");
   // Entering the main shell, the onboarding backdrop fades out over it
-  // instead of vanishing, and goes away when its fade ends. Set while
+  // instead of vanishing, and goes away when its fade ends. Under reduced
+  // motion it goes at once: no fade would run to end it. Set while
   // rendering when the screen changes (no effect, no extra paint).
   const [prevScreen, setPrevScreen] = useState<Screen>(screen);
   const [backdropExiting, setBackdropExiting] = useState(false);
   if (screen !== prevScreen) {
     setPrevScreen(screen);
-    setBackdropExiting(screen === "main" && prevScreen !== "main");
+    setBackdropExiting(screen === "main" && prevScreen !== "main" && !prefersReducedMotion());
   }
   const [introReveal, setIntroReveal] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
