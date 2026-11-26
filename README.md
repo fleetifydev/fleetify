@@ -43,7 +43,7 @@
 
 ## What Fleetify does
 
-Running several coding agents means juggling terminals, branches and dashboards, and routing work between them yourself. Fleetify hands that job to one chat: tell Fleet what you need, and it picks the right session or starts a new one, briefs it, runs several in parallel and brings the results back to the same chat. Every session stays a normal session you can open; the Fleet hub shows each one's status and spend, and git worktrees keep parallel work apart.
+Running several coding agents means juggling terminals, branches and dashboards, and routing work between them yourself. Fleetify hands that job to one chat: tell Fleet what you need, and it picks the right session or starts a new one, briefs it, runs several in parallel and brings the results back to the same chat. Every session stays a normal session you can open, the Fleet hub shows each one's status and spend, and you can give a session its own git worktree to keep parallel work apart.
 
 | Feature | What it does |
 |---|---|
