@@ -522,7 +522,7 @@ dependencies = [
 
 [[package]]
 name = "browser-mcp"
-version = "0.3.2"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "fleetify-core",
@@ -1279,7 +1279,7 @@ dependencies = [
 
 [[package]]
 name = "dispatch-mcp"
-version = "0.3.2"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "fleetify-core",
@@ -1604,7 +1604,7 @@ dependencies = [
 
 [[package]]
 name = "fleet-wipe"
-version = "0.3.2"
+version = "0.4.0"
 dependencies = [
  "dbus-secret-service",
  "keyring",
@@ -1613,7 +1613,7 @@ dependencies = [
 
 [[package]]
 name = "fleetify-app"
-version = "0.3.2"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -1660,7 +1660,7 @@ dependencies = [
 
 [[package]]
 name = "fleetify-backend"
-version = "0.3.2"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1707,7 +1707,7 @@ dependencies = [
 
 [[package]]
 name = "fleetify-core"
-version = "0.3.2"
+version = "0.4.0"
 dependencies = [
  "reqwest 0.12.28",
  "thiserror 2.0.21",
@@ -3158,7 +3158,7 @@ dependencies = [
 
 [[package]]
 name = "memory-mcp"
-version = "0.3.2"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "fleetify-core",
@@ -4578,7 +4578,7 @@ dependencies = [
 
 [[package]]
 name = "reveng-mcp"
-version = "0.3.2"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
