@@ -261,6 +261,84 @@ describe("openComposer — provider/model default precedence", () => {
   });
 });
 
+describe("openComposer — opens before the provider catalog answers", () => {
+  // The catalog reads the OS keychain once per provider: most of a second in a
+  // debug build on Linux. New session used to wait for it before the screen
+  // changed. Hold the answer back and release it by hand.
+  const pendingCatalog = () => {
+    let answer!: (tiles: ProviderTile[]) => void;
+    vi.spyOn(providers, "listCatalog").mockReturnValue(
+      new Promise((resolve) => { answer = (tiles) => resolve({ ok: true, tiles }); }),
+    );
+    return (tiles: ProviderTile[]) => answer(tiles);
+  };
+  const lastUsedClaude = () => useAppStore.setState({
+    sessions: [mkSession({ id: "recent", tool: "claude-code", model_name: "claude-opus-4-8", last_accessed: "2026-06-23T12:00:00Z" })],
+    staffSessionId: null,
+  });
+
+  it("opens the compose surface while the catalog is still loading", async () => {
+    pendingCatalog();
+    Object.defineProperty(window, "electronAPI", {
+      configurable: true,
+      value: { getConfig: async () => ({ defaultFolder: "/work/ws" }) },
+    });
+    void useAppStore.getState().openComposer();
+    await vi.waitFor(() => expect(useAppStore.getState().composer.open).toBe(true));
+    expect(useAppStore.getState().composer.projectPath).toBe("/work/ws");
+  });
+
+  it("moves the pick onto a connected provider once the catalog answers", async () => {
+    const answer = pendingCatalog();
+    lastUsedClaude(); // …but Claude Code has since been disconnected
+    Object.defineProperty(window, "electronAPI", {
+      configurable: true,
+      value: { getConfig: async () => ({}) },
+    });
+    const opening = useAppStore.getState().openComposer();
+    await vi.waitFor(() => expect(useAppStore.getState().composer.open).toBe(true));
+    answer([baseTile("openai", "OpenAI", "api", ["gpt-5.5"], { is_default: true })]);
+    await opening;
+    const c = useAppStore.getState().composer;
+    expect(c.tool).toBe("openai");
+    expect(c.modelName).toBe("gpt-5.5");
+  });
+
+  it("keeps a pick the user made before the catalog answered", async () => {
+    const answer = pendingCatalog();
+    lastUsedClaude();
+    Object.defineProperty(window, "electronAPI", {
+      configurable: true,
+      value: { getConfig: async () => ({}) },
+    });
+    const opening = useAppStore.getState().openComposer();
+    await vi.waitFor(() => expect(useAppStore.getState().composer.open).toBe(true));
+    useAppStore.getState().setComposerField({ tool: "codex-cli", modelName: "gpt-5.5" });
+    answer([baseTile("openai", "OpenAI", "api", ["gpt-5.5"], { is_default: true })]);
+    await opening;
+    const c = useAppStore.getState().composer;
+    expect(c.tool).toBe("codex-cli");
+    expect(c.modelName).toBe("gpt-5.5");
+  });
+
+  it("leaves the composer closed when the user left it before the catalog answered", async () => {
+    const answer = pendingCatalog();
+    lastUsedClaude();
+    Object.defineProperty(window, "electronAPI", {
+      configurable: true,
+      value: { getConfig: async () => ({}) },
+    });
+    const opening = useAppStore.getState().openComposer();
+    await vi.waitFor(() => expect(useAppStore.getState().composer.open).toBe(true));
+    useAppStore.getState().setActiveSession(null); // the Fleet button
+    answer([baseTile("openai", "OpenAI", "api", ["gpt-5.5"], { is_default: true })]);
+    await opening;
+    const c = useAppStore.getState().composer;
+    expect(c.open).toBe(false);
+    expect(c.tool).toBe("claude-code");
+  });
+});
+
 describe("openComposer — last-used session seeding", () => {
   it("seeds provider/model/effort from the most-recent session when nothing is pinned", async () => {
     mockCatalog([baseTile("openai", "OpenAI", "api", ["gpt-5.5"])]);
