@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.4.0](https://github.com/fleetifydev/fleetify/compare/v0.3.2...v0.4.0) (2026-11-27)
+
+
+### Features
+
+* **models:** load Ollama suggestions from the catalog ([#96](https://github.com/fleetifydev/fleetify/issues/96)) ([a93368c](https://github.com/fleetifydev/fleetify/commit/a93368c97ae83c163d8d25dcd955e9b30724a4e0)), closes [#94](https://github.com/fleetifydev/fleetify/issues/94)
+* **onboarding:** a calm blue brand backdrop and a new sign-in headline ([#98](https://github.com/fleetifydev/fleetify/issues/98)) ([560287e](https://github.com/fleetifydev/fleetify/commit/560287e389b909bda8621aadfa708df90de260dc))
+* **window:** open centred with the native macOS zoom, and drag the launch screens ([#97](https://github.com/fleetifydev/fleetify/issues/97)) ([910e588](https://github.com/fleetifydev/fleetify/commit/910e588821c63a60ed39fb08de10e49e09723338))
+
+
+### Bug Fixes
+
+* accept owner/repo typed with a trailing slash and space ([#85](https://github.com/fleetifydev/fleetify/issues/85)) ([88b2b70](https://github.com/fleetifydev/fleetify/commit/88b2b70375126c82e6572ff4fa1947e737d335bf))
+* **composer:** New session opens at once and asks what we're working on ([#101](https://github.com/fleetifydev/fleetify/issues/101)) ([e8810dd](https://github.com/fleetifydev/fleetify/commit/e8810dd8e4e0bedff71c2504a3bdb72373b04f1f))
+* **marketplace:** show plugin icons again ([#100](https://github.com/fleetifydev/fleetify/issues/100)) ([c1347e9](https://github.com/fleetifydev/fleetify/commit/c1347e9daf981aeeeb4a7a31d0b51829ab1ee436))
+* **models:** refresh the curated Ollama catalog ([#93](https://github.com/fleetifydev/fleetify/issues/93)) ([d308705](https://github.com/fleetifydev/fleetify/commit/d3087050ca73e088107066243433b2f914a1aee9)), closes [#72](https://github.com/fleetifydev/fleetify/issues/72)
+
+
+### Dependencies
+
+* bump winreg to 0.55 and windows-sys to 0.59 ([#92](https://github.com/fleetifydev/fleetify/issues/92)) ([0ca5fd9](https://github.com/fleetifydev/fleetify/commit/0ca5fd9bb0044249969b0511d5d86066418c3cad))
+
 ## [0.3.2](https://github.com/fleetifydev/fleetify/compare/v0.3.1...v0.3.2) (2026-11-23)
 
 
