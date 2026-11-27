@@ -3638,21 +3638,18 @@ pub async fn providers_list_catalog(app: tauri::AppHandle) -> serde_json::Value 
 
     // has_key lookup is best-effort: skip it when the user isn't signed in
     // so we don't surface a confusing NO_USER on every Settings render.
-    // Renderer treats has_key as a hint, not the source of truth.
+    // Renderer treats has_key as a hint, not the source of truth. The
+    // keychain is asked once per provider per run (`has_secret`), not on
+    // every call: every message send waits on this list (the pre-send
+    // model check), and so do Settings and the composer's provider check.
     let uid = auth::get_user_id().await;
 
     let tiles: Vec<ProviderTilePayload> = fleetify_backend::providers::CATALOG
         .iter()
         .map(|spec| {
-            let has_key = match (uid.as_deref(), spec.id) {
-                (Some(u), id) => {
-                    matches!(
-                        crate::shell::providers_link::read_secret(id, u),
-                        Ok(Some(_))
-                    )
-                }
-                _ => false,
-            };
+            let has_key = uid
+                .as_deref()
+                .is_some_and(|u| crate::shell::providers_link::has_secret(spec.id, u));
             // `tile.connected` is the master "enabled in Fleet" bit. The
             // user can toggle it independently via providers_set_enabled
             // — that writes an explicit override into `connected[id]`.
