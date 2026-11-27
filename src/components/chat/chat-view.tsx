@@ -2399,7 +2399,7 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
               pointerEvents: landing ? "auto" : "none",
             }}
           >
-            <LandingHeadline />
+            <LandingHeadline composing={isComposing} />
           </div>
           {/* Messages scroll surface — ALWAYS mounted (keeps scrollRef /
               contentRef stable). flex 0 in landing (it has no messages to
@@ -3253,16 +3253,18 @@ export function SessionBreadcrumb({
 }
 
 /** Centered landing headline shown above the composer on the empty Fleet
- *  hub and the empty compose screen. Fixed brand line — the placeholder
- *  inside the composer carries the context-specific prompt. */
-export function LandingHeadline() {
+ *  hub and the empty compose screen. On the hub you talk to Fleetify, which
+ *  picks or starts the agents; New session (`composing`) starts one agent on
+ *  one task, so it asks for the task. The placeholder inside the composer
+ *  carries the context-specific prompt. */
+export function LandingHeadline({ composing = false }: { composing?: boolean }) {
   return (
     <h1 style={{
       margin: "0 0 18px",
       fontSize: 26, fontWeight: 600, letterSpacing: "-0.025em",
       color: "var(--foreground)", textAlign: "center", lineHeight: 1.2,
     }}>
-      Talk to Fleetify
+      {composing ? "What are we working on?" : "Talk to Fleetify"}
     </h1>
   );
 }

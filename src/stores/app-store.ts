@@ -33,6 +33,10 @@ function composerWelcomeText(projectPath: string): string {
  */
 let composerWelcomeAnimated = false;
 
+/** Counts `openComposer` calls. The provider check an open finishes after the
+ *  surface is up applies only while that open is still the latest one. */
+let composerOpenSeq = 0;
+
 /** Refresh the compose-mode welcome line for the current folder WITHOUT
  *  replaying the typewriter. The line is typed out once by `openComposer`;
  *  every later folder change just needs the text to reflect the new folder,
@@ -903,6 +907,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   // sidebar reconcile, history fetch, /detail poll, etc. never have to
   // remember to skip a phantom entry.
   openComposer: async () => {
+    const seq = ++composerOpenSeq;
     // Default to Fleet "Auto" (auto-routes to whatever is actually working)
     // rather than a concrete provider, so a user who finished onboarding
     // without setting up / picking any provider doesn't land on a phantom
@@ -954,41 +959,6 @@ export const useAppStore = create<AppState>((set, get) => ({
         if (lu.effort) defaultEffort = lu.effort;
       }
     }
-    // Guarantee the (provider, model) maps to a CONNECTED provider — otherwise a
-    // fresh session opens on a tile the user can't dispatch (e.g. the hardcoded
-    // "claude-code" fallback when Claude isn't set up). If the resolved provider
-    // isn't connected, switch to the Fleet-default-or-first connected tile; then
-    // make sure the model belongs to it (the picker's list, CLI fallbacks
-    // included), else take that provider's first model.
-    try {
-      const tiles = (await providers.listCatalog()).tiles ?? [];
-      const connected = tiles.filter((t) => t.connected);
-      if (connected.length > 0) {
-        // "auto" is a valid pseudo-provider (Fleet routes it) — never swap it
-        // out for a concrete connected tile; only refine real providers.
-        if (defaultProvider !== "auto" && !connected.some((t) => t.spec.id === defaultProvider)) {
-          const pick = connected.find((t) => t.is_default) ?? connected[0];
-          if (pick) defaultProvider = pick.spec.id as Session["tool"];
-        }
-        // Pass discovered models so API-provider (and live CLI) defaults are
-        // visible in the groups; the flag also rides in via CLI_MODELS for the
-        // offline CLI agents. resolveSessionModel then heals a missing/stale
-        // model to the provider's FLAGGED default (not just the first model),
-        // silently — no notification (fail-open on ok/unverified).
-        const { useDiscoveredModelsStore } = await import("@/stores/discovered-models-store");
-        const { resolveSessionModel } = await import("@/lib/model-resolution");
-        const groups = buildPickerGroups(
-          tiles,
-          tiles.filter((t) => t.spec.kind === "cli" && t.connected).map((t) => t.spec.id),
-          useDiscoveredModelsStore.getState().models,
-        );
-        const provModels = groups.find((g) => g.id === defaultProvider)?.models ?? [];
-        if (defaultProvider !== "auto" && provModels.length > 0) {
-          const r = resolveSessionModel(defaultModel, provModels);
-          if (r.status === "healed") defaultModel = r.model;
-        }
-      }
-    } catch { /* keep cfg / hardcoded fallbacks */ }
     set({
       composer: {
         open: true,
@@ -1042,6 +1012,56 @@ export const useAppStore = create<AppState>((set, get) => ({
       composerWelcomeAnimated ? 0 : 14,
     );
     composerWelcomeAnimated = true;
+
+    // Guarantee the (provider, model) maps to a CONNECTED provider — otherwise a
+    // fresh session opens on a tile the user can't dispatch (e.g. the hardcoded
+    // "claude-code" fallback when Claude isn't set up). If the resolved provider
+    // isn't connected, switch to the Fleet-default-or-first connected tile; then
+    // make sure the model belongs to it (the picker's list, CLI fallbacks
+    // included), else take that provider's first model.
+    //
+    // This runs after the surface is up, not before: the catalog reads the OS
+    // keychain once per provider, most of a second in a debug build on Linux,
+    // and waiting for it held New session on the old screen that long. The
+    // correction lands only while this is still the latest open, the composer
+    // is still open, and the user hasn't picked a different provider or model
+    // in the meantime.
+    let tool = defaultProvider;
+    let model = defaultModel;
+    try {
+      const tiles = (await providers.listCatalog()).tiles ?? [];
+      const connected = tiles.filter((t) => t.connected);
+      if (connected.length > 0) {
+        // "auto" is a valid pseudo-provider (Fleet routes it) — never swap it
+        // out for a concrete connected tile; only refine real providers.
+        if (tool !== "auto" && !connected.some((t) => t.spec.id === tool)) {
+          const pick = connected.find((t) => t.is_default) ?? connected[0];
+          if (pick) tool = pick.spec.id as Session["tool"];
+        }
+        // Pass discovered models so API-provider (and live CLI) defaults are
+        // visible in the groups; the flag also rides in via CLI_MODELS for the
+        // offline CLI agents. resolveSessionModel then heals a missing/stale
+        // model to the provider's FLAGGED default (not just the first model),
+        // silently — no notification (fail-open on ok/unverified).
+        const { useDiscoveredModelsStore } = await import("@/stores/discovered-models-store");
+        const { resolveSessionModel } = await import("@/lib/model-resolution");
+        const groups = buildPickerGroups(
+          tiles,
+          tiles.filter((t) => t.spec.kind === "cli" && t.connected).map((t) => t.spec.id),
+          useDiscoveredModelsStore.getState().models,
+        );
+        const provModels = groups.find((g) => g.id === tool)?.models ?? [];
+        if (tool !== "auto" && provModels.length > 0) {
+          const r = resolveSessionModel(model, provModels);
+          if (r.status === "healed") model = r.model;
+        }
+      }
+    } catch { /* keep cfg / hardcoded fallbacks */ }
+    const now = get().composer;
+    if (seq !== composerOpenSeq || !now.open) return;
+    if (now.tool !== defaultProvider || now.modelName !== defaultModel) return;
+    if (tool === defaultProvider && model === defaultModel) return;
+    set({ composer: { ...now, tool, modelName: model } });
   },
 
   setComposerField: (patch) => {

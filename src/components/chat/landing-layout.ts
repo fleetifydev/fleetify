@@ -1,6 +1,6 @@
 /**
  * Landing-layout rule — the one place that decides whether the chat surface
- * renders CENTERED (the "Talk to Fleetify" headline with the composer floating
+ * renders CENTERED (the landing headline with the composer floating
  * mid-screen) or DOCKED (transcript fills the column, composer pinned to the
  * bottom).
  *
