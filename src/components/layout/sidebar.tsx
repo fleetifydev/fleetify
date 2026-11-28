@@ -107,7 +107,7 @@ export function Ib({ children, onClick, title }: { children: React.ReactNode; on
  * (clean comet trail, not a filled C), and (2) a paper-thin stroke
  * (1px) that scales nicely on retina without looking heavy on 1×.
  */
-function AgentStatusIcon({ status, size = 14 }: { status: string; size?: number }) {
+export function AgentStatusIcon({ status, size = 14 }: { status: string; size?: number }) {
   // ── Status dot system ──
   // Every state shares the same outer touch box (`size`) so the row
   // rhythm never jumps when an agent transitions. Inside the box:

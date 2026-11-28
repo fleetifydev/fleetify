@@ -8,7 +8,7 @@ import { MessageContent, StreamingMessage } from "./message-content";
 import { CompactionPill } from "./compaction-pill";
 import { ContainerSetupPill } from "./container-setup-pill";
 import { PermissionDialog } from "./permission-dialog";
-import { paneOwnsInput } from "./pane-session-context";
+import { PaneSessionProvider, paneOwnsInput } from "./pane-session-context";
 import { CursorQuestionCard } from "./cursor-question-card";
 import { CursorPlanCard } from "./cursor-plan-card";
 import { SessionToolbar } from "./session-toolbar";
@@ -30,7 +30,8 @@ import { BatchProgressCard } from "@/components/dashboard/fleet-panel/batch-prog
 import { useFleetStore, AUTO_CHAIN_CAP } from "@/stores/fleet-store";
 import { OpenInMenu } from "@/components/layout/open-in-menu";
 import { isLandingLayout } from "./landing-layout";
-import { OrbitMap } from "@/components/fleet/orbit-map";
+import { FleetRoots } from "@/components/fleet/fleet-roots";
+import { FleetCockpit } from "@/components/fleet/cockpit";
 import { PanelLeft, PanelRight, Trash2, X, Check, GitCompareArrows, ListTodo, Terminal as TerminalIcon, Play, FolderOpen, Layers, Copy, GitBranch, Sparkles, HelpCircle, Globe, Scissors, Loader2 } from "lucide-react";
 import type { ContentBlock, ChatMessage } from "@/types/chat";
 import type { Session } from "@/types/session";
@@ -194,7 +195,7 @@ export function usePaneEscapeToStop(
   useEscapeToStop(surface, streaming && ownsEscape, onStop);
 }
 
-export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
+export function ChatView({ paneSessionId, paneIdx, onClosePane, bare }: {
   /** When set, this ChatView instance is rendering inside a split-
    *  pane grid and is bound to THIS sessionId rather than the global
    *  activeSessionId. The store's activeSessionId still drives the
@@ -208,6 +209,8 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
   /** Click handler for the pane's close button — only rendered
    *  when this ChatView is inside the split grid. */
   onClosePane?: () => void;
+  /** Rendered inside a surface that has its own header (Fleet's cockpit): this view's header steps aside. */
+  bare?: boolean;
 } = {}) {
   // ── Granular app-store selectors ──
   // Was: a single destructure of useAppStore() — Zustand returns the
@@ -2085,7 +2088,29 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
   );
   // Fleet's home: with agents to show, the empty Fleet chat opens on the orbit
   // map instead of the centred headline; the composer docks below it.
-  const orbit = landing && isControlCenter && agentSessions.length > 0;
+  // Fleet's map stays while the user talks to Fleet itself: its replies show on the map, under the hub.
+  // The header's Map / Chat switch shows the full Fleet conversation instead.
+  const [fleetView, setFleetViewState] = useState<"map" | "chat">(() => { try { return localStorage.getItem("fleet:view") === "chat" ? "chat" : "map"; } catch { return "map"; } });
+  const setFleetView = (v: "map" | "chat") => { setFleetViewState(v); try { localStorage.setItem("fleet:view", v); } catch { /* the choice just isn't remembered */ } };
+  const hasFleetMap = isControlCenter && !isComposing && agentSessions.length > 0;
+  const orbit = hasFleetMap && fleetView === "map";
+  // Fleet puts its own toolbars into this header, in line with the title, the way a chat's header holds its controls
+  const [fleetHeadLeft, setFleetHeadLeft] = useState<HTMLDivElement | null>(null);
+  const [fleetHeadRight, setFleetHeadRight] = useState<HTMLDivElement | null>(null);
+  // the card picked on Fleet: the composer then talks to that agent, and the card's bar docks on the composer
+  const [fleetTarget, setFleetTarget] = useState<{ ids: string[]; label: string } | null>(null);
+  // stable, and a no-op when nothing changed: Fleet reports its target from an effect
+  const onFleetTarget = useCallback((ids: string[] | null, label: string) => setFleetTarget(prev => {
+    const key = ids?.join(",") ?? "";
+    if ((prev?.ids.join(",") ?? "") === key && (prev?.label ?? "") === label) return prev;
+    return { ids: ids ?? [], label };
+  }), []);
+  const [fleetDock, setFleetDock] = useState<HTMLDivElement | null>(null);
+  // a session entered from the map: its full chat opens beside the map, and the map stays
+  const [fleetPanel, setFleetPanel] = useState<string | null>(null);
+  const target = orbit && fleetTarget?.ids.length ? fleetTarget : null;
+  // the hub selected: the composer talks to Fleet itself
+  const fleetFocused = orbit && !target && fleetTarget?.label === "Fleet";
 
   // When Fleet is open, pre-load messages for ALL agents in the background
   // so IdleRow and RunningPanel can show last activity without user navigating.
@@ -2128,7 +2153,7 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
             into the messages below. No blur, no mask, no overlay. */}
         <div className="drag-region" style={{
           height: 44, flexShrink: 0, position: "relative", zIndex: 2,
-          display: "flex", alignItems: "center", justifyContent: "space-between",
+          display: bare ? "none" : "flex", alignItems: "center", justifyContent: "space-between",
           padding: "0 16px",
           background: "var(--card)",
         }}>
@@ -2228,6 +2253,13 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
                 {/* SessionRoutingChip removed — too noisy above chat */}
               </>
             )}
+            {hasFleetMap && (
+              <div className="fr-viewswitch" role="tablist" aria-label="Fleet view">
+                <button type="button" role="tab" aria-selected={fleetView === "map"} className={fleetView === "map" ? "is-on" : undefined} onClick={() => setFleetView("map")}>Map</button>
+                <button type="button" role="tab" aria-selected={fleetView === "chat"} className={fleetView === "chat" ? "is-on" : undefined} onClick={() => setFleetView("chat")}>Chat</button>
+              </div>
+            )}
+            {orbit && <div ref={setFleetHeadLeft} className="fr-head-slot" />}
             {/* Fleet hub: header reads as empty wordmark space — the
                 "Fleet" label + running/idle stat strip were removed
                 per the user. The right Fleet panel carries identity
@@ -2239,6 +2271,7 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
                 inherited IBtn's default 30×30 which made them look
                 visibly larger than the PanelLeft toggle on the left
                 edge of the same row. */}
+            {orbit && <div ref={setFleetHeadRight} className="fr-head-slot" />}
             <OpenInMenu projectPath={
               isControlCenter ? null
               : isComposing ? (composer.projectPath || null)
@@ -2352,7 +2385,7 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
             messages 0). Pointer-events: none so it doesn't intercept
             scroll/clicks meant for the messages. */}
         <div aria-hidden style={{
-          position: "absolute", left: 0, right: 0, top: 44,
+          position: "absolute", left: 0, right: 0, top: bare ? 0 : 44,
           height: 16, zIndex: 1, pointerEvents: "none",
           background: "linear-gradient(to bottom, var(--card) 0%, color-mix(in srgb, var(--card) 60%, transparent) 50%, transparent 100%)",
         }} />
@@ -2384,11 +2417,18 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
             All four flex-grows + the headline transition over 0.3s. None of
             these elements unmount on the switch, so React keeps every node
             (including ChatInput) stable. */}
-        <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, position: orbit ? "relative" : undefined }}>
           {/* Top spacer — pushes the centered block down in landing,
               collapses to nothing in normal mode. Always present. */}
-          <div style={{ flex: landing && !orbit ? 1 : 0, transition: "flex-grow 0.3s ease", flexShrink: 0 }} aria-hidden />
-          {orbit && <OrbitMap sessions={agentSessions} onOpen={(id) => useAppStore.getState().setActiveSession(id)} />}
+          <div style={{ flexGrow: landing && !orbit ? 1 : 0, flexShrink: 0, flexBasis: "0%", transition: "flex-grow 0.3s ease" }} aria-hidden />
+          {/* Fleet's canvas fills the column (absolute, see .fr-map); this spacer holds the composer at the bottom */}
+          {orbit && <div style={{ flex: 1 }} aria-hidden />}
+          {orbit && fleetPanel && agentSessions.some(s => s.id === fleetPanel) && (
+            <FleetCockpit session={agentSessions.find(s => s.id === fleetPanel)!} onClose={() => setFleetPanel(null)}
+              chat={<PaneSessionProvider sessionId={fleetPanel}><ChatView key={fleetPanel} paneSessionId={fleetPanel} bare /></PaneSessionProvider>} />
+          )}
+          {orbit && <FleetRoots sessions={agentSessions} onOpen={setFleetPanel} onLeave={(id) => useAppStore.getState().setActiveSession(id)} panelId={fleetPanel} head={{ left: fleetHeadLeft, right: fleetHeadRight }} dock={fleetDock}
+            onTarget={onFleetTarget} fleetSessionId={isControlCenter ? effectiveSessionId : null} onShowChat={() => setFleetView("chat")} />}
           {/* Headline — fades + collapses out of the flow when leaving
               landing. maxHeight gives the height collapse something to
               animate; overflow hidden clips it as it shrinks. */}
@@ -2414,7 +2454,7 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
           <div
             ref={scrollRef}
             data-chat-scroll="1"
-            style={{ flex: landing ? 0 : 1, transition: "flex-grow 0.3s ease", overflowY: "auto", overflowX: "hidden", overscrollBehavior: "none", minHeight: 0 }}
+            style={{ flex: landing || orbit ? 0 : 1, display: orbit ? "none" : undefined, transition: "flex-grow 0.3s ease", overflowY: "auto", overflowX: "hidden", overscrollBehavior: "none", minHeight: 0 }}
             onContextMenu={(e) => {
                 const sel = window.getSelection()?.toString().trim() ?? "";
                 if (!sel) return;
@@ -2475,12 +2515,16 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
               max-width transition has two animatable endpoints — the chat
               column is narrower than 2000px in practice, so it reads as
               full-width while still easing. */}
-          <div style={{
+          <div data-fleet-composer={orbit ? "1" : undefined} style={{
+            // inside Fleet's cockpit the chat is read here and written in Fleet's own composer
+            ...(bare ? { display: "none" } : {}),
             width: "100%",
             maxWidth: landing ? 720 : 2000,
             margin: "0 auto",
             paddingInline: landing ? 24 : 0,
             transition: "max-width 0.3s ease, padding 0.3s ease",
+            // on Fleet the canvas runs under the composer, which floats above it
+            ...(orbit ? { position: "relative" as const, zIndex: fleetPanel ? 9 : 2 } : {}),
           }}>
             <ChatInput
               // ── Per-session input state ──
@@ -2493,7 +2537,9 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
               // discards A's draft instead of preserving it. Acceptable
               // — that's the standard mental model for chat apps.
               key={effectiveSessionId ?? "fleet-empty"}
-              onSend={isControlCenter ? handleStaffSend : handleAgentSend}
+              headSlot={orbit ? setFleetDock : undefined}
+              hideModel={!!target}
+              onSend={target ? (text, attachments) => { for (const id of target.ids) void wsManager.send(id, text, attachments); } : isControlCenter ? handleStaffSend : handleAgentSend}
               // Empty-hub / compose source picker — the composer's "+"
               // (and the empty-landing affordance) spawns a draft agent
               // and deep-links the toolbar into the matching source tab.
@@ -2531,6 +2577,10 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
                 : permissionRequest.tool_name === "ExitPlanMode" || permissionRequest.tool_name === "EnterPlanMode"
                   ? "Review the plan above to continue…"
                   : "Approve or deny above to continue…"
+              : target
+                ? `Message ${target.label}…`
+              : fleetFocused
+                ? "Tell Fleet what to do: start a session, hand off a task, check on an agent…"
               : isControlCenter
                 ? fleetGlobalMode === "auto"
                   ? "Describe a goal — Fleet plans and dispatches it across your agents…"
@@ -2903,7 +2953,7 @@ export function ChatView({ paneSessionId, paneIdx, onClosePane }: {
               composer. Always present (mirrors the top spacer) so it can
               animate flex-grow 1→0 in lockstep; collapses to nothing in
               normal mode. */}
-          <div style={{ flex: landing && !orbit ? 1 : 0, transition: "flex-grow 0.3s ease", flexShrink: 0 }} aria-hidden />
+          <div style={{ flexGrow: landing && !orbit ? 1 : 0, flexShrink: 0, flexBasis: "0%", transition: "flex-grow 0.3s ease" }} aria-hidden />
         </div>
       </div>
       {chatCtxMenu && (

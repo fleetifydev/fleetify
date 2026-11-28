@@ -942,6 +942,10 @@ export interface AgentMention {
 
 interface ChatInputProps {
   onSend: (msg: string, attachments?: Attachment[]) => void;
+  /** A place at the top of the composer box, for a strip that belongs to it (Fleet: who the message goes to). */
+  headSlot?: (el: HTMLDivElement | null) => void;
+  /** The message goes to another agent (named in the head strip): this composer's own model and Fleet mode do not apply, so they hide. */
+  hideModel?: boolean;
   onStop?: () => void;
   onModelChange?: (modelId: string) => void;
   onEffortChange?: (effort: Effort) => void;
@@ -1146,6 +1150,8 @@ export function ChatInput({
   sandbox,
   toolOverridesRaw,
   hideBranchStrip,
+  headSlot,
+  hideModel,
   sessionTitle,
 }: ChatInputProps) {
   const [value, setValue]       = useState("");
@@ -3019,6 +3025,7 @@ export function ChatInput({
             pointerEvents: locked ? "none" : undefined,
           }}
         >
+          {headSlot && <div ref={headSlot} className="ci-head-slot" />}
           {/* Attachments */}
           {attachments.length > 0 && (
             <div style={{ padding: "10px 12px 0", display: "flex", flexWrap: "wrap", gap: 6 }}>
@@ -3691,20 +3698,20 @@ export function ChatInput({
             {/* Fleet mode chip — hub only. Sits left of the model chip so
                 Fleet mode + model read as one status cluster. Opens an
                 upward dropdown (Manual / Refine only / Co-pilot / Auto). */}
-            {controlCenter ? (
+            {controlCenter && !hideModel ? (
               <FleetModeChip sessionId={sessionId ?? null} controlCenter={!!controlCenter} />
             ) : null}
 
             {/* Model chip — moved left so model identity anchors the left
                 status cluster alongside permissions/fleet, matching the
                 design direction of Feature C. */}
-            <ModelChip
+            {!hideModel && <ModelChip
               modelLabel={modelLabel}
               effort={effort}
               tool={chipDispatchTool}
               open={openDrop === "model"}
               onToggle={() => setOpenDrop(d => d === "model" ? null : "model")}
-            />
+            />}
 
             {/* Tool cluster — sleeker. The frequent actions stay visible
                 (Plus = attach, Mic = voice), and the secondary actions
