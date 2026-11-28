@@ -21,7 +21,6 @@ import { type CSSProperties, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { markdownLinkComponents } from "@/components/markdown-link";
-import { openExternalUrl } from "@/lib/links";
 import {
   ArrowRight,
   Check,
@@ -36,9 +35,8 @@ import {
 import { LogoMark } from "@/components/brand/logo-mark";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import { apiScanProviders, checkPythonRuntime, type ProviderScan, type AuthUser } from "@/lib/api";
-import { getPlatform } from "@/lib/utils";
-import { formatShortcut } from "@/lib/keyboard-shortcuts";
 import { providers as providersApi } from "@/lib/providers-api";
+import { LoginTerminalModal } from "@/components/settings/shared/login-terminal-modal";
 import type { ProviderTile } from "@/lib/providers-api";
 import { modelsForTile } from "@/lib/picker-groups";
 import type { PickerModel } from "@/lib/picker-groups";
@@ -1546,12 +1544,12 @@ function ScanWidget({
   // is already in flight — that would queue two long-running spawns
   // back-to-back and confuse the row's state machine.
   const installingRef = useRef<Set<string>>(new Set());
-  // Captured OAuth URLs, keyed by toolKey ("claude_code"
-  // / "codex_cli"). Pushed from main.cjs's auth-pty as soon as it
-  // spots the URL in the CLI's output. ScanRow surfaces a clickable
-  // "re-open browser" icon while the URL is known, so the user can
-  // recover if they accidentally close the auth tab.
-  const [authUrls, setAuthUrls] = useState<Record<string, string>>({});
+  // The sign-in running in a terminal dialog, if any.
+  const [loginDialog, setLoginDialog] = useState<{ provider: ProviderDef; ptyId: string } | null>(null);
+  // Stops the scan poll of the sign-in in progress.
+  const loginPollStop = useRef<(() => void) | null>(null);
+  // The open sign-in's final check (set by handleSignIn).
+  const loginFinishRef = useRef<(() => Promise<void>) | null>(null);
   // Provider ids the user has just saved a key/URL for in this
   // session. The scan probes env vars (PATH-bound) and Ollama's
   // running daemon — neither flips immediately after a
@@ -1565,13 +1563,7 @@ function ScanWidget({
     onKeySaved?.(id);
   };
 
-  useEffect(() => {
-    if (!window.electronAPI?.onAuthUrl) return;
-    const off = window.electronAPI.onAuthUrl(({ toolKey, url }) => {
-      setAuthUrls((prev) => ({ ...prev, [toolKey]: url }));
-    });
-    return off;
-  }, []);
+  useEffect(() => () => loginPollStop.current?.(), []);
 
   useEffect(() => {
     if (frozen) return;
@@ -1661,98 +1653,58 @@ function ScanWidget({
   }, [providers, scan, frozen]);
 
   // ── Sign-in handler ──
-  // Spawns the CLI's auth flow via electronAPI.authProvider (which
-  // runs the binary in a hidden PTY and auto-opens the OAuth URL it
-  // prints). Concurrently polls /providers/scan every 2 s; the row
-  // flips to ✓ Ready as soon as the auth flag turns true. Whichever
-  // arrives first — PTY exit or the scan flip — wins. Hard timeout
-  // at 120 s so a half-completed browser flow doesn't spin forever.
+  // Runs the agent's own login (the catalog's command) in a terminal dialog
+  // against the real HOME, where sessions read it. The scan is the source of
+  // truth: it's polled every 2 s while the dialog is open (a login can finish
+  // in the browser), checked once more when the login exits or the dialog
+  // closes, and the row flips to ✓ Ready as soon as it says signed in.
   const handleSignIn = async (p: ProviderDef) => {
     if (!p.scanKey) return;
     if (signingInRef.current.has(p.id)) return;
     signingInRef.current.add(p.id);
 
-    setStates((prev) => ({
-      ...prev,
-      [p.id]: { status: "running", detail: "Authenticating…" },
-    }));
+    const setRow = (status: ScanStatus, detail: string) =>
+      setStates((prev) => ({ ...prev, [p.id]: { status, detail } }));
+    setRow("running", "Signing in…");
 
-    let resolved = false;
-    let pollTimer: ReturnType<typeof setInterval> | null = null;
-
-    const flipReady = () => {
-      if (resolved) return;
-      resolved = true;
-      if (pollTimer) clearInterval(pollTimer);
+    const res = await providersApi.openAccountLogin(p.id, "system");
+    if (!res.ok) {
       signingInRef.current.delete(p.id);
-      setStates((prev) => ({
-        ...prev,
-        [p.id]: { status: "ok", detail: "Ready" },
-      }));
-    };
-
-    const flipFail = (detail: string) => {
-      if (resolved) return;
-      resolved = true;
-      if (pollTimer) clearInterval(pollTimer);
-      signingInRef.current.delete(p.id);
-      setStates((prev) => ({
-        ...prev,
-        [p.id]: { status: "warn", detail },
-      }));
-    };
-
-    // Poll the scan API every 2 s — the source of truth for auth.
-    pollTimer = setInterval(async () => {
-      const fresh = await apiScanProviders().catch(() => null);
-      if (!fresh || !p.scanKey) return;
-      const s = fresh[p.scanKey];
-      if (s.installed && s.authenticated) flipReady();
-    }, 2000);
-
-    // Hard timeout — main.cjs also kills the PTY at 120 s, but cap
-    // the UI side here too so we always settle within ~125 s.
-    const timeout = setTimeout(() => flipFail("Try Settings to finish"), 120_000);
-
-    // Defensive: if main.cjs hasn't loaded the new shell:authProvider
-    // handler (i.e. the user hot-reloaded the renderer but didn't
-    // restart the Electron main process), authProvider will be
-    // undefined and the optional-chain call would silently no-op.
-    // Surface that as a real error rather than leaving the row
-    // stuck on "Complete in your browser…" while nothing happens.
-    if (!window.electronAPI?.authProvider) {
-      clearTimeout(timeout);
-      console.warn("[fleet] electronAPI.authProvider missing — main process needs restart");
-      // Quit shortcut is OS-specific: ⌘Q on macOS, Alt+F4 on Windows, Ctrl+Q elsewhere.
-      const quitHint = getPlatform() === "windows" ? "Alt+F4" : formatShortcut(["Mod", "Q"]);
-      flipFail(`Restart Fleet (${quitHint}) to enable Sign in`);
+      setRow("warn", res.error || "Sign-in couldn't start");
       return;
     }
 
-    try {
-      console.log("[fleet] authProvider →", p.scanKey);
-      const result = await window.electronAPI.authProvider(p.scanKey);
-      console.log("[fleet] authProvider result:", result);
-      if (!result?.ok) {
-        clearTimeout(timeout);
-        flipFail(result?.error || "Couldn't open Terminal");
-        return;
+    let settled = false;
+    const isSignedIn = async () => {
+      const fresh = await apiScanProviders().catch(() => null);
+      const s = fresh && p.scanKey ? fresh[p.scanKey] : undefined;
+      return !!(s?.installed && s.authenticated);
+    };
+    const settle = (ok: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearInterval(timer);
+      loginPollStop.current = null;
+      signingInRef.current.delete(p.id);
+      if (ok) {
+        setRow("ok", "Ready");
+        setLoginDialog(null);
+      } else {
+        setRow("warn", "Not signed in yet");
       }
-      // CLI is running in a hidden PTY; main.cjs already opened
-      // the OAuth URL it printed. We keep the label as
-      // "Authenticating…" the whole way through — once the URL
-      // has been pushed via fleet:auth-url, the row also surfaces
-      // a clickable re-open icon so the user can recover if they
-      // close the browser tab. The poll watches /providers/scan
-      // for the auth flag flipping true and resolves the row.
-      // No label change needed here.
-    } catch (e) {
-      clearTimeout(timeout);
-      console.error("[fleet] authProvider threw:", e);
-      flipFail(e instanceof Error ? e.message : "Sign-in failed");
-    }
-  };
+    };
+    const timer = setInterval(() => {
+      void isSignedIn().then((ok) => ok && settle(true));
+    }, 2000);
+    loginPollStop.current = () => settle(false);
 
+    setLoginDialog({
+      provider: p,
+      ptyId: res.pty_id,
+    });
+    // Exposed to the dialog: a last check when the login exits or closes.
+    loginFinishRef.current = async () => settle(await isSignedIn());
+  };
   // ── Install handler ──
   // Race-based completion detection. We start TWO signals in parallel:
   //
@@ -1997,11 +1949,6 @@ function ScanWidget({
     >
       {providers.map((p) => {
         const st = states[p.id] ?? { status: "pending" as ScanStatus, detail: "" };
-        // Each row reads ONLY its own provider's URL — keyed by
-        // scanKey ("claude_code" / "codex_cli") so
-        // simultaneous sign-ins for two providers each get their
-        // own re-open icon pointing at the right URL.
-        const authUrl = p.scanKey ? authUrls[p.scanKey] : undefined;
 
         // Antigravity SDK rolls up into the same single-row visual as
         // the CLI rows. Per-state mapping:
@@ -2132,7 +2079,6 @@ function ScanWidget({
             key={p.id}
             provider={p}
             state={st}
-            authUrl={authUrl}
             onSignIn={!frozen && p.scanKey ? () => handleSignIn(p) : undefined}
             onInstall={!frozen && p.scanKey ? () => handleInstall(p) : undefined}
             onDownload={!frozen && p.ollama ? () => handleDownloadOllama(p) : undefined}
@@ -2145,6 +2091,17 @@ function ScanWidget({
           // Settings → Providers — so Continue is always available.
           enabled
           onContinue={onContinue}
+        />
+      )}
+      {loginDialog && (
+        <LoginTerminalModal
+          ptyId={loginDialog.ptyId}
+          title={loginDialog.provider.label}
+          onExit={() => void loginFinishRef.current?.()}
+          onClose={() => {
+            setLoginDialog(null);
+            void loginFinishRef.current?.();
+          }}
         />
       )}
     </div>
@@ -2200,20 +2157,12 @@ function ContinueRow({
 function ScanRow({
   provider,
   state,
-  authUrl,
   onSignIn,
   onInstall,
   onDownload,
 }: {
   provider: ProviderDef;
   state: ProviderState;
-  /** OAuth URL captured by main.cjs's auth-pty for this provider —
-   *  populated only while a Sign in flow is in flight. When set,
-   *  StatusPill renders a clickable ExternalLink icon (left of the
-   *  "Authenticating…" label) that re-opens the URL in the browser
-   *  via shell.openExternal. Lets the user recover from accidentally
-   *  closing the auth tab without re-spawning the whole PTY. */
-  authUrl?: string;
   onSignIn?: () => void;
   onInstall?: () => void;
   onDownload?: () => void;
@@ -2239,12 +2188,6 @@ function ScanRow({
   const showDownload = !!onDownload && state.status === "fail";
   const showSignIn   = !!onSignIn   && state.status === "warn" && !showInstall && !showDownload;
 
-  // Show the re-open icon only while we're actively waiting on a
-  // sign-in (status running) AND main has handed us a URL. Once the
-  // row flips to ok / warn / fail the icon disappears with the
-  // running spinner.
-  const reopenUrl = authUrl && state.status === "running" ? authUrl : null;
-
   return (
     <div
       style={{
@@ -2268,7 +2211,7 @@ function ScanRow({
         {showInstall  && <ActionButton label="Install"  onClick={onInstall!}  />}
         {showDownload && <ActionButton label="Download" onClick={onDownload!} />}
         {showSignIn   && <ActionButton label="Sign in"  onClick={onSignIn!}   />}
-        <StatusPill state={state} reopenUrl={reopenUrl} />
+        <StatusPill state={state} />
       </div>
     </div>
   );
@@ -2307,14 +2250,8 @@ function ActionButton({ label, onClick }: { label: string; onClick: () => void }
 
 function StatusPill({
   state,
-  reopenUrl,
 }: {
   state: ProviderState;
-  /** Set while a sign-in is in progress AND main has handed us the
-   *  captured OAuth URL. When set, we replace the "running" spinner
-   *  with a clickable ExternalLink so the user can re-open the auth
-   *  tab if they closed it by accident. */
-  reopenUrl?: string | null;
 }) {
   const { status, detail } = state;
   // Neutral text, only the leading dot/icon carries the colour cue.
@@ -2343,48 +2280,11 @@ function StatusPill({
         whiteSpace: "nowrap",
       }}
     >
-      {reopenUrl
-        ? <ReopenAuthButton url={reopenUrl} />
-        : <StatusDot status={status} />}
+      <StatusDot status={status} />
       {/* Ready needs no words — the green check says it, matching the picker.
           Other states keep their explanatory detail. */}
       {status !== "ok" && <span>{label}</span>}
     </span>
-  );
-}
-
-// Small icon button shown in place of the running spinner once the
-// auth-pty has handed us the OAuth URL. Click → re-open the same URL
-// in the user's default browser. The hover treatment makes it
-// obvious this is interactive even at 11 px.
-function ReopenAuthButton({ url }: { url: string }) {
-  const [hover, setHover] = useState(false);
-  return (
-    <button
-      type="button"
-      title="Re-open sign-in in browser"
-      aria-label="Re-open sign-in in browser"
-      onClick={() => openExternalUrl(url)}
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        justifyContent: "center",
-        width: 16,
-        height: 16,
-        padding: 0,
-        borderRadius: 4,
-        background: hover ? "rgba(255,255,255,0.10)" : "transparent",
-        border: "none",
-        color: hover ? "var(--m-text)" : "var(--m-text-2)",
-        cursor: "pointer",
-        flexShrink: 0,
-        transition: "background 0.12s ease, color 0.12s ease",
-      }}
-    >
-      <ExternalLink size={10} strokeWidth={2.2} />
-    </button>
   );
 }
 

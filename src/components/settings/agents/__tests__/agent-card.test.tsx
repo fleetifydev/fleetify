@@ -1,5 +1,18 @@
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
+
+const loginModal = vi.hoisted(() => ({ props: null as null | { ptyId: string; title: string } }));
+vi.mock("@/components/settings/shared/login-terminal-modal", () => ({
+  LoginTerminalModal: (p: { ptyId: string; title: string }) => {
+    loginModal.props = p;
+    return <div role="dialog">login {p.ptyId}</div>;
+  },
+}));
+// The accounts list has its own tests; keep it out of these.
+vi.mock("@/components/settings/shared/accounts-manager", () => ({
+  AccountsManager: () => null,
+}));
+
 import { AgentCard, type AgentScanEntry } from "../agent-card";
 import type { ProviderSpec } from "@/lib/providers-api";
 
@@ -14,7 +27,7 @@ const spec: ProviderSpec = {
   bin: "claude-code",
   auth_indicators: [],
   install_hint: "npm install -g @anthropic-ai/claude-code",
-  login_hint: "claude login",
+  login_hint: "claude auth login",
 };
 
 const installedScan: AgentScanEntry = {
@@ -34,9 +47,18 @@ const uninstalledScan: AgentScanEntry = {
   path: null,
 };
 
+const openAccountLogin = vi.fn();
+
 beforeEach(() => {
+  loginModal.props = null;
+  openAccountLogin.mockReset().mockResolvedValue({ ok: true, pty_id: "pty-9" });
   (window as any).electronAPI = {
     installProvider: vi.fn().mockResolvedValue({ success: true }),
+    providers: {
+      openAccountLogin,
+      listCatalog: vi.fn().mockResolvedValue({ ok: true, tiles: [] }),
+      onChanged: () => () => {},
+    },
   };
 });
 
@@ -148,5 +170,55 @@ describe("AgentCard", () => {
     });
     // The legacy "$ pip install" hint + Install button should NOT render.
     expect(screen.queryByText(/\$ pip install/)).not.toBeInTheDocument();
+  });
+
+  it("says Signed in when the agent is installed and signed in", () => {
+    render(<AgentCard spec={spec} scan={installedScan} onChanged={() => {}} />);
+    expect(screen.getByText("Signed in")).toBeInTheDocument();
+  });
+
+  it("offers a Sign in button that runs the login in a terminal for the System account", async () => {
+    const onChanged = vi.fn();
+    render(
+      <AgentCard
+        spec={spec}
+        scan={{ ...installedScan, authenticated: false }}
+        onChanged={onChanged}
+      />,
+    );
+    expect(screen.getByText("Sign in required")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Claude Code/ }));
+    // The command users would type is still shown, with the right command.
+    expect(screen.getByText("claude auth login")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Sign in to Claude Code/ }));
+    await waitFor(() => expect(openAccountLogin).toHaveBeenCalledWith("claude-code", "system"));
+    expect(await screen.findByRole("dialog")).toHaveTextContent("pty-9");
+    expect(loginModal.props?.title).toBe("Claude Code");
+  });
+
+  it("shows why a sign-in couldn't start", async () => {
+    openAccountLogin.mockResolvedValue({ ok: false, error: "claude not found" });
+    render(<AgentCard spec={spec} scan={{ ...installedScan, authenticated: false }} onChanged={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: /Claude Code/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Sign in to Claude Code/ }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("claude not found");
+  });
+
+  it("says it couldn't check instead of claiming Not installed when the scan failed", () => {
+    render(<AgentCard spec={spec} scan={undefined} scanFailed onChanged={() => {}} />);
+    expect(screen.getByText("Couldn't check")).toBeInTheDocument();
+    expect(screen.queryByText("Not installed")).toBeNull();
+  });
+
+  it("calls an agent that needs no sign-in Ready", () => {
+    const oc: ProviderSpec = { ...spec, id: "opencode", display_name: "OpenCode" };
+    render(
+      <AgentCard
+        spec={oc}
+        scan={{ ...installedScan, id: "opencode", auth_required: false, authenticated: true }}
+        onChanged={() => {}}
+      />,
+    );
+    expect(screen.getByText("Ready")).toBeInTheDocument();
   });
 });

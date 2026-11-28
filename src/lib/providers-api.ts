@@ -81,9 +81,44 @@ export interface ProviderExtras {
   supports_streaming?: boolean;
 }
 
+/** Mirrors `providers::catalog::AuthIndicator` (backend evaluates these;
+ *  the renderer only reads them). */
 export type AuthIndicator =
   | { kind: "home_dir"; path: string }
-  | { kind: "env_var"; name: string };
+  | { kind: "env_var"; name: string }
+  | { kind: "json_field_present"; path: string; field: string }
+  | {
+      kind: "config_file";
+      env: string;
+      env_subdir: string;
+      home_dir: string;
+      file: string;
+      field: string | null;
+    }
+  | { kind: "provider_key"; env: string; home_dir: string; file: string; names: string[] }
+  | { kind: "yaml_local_endpoint"; env: string; home_dir: string; file: string; section: string }
+  | { kind: "os_credential"; service: string; user: string }
+  | { kind: "fleetify_key"; provider: string };
+
+/** How Fleetify signs a CLI agent in (`cli_auth::LoginKind`): a browser /
+ *  device flow that runs without a terminal, an interactive command that
+ *  needs one, or an API key. */
+export type AgentLoginKind = "browser" | "terminal" | "api_key";
+
+/** One row of `GET /api/agents/scan`. */
+export interface AgentScanEntry {
+  id: string;
+  display_name: string;
+  installed: boolean;
+  authenticated: boolean;
+  /** False for agents that work without a sign-in (OpenCode's free models). */
+  auth_required?: boolean;
+  path: string | null;
+  install_hint: string;
+  /** The login command to show users (what they'd type in a terminal). */
+  login_hint: string;
+  login_kind?: AgentLoginKind | null;
+}
 
 export interface InstallHints {
   windows: string;
@@ -252,10 +287,13 @@ interface ProvidersAPI {
   setAccountKey: (id: string, accountId: string, key: string) => Promise<ProvidersSetKeyResult>;
   getAccountKeyPreview: (id: string, accountId: string) => Promise<ProvidersKeyPreviewResult>;
   deleteAccountKey: (id: string, accountId: string) => Promise<ProvidersMutationResult>;
+  /** Run the agent's login in a PTY for an account (`"system"` = the real
+   *  HOME). Returns a PTY id to bind a terminal to. */
   openAccountLogin: (id: string, accountId: string) => Promise<ProvidersOpenLoginResult>;
-  /** Log in to the agent's real HOME (System/default account) — the in-chat
-   *  login-recovery flow (e.g. `grok login`). Returns a PTY id to bind to. */
-  startAgentLogin: (id: string) => Promise<ProvidersOpenLoginResult>;
+  /** Run the agent's browser / device login without a terminal (the in-chat
+   *  sign-in card), for `accountId` (absent = System). Returns a PTY id whose
+   *  output `ptyBuffer` reads and whose stdin `ptyWrite` feeds. */
+  startAgentLogin: (id: string, accountId?: string | null) => Promise<ProvidersOpenLoginResult>;
   setEnabled: (id: string, enabled: boolean) => Promise<ProvidersMutationResult>;
   setDefault: (id: string, model?: string | null) => Promise<ProvidersMutationResult & { default_model?: string | null }>;
   setConnectedBulk: (
@@ -447,7 +485,8 @@ export const providers = {
     api().getAccountKeyPreview(id, accountId),
   deleteAccountKey: (id: string, accountId: string) => api().deleteAccountKey(id, accountId),
   openAccountLogin: (id: string, accountId: string) => api().openAccountLogin(id, accountId),
-  startAgentLogin: (id: string) => api().startAgentLogin(id),
+  startAgentLogin: (id: string, accountId?: string | null) =>
+    api().startAgentLogin(id, accountId ?? null),
   setEnabled: (id: string, enabled: boolean) => api().setEnabled(id, enabled),
   setDefault: (id: string, model?: string | null) => api().setDefault(id, model ?? null),
   setConnectedBulk: (connected: Record<string, boolean>, enabledAgents?: string[] | null) =>

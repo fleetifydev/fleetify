@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { Loader2 } from "lucide-react";
+import { Loader2, RotateCw } from "lucide-react";
 import { useProvidersConfig } from "@/hooks/use-providers-config";
-import { backendFetch } from "@/lib/api";
-import { AgentCard, type AgentScanEntry } from "./agents/agent-card";
+import { refreshAgentScanOnFocus, useAgentScanStore } from "@/stores/agent-scan-store";
+import { AgentCard } from "./agents/agent-card";
 
 const sectionHeader: React.CSSProperties = {
   fontSize: 10.5,
@@ -15,39 +15,29 @@ const sectionHeader: React.CSSProperties = {
   paddingLeft: 1,
 };
 
-async function fetchAgentScan(refresh: boolean): Promise<Record<string, AgentScanEntry>> {
-  try {
-    const r = await backendFetch(`/api/agents/scan${refresh ? "?refresh=1" : ""}`, {
-      credentials: "include",
-    });
-    if (!r.ok) return {};
-    return (await r.json()) as Record<string, AgentScanEntry>;
-  } catch {
-    return {};
-  }
-}
-
 interface InstallApi {
   installProvider?: (toolKey: string) => Promise<{ success?: boolean; error?: string }>;
 }
 
 export function AgentsSection() {
   const { tiles, loading } = useProvidersConfig();
-  const [scan, setScan] = useState<Record<string, AgentScanEntry>>({});
-  const [scanLoading, setScanLoading] = useState(true);
+  const scan = useAgentScanStore((s) => s.scan);
+  const scanStatus = useAgentScanStore((s) => s.status);
+  const refreshing = useAgentScanStore((s) => s.refreshing);
+  const refresh = useAgentScanStore((s) => s.refresh);
   const [installing, setInstalling] = useState<Set<string>>(new Set());
   const [installError, setInstallError] = useState<Record<string, string>>({});
   const installingRef = useRef<Set<string>>(new Set());
 
-  const refreshScan = async (force = false) => {
-    if (force) setScanLoading(true);
-    const s = await fetchAgentScan(force);
-    setScan(s);
-    setScanLoading(false);
-  };
+  // A refresh keeps the cards mounted (and expanded, with any open sign-in
+  // dialog): the store swaps the scan in place.
+  const refreshScan = (force = false) => refresh(force);
 
   useEffect(() => {
     void refreshScan(false);
+    // Signing in happens in a terminal or the browser too: re-check on focus.
+    return refreshAgentScanOnFocus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleInstall = async (specId: string) => {
@@ -85,7 +75,7 @@ export function AgentsSection() {
     }
   };
 
-  if (loading || scanLoading) {
+  if (loading || scanStatus === "idle" || scanStatus === "loading") {
     return (
       <div
         style={{
@@ -103,10 +93,48 @@ export function AgentsSection() {
   }
 
   const cliTiles = tiles.filter((t) => t.spec.kind === "cli");
+  const scanFailed = scanStatus === "error";
 
   return (
     <>
-      <div style={sectionHeader}>CLI Agents</div>
+      <div style={{ ...sectionHeader, display: "flex", alignItems: "center", gap: 8 }}>
+        CLI Agents
+        {refreshing && <Loader2 size={11} className="spin" aria-label="Checking agents" />}
+      </div>
+      {scanFailed && (
+        <div
+          role="alert"
+          style={{
+            fontSize: 12,
+            color: "var(--c-med)",
+            marginBottom: 10,
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+          }}
+        >
+          Couldn't check which agents are installed and signed in.
+          <button
+            type="button"
+            onClick={() => void refreshScan(true)}
+            style={{
+              fontFamily: "inherit",
+              fontSize: 12,
+              cursor: "pointer",
+              background: "transparent",
+              border: "1px solid var(--c-brd)",
+              borderRadius: 6,
+              padding: "3px 9px",
+              color: "var(--c-med)",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 5,
+            }}
+          >
+            <RotateCw size={11} /> Retry
+          </button>
+        </div>
+      )}
       {cliTiles.map((t) => (
         <AgentCard
           key={t.spec.id}
@@ -114,7 +142,8 @@ export function AgentsSection() {
           enabled={t.connected}
           isDefault={t.is_default}
           scan={scan[t.spec.id]}
-          onChanged={() => refreshScan(true)}
+          scanFailed={scanFailed}
+          onChanged={() => void refreshScan(true)}
           installing={installing.has(t.spec.id)}
           installError={installError[t.spec.id]}
           onInstall={() => handleInstall(t.spec.id)}

@@ -323,11 +323,14 @@ document.addEventListener("mousedown", function (e) {
             accountId: String(accountId || ""),
           });
         },
-        // Log in to the agent's REAL home (System/default account) — the
-        // in-chat login-recovery flow (e.g. `grok login`). No per-account
-        // HOME isolation, unlike openAccountLogin.
-        startAgentLogin: function (id) {
-          return invoke("agent_login_default", { id: String(id || "") });
+        // Run an agent's browser / device login without a terminal — the
+        // in-chat sign-in card. `accountId` is the session's account: absent
+        // or "system" signs in the real HOME, a saved account its own dir.
+        startAgentLogin: function (id, accountId) {
+          return invoke("agent_login_default", {
+            id: String(id || ""),
+            accountId: accountId ? String(accountId) : null,
+          });
         },
         setEnabled:       function (id, enabled) {
           return invoke("providers_set_enabled", {
