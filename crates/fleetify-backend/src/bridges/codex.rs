@@ -127,6 +127,41 @@ fn extract_codex_error(obj: &Value) -> Option<String> {
     Some(raw.to_string())
 }
 
+/// The event for a Codex error notification or failed turn: a sign-in card
+/// when Codex says the login is missing or rejected
+/// (`codexErrorInfo: "unauthorized"`), else the error message.
+fn codex_failure_event(obj: &Value) -> Option<BridgeEvent> {
+    let msg = extract_codex_error(obj)?;
+    let unauthorized = obj
+        .get("error")
+        .and_then(|e| e.get("codexErrorInfo"))
+        .and_then(|v| v.as_str())
+        == Some("unauthorized");
+    Some(if unauthorized {
+        BridgeEvent::LoginRequired {
+            provider: "codex-cli".into(),
+            detail: Some(msg),
+        }
+    } else {
+        BridgeEvent::sign_in_or_error("codex-cli", &msg, msg.clone())
+    })
+}
+
+/// Does `account/read` say Codex has no login? `{"account": null,
+/// "requiresOpenaiAuth": true}` when signed out (verified on codex 0.137).
+/// A build without `account/read` (or any other shape) is not a "no".
+fn codex_signed_out(account_read: &Value) -> bool {
+    account_read.get("account").is_some_and(Value::is_null)
+        && account_read
+            .get("requiresOpenaiAuth")
+            .and_then(Value::as_bool)
+            .unwrap_or(true)
+}
+
+/// The cold-start error for a signed-out Codex, in Codex's own words
+/// (`codex login status`); `sign_in_or_error` turns it into the sign-in card.
+const CODEX_NOT_LOGGED_IN: &str = "Not logged in";
+
 struct State {
     client: Arc<CodexClient>,
     _proc: Child,
@@ -466,6 +501,18 @@ impl CodexBridge {
         })??;
         tracing::info!(target: "codex", session_id = %self.session_id, "codex: initialize OK");
         client.send_initialized().await?;
+        // Ask before starting a turn: a signed-out Codex otherwise fails
+        // mid-turn with a raw 401.
+        if let Ok(Ok(account)) = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            client.call("account/read", json!({ "refreshToken": false })),
+        )
+        .await
+        {
+            if codex_signed_out(&account) {
+                return Err(anyhow!(CODEX_NOT_LOGGED_IN));
+            }
+        }
         tracing::info!(target: "codex", session_id = %self.session_id, "codex: initialized notification sent, thread/start START");
 
         // What codex is TOLD about itself, which is not what we told docker.
@@ -593,9 +640,11 @@ impl CodexBridge {
             if let Some(fut) = cold_starter {
                 if let Err(e) = fut.await {
                     let _ = bridge_tx
-                        .send(BridgeEvent::Error {
-                            error: format!("Codex start-up failed: {e}"),
-                        })
+                        .send(BridgeEvent::sign_in_or_error(
+                            "codex-cli",
+                            &e.to_string(),
+                            format!("Codex start-up failed: {e}"),
+                        ))
                         .await;
                     let _ = bridge_tx
                         .send(BridgeEvent::Status {
@@ -661,9 +710,9 @@ impl CodexBridge {
                         let tx = tx_err.clone();
                         let flag = err_flag.clone();
                         Box::pin(async move {
-                            if let Some(msg) = extract_codex_error(&params) {
+                            if let Some(ev) = codex_failure_event(&params) {
                                 if !flag.swap(true, Ordering::SeqCst) {
-                                    let _ = tx.send(BridgeEvent::Error { error: msg }).await;
+                                    let _ = tx.send(ev).await;
                                 }
                             }
                         })
@@ -746,9 +795,9 @@ impl CodexBridge {
                             tracing::info!(target: "codex", session_id = %sid_log, "codex: turn/completed received");
                             // A failed turn carries `turn.error`; surface it if
                             // the dedicated `error` notification didn't already.
-                            if let Some(msg) = params.get("turn").and_then(extract_codex_error) {
+                            if let Some(ev) = params.get("turn").and_then(codex_failure_event) {
                                 if !flag.swap(true, Ordering::SeqCst) {
-                                    let _ = tx.send(BridgeEvent::Error { error: msg }).await;
+                                    let _ = tx.send(ev).await;
                                 }
                             }
                             accumulate_usage(&acc, &params).await;
@@ -846,16 +895,20 @@ impl CodexBridge {
             // model's actual response time but short enough that a
             // truly hung app-server doesn't lock the session out for
             // five whole minutes.
-            tokio::select! {
-                _ = turn_done.notified() => {}
-                _ = tokio::time::sleep(std::time::Duration::from_secs(90)) => {
-                    tracing::warn!(
-                        target: "codex",
-                        session_id = %session_id,
-                        "codex: turn/completed never fired within 90s — emitting Status:done so the session unlocks"
-                    );
+            // A turn/start that failed outright never completes: don't sit
+            // out the ceiling before reporting it.
+            if turn_res.is_ok() {
+                tokio::select! {
+                    _ = turn_done.notified() => {}
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(90)) => {
+                        tracing::warn!(
+                            target: "codex",
+                            session_id = %session_id,
+                            "codex: turn/completed never fired within 90s — emitting Status:done so the session unlocks"
+                        );
+                    }
+                    _ = wait_aborted(aborted.clone()) => {}
                 }
-                _ = wait_aborted(aborted.clone()) => {}
             }
 
             let final_usage = usage_acc.lock().await.clone();
@@ -877,11 +930,15 @@ impl CodexBridge {
             }
 
             if let Err(e) = turn_res {
-                let _ = bridge_tx
-                    .send(BridgeEvent::Error {
-                        error: format!("Codex turn/start failed: {e}"),
-                    })
-                    .await;
+                if !error_emitted.swap(true, Ordering::SeqCst) {
+                    let _ = bridge_tx
+                        .send(BridgeEvent::sign_in_or_error(
+                            "codex-cli",
+                            &e.to_string(),
+                            format!("Codex turn/start failed: {e}"),
+                        ))
+                        .await;
+                }
             }
 
             let _ = bridge_tx
@@ -1262,6 +1319,51 @@ mod tests {
         // No error → None (successful turn: `turn.error` absent or null).
         assert_eq!(extract_codex_error(&json!({ "turn": {} })), None);
         assert_eq!(extract_codex_error(&json!({ "error": null })), None);
+    }
+
+    #[test]
+    fn unauthorized_codex_errors_ask_for_a_sign_in() {
+        let p = json!({
+            "error": {
+                "message": "{\"error\":{\"message\":\"Your authentication token has expired. Please try signing in again.\"}}",
+                "codexErrorInfo": "unauthorized"
+            }
+        });
+        match codex_failure_event(&p) {
+            Some(BridgeEvent::LoginRequired { provider, detail }) => {
+                assert_eq!(provider, "codex-cli");
+                assert!(detail.unwrap().contains("signing in again"));
+            }
+            other => panic!(
+                "expected LoginRequired, got {:?}",
+                other.map(|e| e.to_json())
+            ),
+        }
+        // Any other failure stays an error.
+        let p = json!({ "error": { "message": "boom", "codexErrorInfo": "other" } });
+        assert!(matches!(
+            codex_failure_event(&p),
+            Some(BridgeEvent::Error { .. })
+        ));
+        assert!(codex_failure_event(&json!({ "turn": {} })).is_none());
+    }
+
+    #[test]
+    fn account_read_reports_a_signed_out_codex() {
+        // Shapes from codex 0.137's app-server, signed out and signed in.
+        assert!(codex_signed_out(
+            &json!({ "account": null, "requiresOpenaiAuth": true })
+        ));
+        assert!(!codex_signed_out(&json!({
+            "account": { "type": "chatgpt", "planType": "free" },
+            "requiresOpenaiAuth": true
+        })));
+        // A provider that needs no OpenAI login, or an unknown shape.
+        assert!(!codex_signed_out(
+            &json!({ "account": null, "requiresOpenaiAuth": false })
+        ));
+        assert!(!codex_signed_out(&json!({})));
+        assert!(crate::bridges::acp::is_sign_in_error(CODEX_NOT_LOGGED_IN));
     }
 
     #[test]

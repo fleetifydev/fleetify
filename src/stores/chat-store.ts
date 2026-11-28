@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { ChatMessage, ContentBlock } from "@/types/chat";
+import type { ChatMessage, CliLoginBlock, ContentBlock } from "@/types/chat";
 import { COMPOSER_CHAT_KEY } from "@/stores/composer-chat-key";
 
 export interface PermissionRequest {
@@ -1330,26 +1330,73 @@ export function pushChatAuthRequired(
 }
 
 /**
- * Push a CLI-login recovery card into the session's transcript. Used when the
- * bridge emits `login_required` (e.g. Grok's `session/new` `-32000
- * Authentication required`). The renderer's GrokLoginCard looks for
- * ContentBlock.type === "grok_login", runs `<bin> login` in a PTY, and resumes
- * the original prompt on success. De-dupes: a still-pending card for the same
- * session is left in place rather than stacking a second one.
+ * Push a sign-in card into the session's transcript: the session's CLI agent
+ * isn't signed in (the backend's `login_required` event). CliLoginCard looks
+ * for ContentBlock.type === "cli_login", signs the agent in and resumes the
+ * original prompt. A card for the same agent that is still waiting is left in
+ * place rather than stacking a second one; a finished one doesn't block a
+ * new card (the login can lapse again later in the session).
  */
-export function pushGrokLogin(sessionId: string, provider: string): void {
-  if (!sessionId) return;
+export function pushCliLogin(
+  sessionId: string,
+  args: {
+    provider: string;
+    detail?: string;
+    accountId?: string;
+    loginKind?: CliLoginBlock["login_kind"];
+  },
+): void {
+  if (!sessionId || !args.provider) return;
   const messages = useChatStore.getState().sessions[sessionId]?.messages;
-  const hasPending = messages?.some((m) =>
-    m.content.some((c) => c.type === "grok_login"),
+  const waiting = messages?.some((m) =>
+    m.content.some(
+      (c) => c.type === "cli_login" && c.provider === args.provider && !c.signed_in,
+    ),
   );
-  if (hasPending) return;
+  if (waiting) return;
   useChatStore.getState().addMessage(sessionId, {
-    id: `grok-login-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    id: `cli-login-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     role: "system",
-    content: [{ type: "grok_login", provider, session_id: sessionId }],
+    content: [
+      {
+        type: "cli_login",
+        provider: args.provider,
+        session_id: sessionId,
+        ...(args.accountId ? { account_id: args.accountId } : {}),
+        ...(args.detail ? { detail: args.detail } : {}),
+        ...(args.loginKind ? { login_kind: args.loginKind } : {}),
+      },
+    ],
     timestamp: new Date().toISOString(),
   });
+}
+
+/**
+ * Record a sign-in card's progress (its login process, its result) on the
+ * newest `cli_login` block for `provider` in the session, so a remounted card
+ * picks up where it left off.
+ */
+export function updateCliLogin(
+  sessionId: string,
+  provider: string,
+  patch: Partial<Pick<CliLoginBlock, "pty_id" | "error" | "signed_in">>,
+): void {
+  const state = useChatStore.getState();
+  const messages = state.sessions[sessionId]?.messages;
+  if (!messages?.length) return;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i]!;
+    if (!msg.content.some((c) => c.type === "cli_login" && c.provider === provider)) continue;
+    const next = messages.slice();
+    next[i] = {
+      ...msg,
+      content: msg.content.map((c) =>
+        c.type === "cli_login" && c.provider === provider ? { ...c, ...patch } : c,
+      ),
+    };
+    state.setMessages(sessionId, next);
+    return;
+  }
 }
 
 /**

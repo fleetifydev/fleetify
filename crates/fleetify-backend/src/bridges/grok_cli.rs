@@ -99,19 +99,6 @@ pub fn resolve_grok_bin() -> Option<String> {
     None
 }
 
-/// True when a `cold_start` failure is grok's "not signed in" case — i.e. the
-/// renderer should run `grok login` and resume, rather than show a hard error.
-/// grok returns JSON-RPC `-32000 "Authentication required — no auth method id
-/// provided"` on `session/new` when neither `XAI_API_KEY` nor an on-disk OAuth
-/// login is present (see the module header). We key off the message text, not
-/// the bare `-32000` code, because Fleetify reuses `-32000` for its own inbound
-/// ACP handler errors — only the auth message should trigger the login flow.
-fn is_auth_required_error(err: &anyhow::Error) -> bool {
-    err.to_string()
-        .to_ascii_lowercase()
-        .contains("authentication required")
-}
-
 /// Discover Grok's model catalog WITHOUT starting a chat turn: spawn
 /// `grok agent stdio`, run the ACP handshake (with the `XAI_API_KEY` env
 /// injected so `session/new` doesn't 401), open a throwaway session, read its
@@ -955,16 +942,13 @@ impl GrokCliBridge {
                     // Not signed in → ask the renderer to run `grok login` and
                     // resume, instead of surfacing a dead-end error. Any other
                     // failure stays a hard error.
-                    let ev = if is_auth_required_error(&e) {
-                        BridgeEvent::LoginRequired {
-                            provider: "grok-build".into(),
-                        }
-                    } else {
-                        BridgeEvent::Error {
-                            error: format!("Grok start-up failed: {e}"),
-                        }
-                    };
-                    let _ = bridge_tx.send(ev).await;
+                    let _ = bridge_tx
+                        .send(BridgeEvent::sign_in_or_error(
+                            "grok-build",
+                            &e.to_string(),
+                            format!("Grok start-up failed: {e}"),
+                        ))
+                        .await;
                     let _ = bridge_tx
                         .send(BridgeEvent::Status {
                             status: "done".into(),
@@ -1071,10 +1055,14 @@ impl GrokCliBridge {
                 // already logged by the ACP layer (`target: "acp"`); this gives
                 // the grok-attributed, human-readable line in the backend log.
                 tracing::error!(target: "grok", session = %session_id, "{formatted}");
+                // An expired session ("Authentication required — your session
+                // has expired") is a sign-in, not a dead end.
                 let _ = bridge_tx
-                    .send(BridgeEvent::Error {
-                        error: enrich_grok_prompt_error(&formatted),
-                    })
+                    .send(BridgeEvent::sign_in_or_error(
+                        "grok-build",
+                        &formatted,
+                        enrich_grok_prompt_error(&formatted),
+                    ))
                     .await;
             }
 
@@ -1255,28 +1243,6 @@ async fn translate_session_update(
 mod tests {
     use super::*;
     use serde_json::json;
-
-    #[test]
-    fn auth_required_detected_from_session_new_error() {
-        // The exact chain cold_start produces: format_acp_error → session/new
-        // failed → (would be) "Grok start-up failed". Match is case-insensitive.
-        let e = anyhow!(
-            "session/new failed: ACP error -32000: Authentication required — no auth method id provided"
-        );
-        assert!(is_auth_required_error(&e));
-    }
-
-    #[test]
-    fn non_auth_errors_are_not_login_required() {
-        // A different -32000 (Fleetify's own handler error) and a plain failure
-        // must NOT trigger the login flow.
-        assert!(!is_auth_required_error(&anyhow!(
-            "session/new failed: ACP error -32000: Invalid params"
-        )));
-        assert!(!is_auth_required_error(&anyhow!(
-            "Grok CLI not found. Install: …"
-        )));
-    }
 
     #[test]
     fn enrich_adds_hint_only_for_opaque_internal_error() {

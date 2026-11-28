@@ -37,6 +37,9 @@ fn registry() -> &'static Mutex<HashMap<String, PtyEntry>> {
 struct ProcEntry {
     output: Arc<Mutex<String>>,
     child: std::process::Child,
+    /// The child's stdin, so the renderer can answer a prompt the login
+    /// prints ("Paste code here if prompted >") through [`write`].
+    stdin: Option<std::process::ChildStdin>,
 }
 
 fn proc_registry() -> &'static Mutex<HashMap<String, ProcEntry>> {
@@ -52,7 +55,8 @@ fn proc_registry() -> &'static Mutex<HashMap<String, ProcEntry>> {
 /// clean, whereas a ConPTY wraps everything in cursor-positioning escape codes
 /// that mangle the URL. Inherits the parent environment (the System account's
 /// real HOME) plus any `env` overrides; `std::process::Command` inherits env by
-/// default, so we only layer overrides on top.
+/// default, so we only layer overrides on top. Stdin stays open for [`write`]:
+/// Claude Code's login falls back to a pasted code.
 pub fn spawn_piped(
     app: AppHandle,
     program: String,
@@ -62,7 +66,7 @@ pub fn spawn_piped(
 ) -> Result<String, String> {
     let mut cmd = fleetify_core::process::command(&program);
     cmd.args(&args)
-        .stdin(std::process::Stdio::null())
+        .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
     if let Some(c) = cwd {
@@ -76,6 +80,7 @@ pub fn spawn_piped(
     let mut child = cmd.spawn().map_err(|e| e.to_string())?;
     let id = uuid::Uuid::new_v4().to_string();
     let output = Arc::new(Mutex::new(String::new()));
+    let stdin = child.stdin.take();
 
     // Drain stdout AND stderr into the shared buffer (capped tail). grok writes
     // to stderr; capture both so nothing is missed.
@@ -114,10 +119,14 @@ pub fn spawn_piped(
         });
     }
 
-    proc_registry()
-        .lock()
-        .unwrap()
-        .insert(id.clone(), ProcEntry { output, child });
+    proc_registry().lock().unwrap().insert(
+        id.clone(),
+        ProcEntry {
+            output,
+            child,
+            stdin,
+        },
+    );
 
     // Exit-watch: poll for the child's exit, emit pty:exit:<id>, then reap.
     let id_exit = id.clone();
@@ -322,12 +331,23 @@ pub fn spawn_argv(
     Ok(id)
 }
 
+/// Send input to a PTY, or to a piped child's stdin.
 pub fn write(id: &str, data: &str) -> Result<(), String> {
-    let mut guard = registry().lock().unwrap();
+    if let Some(entry) = registry().lock().unwrap().get_mut(id) {
+        return std::io::Write::write_all(&mut entry.writer, data.as_bytes())
+            .map_err(|e| e.to_string());
+    }
+    let mut guard = proc_registry().lock().unwrap();
     let entry = guard
         .get_mut(id)
         .ok_or_else(|| "unknown pty id".to_string())?;
-    std::io::Write::write_all(&mut entry.writer, data.as_bytes()).map_err(|e| e.to_string())
+    let stdin = entry
+        .stdin
+        .as_mut()
+        .ok_or_else(|| "process has no stdin".to_string())?;
+    std::io::Write::write_all(stdin, data.as_bytes())
+        .and_then(|_| std::io::Write::flush(stdin))
+        .map_err(|e| e.to_string())
 }
 
 /// All output a PTY (or piped proc) has emitted so far (capped tail). `None`
@@ -361,6 +381,16 @@ pub fn resize(id: &str, cols: u16, rows: u16) -> Result<(), String> {
             pixel_height: 0,
         })
         .map_err(|e| e.to_string())
+}
+
+/// Stop every process [`spawn_piped`] started (in-chat logins). A PTY's
+/// child gets SIGHUP when the app's end of it closes; a piped child doesn't,
+/// and a login waiting for its browser callback would outlive the app.
+pub fn kill_piped() {
+    let mut registry = proc_registry().lock().unwrap_or_else(|p| p.into_inner());
+    for (_, mut entry) in registry.drain() {
+        let _ = entry.child.kill();
+    }
 }
 
 pub fn kill(id: &str) -> Result<(), String> {

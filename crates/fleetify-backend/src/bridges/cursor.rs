@@ -992,9 +992,11 @@ impl CursorBridge {
             if let Some(fut) = cold_starter {
                 if let Err(e) = fut.await {
                     let _ = bridge_tx
-                        .send(BridgeEvent::Error {
-                            error: format!("Cursor start-up failed: {e}"),
-                        })
+                        .send(BridgeEvent::sign_in_or_error(
+                            "cursor-cli",
+                            &e.to_string(),
+                            format!("Cursor start-up failed: {e}"),
+                        ))
                         .await;
                     let _ = bridge_tx
                         .send(BridgeEvent::Status {
@@ -1098,9 +1100,11 @@ impl CursorBridge {
 
             if let Err(e) = prompt_res {
                 let _ = bridge_tx
-                    .send(BridgeEvent::Error {
-                        error: format!("Cursor prompt failed: {e}"),
-                    })
+                    .send(BridgeEvent::sign_in_or_error(
+                        "cursor-cli",
+                        &e.to_string(),
+                        format!("Cursor prompt failed: {e}"),
+                    ))
                     .await;
             }
 

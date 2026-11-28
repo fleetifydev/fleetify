@@ -22,7 +22,7 @@ use serde_json::Value;
 use tauri::{AppHandle, CloseRequestApi, Manager, RunEvent, Window};
 
 use crate::shell::startup_window::{self, MAIN_WINDOW};
-use crate::shell::{config, head_watcher, logging, tray};
+use crate::shell::{config, head_watcher, logging, pty, tray};
 
 /// The desktop platforms, as [`close_action`] tells them apart.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -181,11 +181,13 @@ pub fn quit(app: &AppHandle, from: &str) {
 /// The shutdown every orderly quit runs, at `RunEvent::Exit`: the last
 /// window closing, Quit Fleetify, Cmd+Q, Restart to update, or any other
 /// `AppHandle::exit` or restart. It drops the HEAD watchers, so quitting
-/// doesn't leak their file handles, and marks the shutdown clean, so the
-/// next launch doesn't report a crash. A process that is killed (Task
-/// Manager, SIGKILL) skips it, which is what makes the flag a crash signal.
+/// doesn't leak their file handles, stops in-chat logins still waiting on
+/// the browser, and marks the shutdown clean, so the next launch doesn't
+/// report a crash. A process that is killed (Task Manager, SIGKILL) skips
+/// it, which is what makes the flag a crash signal.
 pub fn on_exit() {
     head_watcher::shutdown();
+    pty::kill_piped();
     logging::mark_clean_shutdown();
 }
 

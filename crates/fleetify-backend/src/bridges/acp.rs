@@ -379,6 +379,31 @@ fn extract_error_detail(data: &Value) -> Option<&str> {
     })
 }
 
+/// Does an agent's error mean "sign in first"? ACP reserves `-32000` for
+/// auth-required, and agents word it differently: Grok and Kimi
+/// "Authentication required", Cursor "Not authenticated", Copilot "No
+/// authentication information found". Hermes' equivalent is having no model
+/// provider configured (`hermes model` fixes it). Matched on the formatted
+/// error text so every ACP bridge can use it on start-up and prompt errors.
+pub fn is_sign_in_error(message: &str) -> bool {
+    let m = message.to_ascii_lowercase();
+    [
+        "authentication required",
+        "auth required",
+        "not authenticated",
+        "unauthenticated",
+        "authentication failed",
+        "no authentication information found",
+        "not logged in",
+        "login required",
+        "please log in",
+        "please login",
+        "no llm provider configured",
+    ]
+    .iter()
+    .any(|phrase| m.contains(phrase))
+}
+
 /// Format a JSON-RPC `error` object into a human-readable string.
 ///
 /// ACP agents routinely keep the top-level `message` generic ("Internal
@@ -745,6 +770,32 @@ mod tests {
         assert_eq!(resp["id"], 7);
         assert_eq!(resp["result"]["outcome"]["outcome"], "accepted");
         client.shutdown().await;
+    }
+
+    #[test]
+    fn sign_in_errors_are_recognised_across_agents() {
+        for msg in [
+            // Grok / Kimi session/new, as cold_start formats it.
+            "session/new failed: ACP error -32000: Authentication required — no auth method id provided",
+            "Kimi authentication failed (ACP error -32000: Authentication required). Run `kimi` in a terminal and `/login` first.",
+            // Cursor's documented wording, Copilot's, and Hermes' equivalent.
+            "session/new failed: ACP error -32603: Not authenticated",
+            "session/new failed: ACP error -32603: Internal error — Error: No authentication information found",
+            "session/new failed: ACP error -32603: Internal error — No LLM provider configured. Run `hermes model` to select a provider.",
+            // Grok's prompt-time expiry.
+            "Grok prompt failed: ACP error -32000: Authentication required — your session has expired",
+        ] {
+            assert!(is_sign_in_error(msg), "{msg}");
+        }
+        // A different -32000 (Fleetify's own handler error) and plain failures
+        // must NOT turn into a sign-in card.
+        for msg in [
+            "session/new failed: ACP error -32000: Invalid params",
+            "Grok CLI not found. Install: …",
+            "Cursor prompt failed: ACP error -32603: Internal error",
+        ] {
+            assert!(!is_sign_in_error(msg), "{msg}");
+        }
     }
 
     #[test]
