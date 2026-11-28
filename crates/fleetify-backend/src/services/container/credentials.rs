@@ -301,14 +301,25 @@ mod tests {
     #[test]
     fn tier_a_forwards_the_providers_own_key() {
         let _g = env_guard();
-        std::env::set_var("MOONSHOT_API_KEY", "moon-secret");
+        std::env::set_var("KIMI_API_KEY", "kimi-secret");
         let r = resolve("kimi-code", false, None, "/root");
         assert!(r
             .envs
             .iter()
-            .any(|(k, v)| k == "MOONSHOT_API_KEY" && v == "moon-secret"));
+            .any(|(k, v)| k == "KIMI_API_KEY" && v == "kimi-secret"));
         assert!(r.missing_credential.is_none());
-        std::env::remove_var("MOONSHOT_API_KEY");
+        std::env::remove_var("KIMI_API_KEY");
+    }
+
+    /// Kimi Code's login lives in `~/.kimi-code`, so that's what Tier B mounts.
+    #[test]
+    fn tier_b_mounts_kimi_codes_own_home() {
+        let r = resolve("kimi-code", true, Some(Path::new("/home/me")), "/root");
+        assert!(
+            r.mounts.iter().any(|m| m.ends_with(":/root/.kimi-code")),
+            "mounts: {:?}",
+            r.mounts
+        );
     }
 
     /// Tier B mounts ONLY that provider's credential dir — never $HOME,
@@ -354,10 +365,11 @@ mod tests {
     #[test]
     fn tier_c_reports_the_gap_with_both_remedies() {
         let _g = env_guard();
+        std::env::remove_var("KIMI_API_KEY");
         std::env::remove_var("MOONSHOT_API_KEY");
         let r = resolve("kimi-code", false, None, "/root");
         let msg = r.missing_credential.expect("should report the gap");
-        assert!(msg.contains("MOONSHOT_API_KEY"), "msg: {msg}");
+        assert!(msg.contains("KIMI_API_KEY"), "msg: {msg}");
         assert!(msg.contains("kimi"), "msg should name the login: {msg}");
         assert!(msg.contains("Mount my credentials"), "msg: {msg}");
     }

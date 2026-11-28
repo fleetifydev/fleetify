@@ -1,19 +1,24 @@
 /**
  * One tile in Settings → Agents for a CLI agent. Detection state +
  * install/login hints come from the registry-driven /api/agents/scan
- * endpoint. The Enable toggle writes the agent id into
- * ProvidersConfig.enabled_agents — Onboarding seeds the initial list,
- * Settings edits it later.
+ * endpoint (via the shared agent-scan store). The Enable toggle writes the
+ * agent id into ProvidersConfig.enabled_agents — Onboarding seeds the
+ * initial list, Settings edits it later.
  *
- * Security: this card NEVER executes the install or login command on
- * the user's behalf. The buttons copy the command to clipboard so the
- * user runs it in their own terminal — keeps Fleetify out of the
- * shell-injection blast radius and makes the action transparent.
+ * Install and Sign in run fixed commands from the backend catalog (never
+ * text the user typed): Install through the shell's installer, Sign in in a
+ * visible terminal so the user sees and drives the agent's own login. The
+ * Copy buttons offer the same commands for the user's own terminal.
  */
 import { useState, useEffect } from "react";
-import { Check, Copy, Terminal, Loader2, KeyRound, ExternalLink } from "lucide-react";
+import { Check, Copy, Terminal, Loader2, KeyRound, ExternalLink, LogIn } from "lucide-react";
 import { ProviderLogo } from "@/components/ui/provider-logo";
-import { providers as providersApi, type ProviderSpec } from "@/lib/providers-api";
+import {
+  providers as providersApi,
+  type AgentScanEntry,
+  type ProviderSpec,
+} from "@/lib/providers-api";
+import { LoginTerminalModal } from "@/components/settings/shared/login-terminal-modal";
 import { useProvidersConfig } from "@/hooks/use-providers-config";
 import { ConnectionStatusPill } from "@/components/settings/shared/connection-status-pill";
 import { Toggle } from "@/components/settings/general/_primitives";
@@ -23,14 +28,14 @@ import { followLink } from "@/components/markdown-link";
 import "@/components/settings/settings-ui.css";
 import { checkPythonRuntime } from "@/lib/api";
 
-export interface AgentScanEntry {
-  id: string;
-  display_name: string;
-  installed: boolean;
-  authenticated: boolean;
-  path: string | null;
-  install_hint: string;
-  login_hint: string;
+export type { AgentScanEntry };
+
+/** Where an API key the user saves ends up, named the way their OS does. */
+function keyStoreName(): string {
+  const ua = typeof navigator !== "undefined" ? navigator.userAgent : "";
+  if (ua.includes("Mac")) return "Keychain";
+  if (ua.includes("Windows")) return "Credential Manager";
+  return "your system keyring";
 }
 
 /** Where the Gemini API key field's "Get a key from Google AI Studio" link goes. */
@@ -94,6 +99,7 @@ export function AgentCard({
   enabled,
   isDefault,
   scan,
+  scanFailed = false,
   onChanged,
   installing = false,
   installError,
@@ -110,6 +116,8 @@ export function AgentCard({
    *  switches to a read-only indicator. */
   isDefault: boolean;
   scan: AgentScanEntry | undefined;
+  /** The scan request failed: say so instead of claiming "Not installed". */
+  scanFailed?: boolean;
   onChanged: () => void;
   installing?: boolean;
   installError?: string;
@@ -140,19 +148,40 @@ export function AgentCard({
   }, [isSdk, expanded]);
   const installed = scan?.installed ?? false;
   const authenticated = scan?.authenticated ?? false;
+  // OpenCode runs its free models without any sign-in.
+  const signInRequired = scan?.auth_required ?? true;
   const installHint = scan?.install_hint || spec.install_hint;
   const loginHint = scan?.login_hint || spec.login_hint;
+  const [loginPty, setLoginPty] = useState<string | null>(null);
+  const [loginError, setLoginError] = useState<string | null>(null);
 
-  const status = !installed
+  const status = !scan
+    ? ("needs_setup" as const)
+    : !installed
     ? ("needs_setup" as const)
     : !authenticated
     ? ("error" as const)
     : ("connected" as const);
-  const statusLabel = !installed
+  const statusLabel = !scan
+    ? scanFailed
+      ? "Couldn't check"
+      : "Checking…"
+    : !installed
     ? "Not installed"
     : !authenticated
-    ? "Login required"
-    : "Detected";
+    ? "Sign in required"
+    : signInRequired
+    ? "Signed in"
+    : "Ready";
+
+  // Sign the System account (the real HOME, where chat sessions read the
+  // login) in, in a terminal the user watches.
+  const onSignIn = async () => {
+    setLoginError(null);
+    const res = await providersApi.openAccountLogin(spec.id, "system");
+    if (res.ok) setLoginPty(res.pty_id);
+    else setLoginError(res.error || "The sign-in couldn't start.");
+  };
 
   const onCopyInstall = async () => {
     if (!installHint) return;
@@ -169,9 +198,6 @@ export function AgentCard({
       setCopiedLogin(true);
       setTimeout(() => setCopiedLogin(false), 1400);
     }
-    // Re-scan in case the user runs the login in another window — they
-    // can click "Refresh" inside the expanded card too.
-    setTimeout(onChanged, 800);
   };
 
   // SDK key save: writes to keychain via the same providers IPC the
@@ -308,7 +334,12 @@ export function AgentCard({
           {/* Multiple accounts: HOME-isolated logins per CLI agent. Shown once
               the binary is installed (the SDK has no on-disk login home). */}
           {!isSdk && installed && (
-            <AccountsManager providerId={spec.id} kind="cli" onChanged={onChanged} />
+            <AccountsManager
+              providerId={spec.id}
+              kind="cli"
+              providerName={spec.display_name}
+              onChanged={onChanged}
+            />
           )}
           {/* All other agents keep the legacy install-hint block. */}
           {!isSdk && !installed && installHint && (
@@ -430,9 +461,7 @@ export function AgentCard({
                 >
                   Get a key from Google AI Studio <ExternalLink size={10} />
                 </a>
-                <span style={{ marginLeft: "auto" }}>
-                  Stored in {navigator?.userAgent?.includes("Mac") ? "Keychain" : "Credential Manager"}
-                </span>
+                <span style={{ marginLeft: "auto" }}>Stored in {keyStoreName()}</span>
               </div>
               {saveError && (
                 <div style={{ fontSize: 11, color: "rgb(248,113,113)", marginTop: 6 }}>
@@ -442,23 +471,66 @@ export function AgentCard({
             </div>
           )}
 
-          {!isSdk && installed && !authenticated && loginHint && (
+          {!isSdk && installed && !authenticated && (
             <div>
               <div style={{ fontSize: 12, fontWeight: 500, color: "var(--c-high)", marginBottom: 6 }}>
-                Login
+                {signInRequired ? "Sign in" : "Connect a provider (optional)"}
               </div>
-              <div className="s-cmd">
-                <code>{loginHint}</code>
-                <button onClick={onCopyLogin} className="s-cmd-copy">
-                  {copiedLogin ? <Check size={12} /> : <Terminal size={12} />}
-                  {copiedLogin ? "Copied" : "Copy"}
-                </button>
-              </div>
-              <div style={{ fontSize: 11, color: "var(--c-dim)", marginTop: 6 }}>
-                Run this in a terminal — Fleetify will re-scan when the
-                login finishes and the auth indicator file appears.
-              </div>
+              {!signInRequired && (
+                <div style={{ fontSize: 11.5, color: "var(--c-low)", marginBottom: 8 }}>
+                  {spec.display_name} works without signing in. Sign in to add a
+                  paid provider's models.
+                </div>
+              )}
+              <button
+                type="button"
+                onClick={() => void onSignIn()}
+                style={{
+                  ...primaryBtn,
+                  width: "100%",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 8,
+                }}
+              >
+                <LogIn size={12} /> Sign in to {spec.display_name}
+              </button>
+              {loginError && (
+                <div role="alert" style={{ fontSize: 11, color: "rgb(248,113,113)", marginTop: 6 }}>
+                  {loginError}
+                </div>
+              )}
+              {loginHint && (
+                <>
+                  <div style={{ fontSize: 11, color: "var(--c-dim)", margin: "10px 0 6px" }}>
+                    Or run this in your own terminal:
+                  </div>
+                  <div className="s-cmd">
+                    <code>{loginHint}</code>
+                    <button onClick={onCopyLogin} className="s-cmd-copy">
+                      {copiedLogin ? <Check size={12} /> : <Terminal size={12} />}
+                      {copiedLogin ? "Copied" : "Copy"}
+                    </button>
+                  </div>
+                  <div style={{ fontSize: 11, color: "var(--c-dim)", marginTop: 6 }}>
+                    Fleetify checks again when you come back to this window.
+                  </div>
+                </>
+              )}
             </div>
+          )}
+
+          {loginPty && (
+            <LoginTerminalModal
+              ptyId={loginPty}
+              title={spec.display_name}
+              onExit={() => onChanged()}
+              onClose={() => {
+                setLoginPty(null);
+                onChanged();
+              }}
+            />
           )}
 
           {installed && authenticated && !showKeyEditor && (

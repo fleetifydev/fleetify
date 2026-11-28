@@ -1,7 +1,7 @@
 import { createSessionsWebSocket } from "@/lib/api";
 import { awaitConfigPatch } from "@/lib/session-config-sync";
 import { errorType } from "@/lib/log";
-import { useChatStore, pushChatAuthRequired, markAuthSignedIn, pushChatError, pushGrokLogin } from "@/stores/chat-store";
+import { useChatStore, pushChatAuthRequired, markAuthSignedIn, pushChatError, pushCliLogin } from "@/stores/chat-store";
 import { useAppStore } from "@/stores/app-store";
 import type { WSServerMessage, ImageBlock } from "@/types/chat";
 import type { Attachment } from "@/components/chat/chat-input";
@@ -54,6 +54,10 @@ function loadAnalytics(): Promise<typeof import("@/lib/posthog")> {
   return analyticsModule;
 }
 
+/** Prefix the backend strips from a prompt re-sent after a sign-in, so the
+ *  user's message isn't saved twice (`RESUME_MARKER` in routers/chat.rs). */
+const RESUME_MARKER = "[fleet:resume]";
+
 /**
  * Multiplexed WebSocket manager. ONE physical socket carries
  * traffic for every active session — the user sees a single
@@ -72,6 +76,7 @@ function loadAnalytics(): Promise<typeof import("@/lib/posthog")> {
  * The legacy per-session `createChatWebSocket(sid)` factory is kept
  * for any future debugging / fallback path but isn't used by the
  * manager today. */
+
 class WSManager {
   // Single shared socket. null when no live connection.
   private socket: WebSocket | null = null;
@@ -1644,24 +1649,34 @@ class WSManager {
       }
 
       case "login_required": {
-        // The agent isn't signed in and recovery is a CLI login (Grok).
-        // Show the in-chat login card, which runs `<bin> login` and resumes
-        // the stashed prompt on success. The backend sends `status:done`
-        // right after, which clears streaming — do it here too defensively
-        // so the composer never stays locked behind a card.
+        // The session's CLI agent isn't signed in. Show the in-chat sign-in
+        // card, which signs it in and resumes the stashed prompt. The backend
+        // sends `status:done` right after, which clears streaming — do it
+        // here too defensively so the composer never stays locked behind a
+        // card.
         this.flushDelta(sessionId);
         store.clearStreaming(sessionId);
+        const provider = String(data.provider ?? "");
         // One-shot guard: a 2nd login_required for this same turn means the
-        // login+resume didn't fix auth — surface a normal error, don't loop.
+        // sign-in + resume didn't fix it — surface a normal error, don't loop.
         if (this.loginRetried.has(sessionId)) {
           this.loginRetried.delete(sessionId);
+          const detail = typeof data.detail === "string" && data.detail ? ` (${data.detail})` : "";
           pushChatError(
             sessionId,
-            "Grok sign-in didn't resolve the authentication error. Please try again.",
+            `Signing in didn't fix it: the agent still reports it isn't signed in${detail}. ` +
+              "Check the account in Settings → Providers, then send your message again.",
           );
           break;
         }
-        pushGrokLogin(sessionId, String(data.provider ?? "grok-build"));
+        const kind = data.login_kind;
+        pushCliLogin(sessionId, {
+          provider,
+          detail: typeof data.detail === "string" ? data.detail : undefined,
+          accountId: typeof data.account_id === "string" ? data.account_id : undefined,
+          loginKind:
+            kind === "browser" || kind === "terminal" || kind === "api_key" ? kind : undefined,
+        });
         break;
       }
 
@@ -1784,8 +1799,8 @@ class WSManager {
     }
   }
 
-  /** Last user prompt per session, captured at send time so the in-chat Grok
-   *  login flow can re-send it verbatim once `grok login` succeeds. */
+  /** Last user prompt per session, captured at send time so the in-chat
+   *  sign-in card can re-send it verbatim once the sign-in succeeds. */
   private pendingLoginPrompt = new Map<string, { text: string; attachments?: Attachment[] }>();
   /** Sessions whose current turn already went through one login→resume cycle.
    *  Guards against an infinite login loop if login doesn't actually fix auth:
@@ -1796,7 +1811,7 @@ class WSManager {
   async send(sessionId: string, text: string, attachments?: Attachment[]) {
     const store = useChatStore.getState();
     store.ensureSession(sessionId);
-    // Remember this prompt for Grok login-recovery resume, and reset the
+    // Remember this prompt for the sign-in card's resume, and reset the
     // one-shot login guard — each fresh user message gets one auto-login try.
     this.pendingLoginPrompt.set(sessionId, { text, attachments });
     this.loginRetried.delete(sessionId);
@@ -2005,16 +2020,26 @@ class WSManager {
     });
   }
 
-  async sendInternal(sessionId: string, text: string, attachments?: Attachment[]) {
+  async sendInternal(
+    sessionId: string,
+    text: string,
+    attachments?: Attachment[],
+    opts?: { resume?: boolean },
+  ) {
     // Sends to WebSocket without adding a user message to the chat store.
     // Used for auto-mode synthesis — the staff agent processes it but the
     // user never sees the [AUTO MODE] payload as a chat bubble.
     //
     // Also used by the Fleet send path when we've ALREADY done an
     // optimistic user-message append upstream (so we don't want the
-    // ws-manager to add a second one).
+    // ws-manager to add a second one), and by `resumeAfterLogin`.
     const store = useChatStore.getState();
     store.ensureSession(sessionId);
+    if (!opts?.resume) {
+      // A Fleet message can hit a sign-in too: keep it for the resume.
+      this.pendingLoginPrompt.set(sessionId, { text, attachments });
+      this.loginRetried.delete(sessionId);
+    }
     // Same back-to-back guard as `send()` — the backend silently
     // drops a "send" frame when the session is already in its
     // `streaming` set, so handleStaffSend / auto-mode would orphan
@@ -2048,16 +2073,26 @@ class WSManager {
     }
   }
 
-  /** Re-send the prompt that failed with `login_required`, once the in-chat
-   *  `<bin> login` flow reported success. Uses `sendInternal` so no second
-   *  user bubble is added — the original optimistic bubble is still on screen.
-   *  Sets the one-shot guard so a repeat auth failure surfaces an error rather
-   *  than looping back into another login card. */
-  async resumeAfterLogin(sessionId: string): Promise<void> {
+  /** Re-send the prompt that stopped at a sign-in card (`login_required`),
+   *  once the sign-in succeeded. Uses `sendInternal` so no second user bubble
+   *  is added — the original optimistic bubble is still on screen — and the
+   *  `[fleet:resume]` marker so the backend doesn't save the user's message a
+   *  second time. Sets the one-shot guard so a repeat failure surfaces an
+   *  error rather than looping back into another card. Returns false when
+   *  there's nothing to resume (the prompt came from elsewhere, e.g. a Fleet
+   *  dispatch, or was already resumed). */
+  async resumeAfterLogin(sessionId: string): Promise<boolean> {
     const pending = this.pendingLoginPrompt.get(sessionId);
-    if (!pending) return;
+    if (!pending) return false;
+    this.pendingLoginPrompt.delete(sessionId);
     this.loginRetried.add(sessionId);
-    await this.sendInternal(sessionId, pending.text, pending.attachments);
+    await this.sendInternal(
+      sessionId,
+      `${RESUME_MARKER}\n${pending.text}`,
+      pending.attachments,
+      { resume: true },
+    );
+    return true;
   }
 
   async sendPermissionResponse(

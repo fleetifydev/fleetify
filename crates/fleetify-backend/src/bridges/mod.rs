@@ -504,19 +504,37 @@ pub enum BridgeEvent {
         /// open. Bridge always emits false.
         opened_in_browser: bool,
     },
-    /// The agent failed to start because it isn't signed in, and recovery
-    /// is a CLI login command (not an in-chat OOB code like `AuthRequired`).
-    /// Emitted instead of `Error` for that specific case. The renderer runs
-    /// the provider's `<bin> login` in a PTY, surfaces its device-flow output
-    /// as a card, and re-sends the user's prompt once login succeeds.
+    /// The agent can't answer because it isn't signed in, and recovery is a
+    /// sign-in outside the chat (not an in-chat OOB code like `AuthRequired`):
+    /// the agent's login command, or an API key for the Antigravity SDK.
+    /// Emitted instead of `Error` (or, for Claude Code, instead of the
+    /// "Not logged in · Please run /login" reply). The renderer shows a
+    /// sign-in card for the provider and re-sends the user's prompt once the
+    /// sign-in succeeds.
     LoginRequired {
-        /// Logical provider id (`"grok-build"` today) — selects the login
-        /// command + branding on the renderer.
+        /// Catalog id of the CLI agent (`"claude-code"`, `"grok-build"`, …):
+        /// selects the login command (`cli_auth::login_spec`) and branding.
         provider: String,
+        /// What the agent said, when it said something (shown on the card).
+        detail: Option<String>,
     },
 }
 
 impl BridgeEvent {
+    /// The event for an agent that failed with `err`: a sign-in card when the
+    /// agent says it isn't signed in (`acp::is_sign_in_error`), else
+    /// `fallback` as an error.
+    pub fn sign_in_or_error(provider: &str, err: &str, fallback: String) -> Self {
+        if acp::is_sign_in_error(err) {
+            BridgeEvent::LoginRequired {
+                provider: provider.to_string(),
+                detail: Some(err.to_string()),
+            }
+        } else {
+            BridgeEvent::Error { error: fallback }
+        }
+    }
+
     pub fn to_json(&self) -> Value {
         match self {
             BridgeEvent::Status { status } => json!({"type": "status", "status": status}),
@@ -617,10 +635,16 @@ impl BridgeEvent {
                 "url": url,
                 "opened_in_browser": opened_in_browser,
             }),
-            BridgeEvent::LoginRequired { provider } => json!({
-                "type": "login_required",
-                "provider": provider,
-            }),
+            BridgeEvent::LoginRequired { provider, detail } => {
+                let mut v = json!({
+                    "type": "login_required",
+                    "provider": provider,
+                });
+                if let Some(d) = detail {
+                    v["detail"] = json!(d);
+                }
+                v
+            }
         }
     }
 }
@@ -639,10 +663,23 @@ mod tests {
     fn login_required_serialises_to_wire_shape() {
         let ev = BridgeEvent::LoginRequired {
             provider: "grok-build".into(),
+            detail: None,
         };
         assert_eq!(
             ev.to_json(),
             serde_json::json!({"type": "login_required", "provider": "grok-build"})
+        );
+        let ev = BridgeEvent::LoginRequired {
+            provider: "claude-code".into(),
+            detail: Some("Not logged in · Please run /login".into()),
+        };
+        assert_eq!(
+            ev.to_json(),
+            serde_json::json!({
+                "type": "login_required",
+                "provider": "claude-code",
+                "detail": "Not logged in · Please run /login",
+            })
         );
     }
 

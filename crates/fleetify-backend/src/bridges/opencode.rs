@@ -822,9 +822,11 @@ impl OpenCodeBridge {
             if let Some(fut) = cold_starter {
                 if let Err(e) = fut.await {
                     let _ = bridge_tx
-                        .send(BridgeEvent::Error {
-                            error: format!("OpenCode start-up failed: {e}"),
-                        })
+                        .send(BridgeEvent::sign_in_or_error(
+                            "opencode",
+                            &e.to_string(),
+                            format!("OpenCode start-up failed: {e}"),
+                        ))
                         .await;
                     let _ = bridge_tx
                         .send(BridgeEvent::Status {
@@ -928,9 +930,11 @@ impl OpenCodeBridge {
 
             if let Err(e) = prompt_res {
                 let _ = bridge_tx
-                    .send(BridgeEvent::Error {
-                        error: format!("OpenCode prompt failed: {e}"),
-                    })
+                    .send(BridgeEvent::sign_in_or_error(
+                        "opencode",
+                        &e.to_string(),
+                        format!("OpenCode prompt failed: {e}"),
+                    ))
                     .await;
             }
 

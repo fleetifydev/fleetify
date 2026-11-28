@@ -15,24 +15,45 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::RwLock;
 
-use crate::providers::catalog::ExpiryUnit;
+use crate::providers::cli_auth;
 use crate::routers::AppState;
 
 /// In-memory cache of the most recent CLI agent scan. Backend warms it
-/// at startup, the endpoint reads it on every poll, install/refresh
-/// flows invalidate it.
+/// at startup; the endpoints rescan once it's older than
+/// [`AGENT_SCAN_MAX_AGE`]; install / login / key changes invalidate it.
 #[derive(Clone, Default)]
 pub struct AgentScanCache {
-    inner: Arc<RwLock<Option<HashMap<String, Value>>>>,
+    inner: Arc<RwLock<Option<TimedScan>>>,
+}
+
+/// A scan and when it was taken.
+struct TimedScan {
+    at: Instant,
+    scan: HashMap<String, Value>,
 }
 
 impl AgentScanCache {
+    /// The last scan, however old (Auto routing and the default-agent pick
+    /// would rather use a stale scan than wait for a new one).
     pub async fn get(&self) -> Option<HashMap<String, Value>> {
-        self.inner.read().await.clone()
+        self.inner.read().await.as_ref().map(|t| t.scan.clone())
+    }
+
+    /// The last scan if it's younger than `max_age`.
+    pub async fn get_fresh(&self, max_age: Duration) -> Option<HashMap<String, Value>> {
+        self.inner
+            .read()
+            .await
+            .as_ref()
+            .filter(|t| t.at.elapsed() < max_age)
+            .map(|t| t.scan.clone())
     }
 
     pub async fn set(&self, snapshot: HashMap<String, Value>) {
-        *self.inner.write().await = Some(snapshot);
+        *self.inner.write().await = Some(TimedScan {
+            at: Instant::now(),
+            scan: snapshot,
+        });
     }
 
     pub async fn invalidate(&self) {
@@ -408,9 +429,8 @@ pub async fn prewarm_remote_catalog() {
 /// session reports, so they're usable verbatim; the label is derived from the
 /// segment after the last `/`.
 async fn discover_opencode_models() -> ModelList {
-    let bin = cli_path("opencode")
-        .await
-        .unwrap_or_else(|| "opencode".to_string());
+    let bin =
+        cli_auth::resolve_bin("opencode", "opencode").unwrap_or_else(|| "opencode".to_string());
     // npm ships a `.cmd`/`.ps1` shim on Windows; `cmd /C` runs it (CreateProcess
     // can't exec a `.cmd` directly).
     let lower = bin.to_ascii_lowercase();
@@ -1356,422 +1376,76 @@ fn humanize_context(n: u64) -> String {
     }
 }
 
-/// Per-provider scan strategy. `scan_all_agents` picks one based on
-/// provider id; the default is `BinOnly` which preserves the
-/// pre-refactor behaviour of `cli_path(spec.bin)`.
-#[derive(Debug, Clone)]
-enum ScanProbe {
-    /// Just check the binary on PATH (and Windows PATHEXT shims).
-    BinOnly { bin: &'static str },
-    /// agy CLI: PATH lookup OR `~/.gemini/antigravity-cli/installation_id`
-    /// marker. Shell installer updates PATH on next login only, so the
-    /// marker rescues the "I just installed it" UX without a restart.
-    AgyCli,
-    /// Resolve any usable Python, then run `python -c "import <module>"`
-    /// against it. Both must succeed for `installed` to be true.
-    PythonModule { module: &'static str },
-    /// Cursor CLI: PATH lookup (`cursor-agent`/`agent`) OR the off-PATH
-    /// install location the installer writes to without updating PATH
-    /// (`%LOCALAPPDATA%\cursor-agent\cursor-agent.cmd` on Windows;
-    /// `~/.local/bin/{cursor-agent,agent}` on Unix). Shares the bridge's
-    /// `resolve_cursor_bin` so detection and spawn agree.
-    CursorCli,
-    /// GitHub Copilot CLI: PATH lookup OR the off-PATH npm-global / Homebrew /
-    /// winget install dirs a GUI process's minimal PATH frequently misses.
-    /// Shares the bridge's `resolve_copilot_bin` so detection and spawn agree.
-    GitHubCopilotCli,
-    /// Hermes CLI: PATH lookup OR the off-PATH install dirs the Python
-    /// installers write to without updating a GUI's PATH. Shares the bridge's
-    /// `resolve_hermes_bin` so detection and spawn agree.
-    HermesCli,
-    /// Grok Build CLI: PATH lookup OR the off-PATH `~/.local/bin/grok` the
-    /// installer writes to without updating a GUI's PATH. Shares the bridge's
-    /// `resolve_grok_bin` so detection and spawn agree. Auth is special: the
-    /// bridge injects the keyring-stored shared xAI key (`keys::get_key("grok")`)
-    /// into the subprocess env, so the scan OR-s that keyring check on top of the
-    /// catalog's `XAI_API_KEY` env indicator.
-    GrokCli,
-}
-
-/// Map a catalog id to the probe strategy used by `scan_all_agents`.
-/// New providers default to `BinOnly { bin }`. Special cases live
-/// here so the catalog's `ProviderSpec` stays declarative.
-fn scan_probe_for(id: &'static str, bin: &'static str) -> ScanProbe {
-    match id {
-        "antigravity-cli" => ScanProbe::AgyCli,
-        "antigravity-sdk" => ScanProbe::PythonModule {
-            module: "google.antigravity",
-        },
-        "cursor-cli" => ScanProbe::CursorCli,
-        "github-copilot" => ScanProbe::GitHubCopilotCli,
-        "hermes-agent" => ScanProbe::HermesCli,
-        "grok-build" => ScanProbe::GrokCli,
-        _ => ScanProbe::BinOnly { bin },
-    }
-}
-
-/// Shared scanner used by both the HTTP endpoint and the startup
-/// warm-up. Returns a JSON-serializable map keyed by provider id.
+/// Shared scanner used by the HTTP endpoints, Auto routing and the startup
+/// warm-up. Returns a JSON-serializable map keyed by provider id. Every agent
+/// is probed at once: Claude Code and Codex answer through their own status
+/// commands (~0.2 s each), the rest from disk. `providers::cli_auth` holds
+/// the rules, so every surface gets the same answer.
 pub async fn scan_all_agents() -> HashMap<String, Value> {
-    let mut out = HashMap::new();
-    for spec in crate::providers::list_cli_agents() {
-        let probe = scan_probe_for(spec.id, spec.bin);
-        let path = match &probe {
-            ScanProbe::BinOnly { bin } => cli_path(bin).await,
-            ScanProbe::AgyCli => {
-                if let Some(p) = cli_path("antigravity-cli").await {
-                    Some(p)
-                } else if agy_installed_via_marker(&home()) {
-                    Some("<installer marker>".to_string())
-                } else {
-                    None
-                }
-            }
-            ScanProbe::PythonModule { module } => {
-                let probe = python_module_installed(module).await;
-                if probe.installed {
-                    probe.path
-                } else {
-                    None
-                }
-            }
-            ScanProbe::CursorCli => crate::bridges::cursor::resolve_cursor_bin(),
-            ScanProbe::HermesCli => crate::bridges::hermes::resolve_hermes_bin(),
-            ScanProbe::GitHubCopilotCli => crate::bridges::github_copilot::resolve_copilot_bin(),
-            ScanProbe::GrokCli => crate::bridges::grok_cli::resolve_grok_bin(),
-        };
-        let installed = path.is_some();
-        // Grok Build authenticates off the keyring-stored shared xAI key (the
-        // bridge injects it as `XAI_API_KEY`), which the catalog's env-var
-        // indicator can't see — OR it in on top of the on-disk/env indicators.
-        let keyring_authed = matches!(probe, ScanProbe::GrokCli)
-            && crate::providers::keys::get_key("grok").is_some();
-        let authenticated = installed
-            && (keyring_authed || indicators_authenticated(&home(), spec.auth_indicators));
-        crate::services::telemetry::emitters::emit_agent_detected(
-            spec.id,
-            installed,
-            authenticated,
-        )
-        .await;
-        out.insert(
-            spec.id.to_string(),
-            json!({
-                "id": spec.id,
-                "display_name": spec.display_name,
-                "installed": installed,
-                "authenticated": authenticated,
-                "path": path,
-                "install_hint": resolve_install_hint(spec),
-                "login_hint": spec.login_hint,
-            }),
-        );
-    }
-    out
+    let ctx = cli_auth::AuthCtx::system();
+    let ctx = &ctx;
+    let rows = futures_util::future::join_all(crate::providers::list_cli_agents().into_iter().map(
+        |spec| async move {
+            let path = cli_auth::detect_install(spec).await;
+            let installed = path.is_some();
+            let authenticated = cli_auth::agent_signed_in(spec, path.as_deref(), ctx).await;
+            crate::services::telemetry::emitters::emit_agent_detected(
+                spec.id,
+                installed,
+                authenticated,
+            )
+            .await;
+            let login = cli_auth::login_spec(spec.id);
+            (
+                spec.id.to_string(),
+                json!({
+                    "id": spec.id,
+                    "display_name": spec.display_name,
+                    "installed": installed,
+                    "authenticated": authenticated,
+                    // False for agents that work without a sign-in (OpenCode's
+                    // free models): "not signed in" is then not a problem.
+                    "auth_required": cli_auth::sign_in_required(spec.id),
+                    "path": path,
+                    "install_hint": resolve_install_hint(spec),
+                    "login_hint": spec.login_hint,
+                    // How Fleetify signs it in: "browser" | "terminal" | "api_key".
+                    "login_kind": login.map(|l| l.kind),
+                }),
+            )
+        },
+    ))
+    .await;
+    rows.into_iter().collect()
 }
 
-/// Cache-aware CLI agent scan handler. Reads from the shared cache on
-/// every poll; `?refresh=1` invalidates first so install / manual flows
-/// can force a re-scan. Drives Settings → Agents tiles + the New Agent
-/// dialog detection chips.
+/// How long a scan stays fresh. Signing in or out happens outside Fleetify
+/// too (a terminal, another app), so a stale "Sign in" must heal on its own.
+pub const AGENT_SCAN_MAX_AGE: Duration = Duration::from_secs(30);
+
+/// The agent scan: from the cache while it's fresh, else a new scan that
+/// refills it. `force` skips the cache (Refresh, a finished login).
+pub async fn agent_scan(cache: &AgentScanCache, force: bool) -> HashMap<String, Value> {
+    if !force {
+        if let Some(snapshot) = cache.get_fresh(AGENT_SCAN_MAX_AGE).await {
+            return snapshot;
+        }
+    }
+    let fresh = scan_all_agents().await;
+    cache.set(fresh.clone()).await;
+    fresh
+}
+
+/// Cache-aware CLI agent scan handler. `?refresh=1` forces a re-scan, for
+/// install / login / manual flows. Drives Settings → Agents tiles + the New
+/// Agent dialog detection chips.
 async fn scan_agents_cached(
     State(state): State<AppState>,
     Query(q): Query<ScanQuery>,
 ) -> Json<Value> {
     let force = matches!(q.refresh, Some(n) if n != 0);
-    if force {
-        state.agent_scan_cache.invalidate().await;
-    }
-    if let Some(snapshot) = state.agent_scan_cache.get().await {
-        return Json(Value::Object(snapshot.into_iter().collect()));
-    }
-    let fresh = scan_all_agents().await;
-    state.agent_scan_cache.set(fresh.clone()).await;
-    Json(Value::Object(fresh.into_iter().collect()))
-}
-
-fn home() -> PathBuf {
-    std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("."))
-}
-
-/// Read-only probe: does the agy installation_id marker exist under `home`?
-/// Caller passes `home()` from a real scan or a tempdir from tests.
-fn agy_installed_via_marker(home: &std::path::Path) -> bool {
-    home.join(".gemini")
-        .join("antigravity-cli")
-        .join("installation_id")
-        .exists()
-}
-
-/// True iff `path` is a readable JSON file containing `field` as a
-/// number whose value (interpreted as `unit` since the Unix epoch)
-/// is strictly greater than the current wall-clock time. All other
-/// outcomes (missing file, invalid JSON, missing field, non-numeric
-/// value, time-in-the-past, system clock unset) evaluate to false.
-///
-/// Used by `AuthIndicator::JsonExpiry` to detect expired OAuth
-/// tokens without spawning the provider's CLI.
-pub(crate) fn check_json_expiry(path: &std::path::Path, field: &str, unit: ExpiryUnit) -> bool {
-    let Ok(raw) = std::fs::read_to_string(path) else {
-        return false;
-    };
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) else {
-        return false;
-    };
-    let Some(n) = value.get(field).and_then(|v| v.as_i64()) else {
-        return false;
-    };
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0);
-    let expiry_ms = match unit {
-        ExpiryUnit::Millis => n,
-        ExpiryUnit::Seconds => n.saturating_mul(1000),
-    };
-    expiry_ms > now_ms
-}
-
-/// Evaluate a CLI agent's auth indicators against an arbitrary home base.
-/// Shared by the Settings → Agents scan (real HOME) and the per-account
-/// detector (`services::accounts`), which points `home` at an isolated
-/// account dir. Any single indicator firing ⇒ authenticated.
-pub(crate) fn indicators_authenticated(
-    home: &std::path::Path,
-    inds: &[crate::providers::AuthIndicator],
-) -> bool {
-    use crate::providers::AuthIndicator;
-    inds.iter().any(|ind| match ind {
-        AuthIndicator::HomeDir { path } => home.join(path).exists(),
-        AuthIndicator::EnvVar { name } => std::env::var(name).is_ok(),
-        AuthIndicator::JsonExpiry { path, field, unit } => {
-            check_json_expiry(&home.join(path), field, *unit)
-        }
-        AuthIndicator::JsonFieldPresent { path, field } => std::fs::read_to_string(home.join(path))
-            .ok()
-            .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-            .and_then(|v| v.get(*field).cloned())
-            .is_some_and(|f| !f.is_null()),
-    })
-}
-
-/// Shape of the python_module_installed probe result.
-pub struct PythonProbe {
-    pub installed: bool,
-    pub path: Option<String>,
-}
-
-/// Resolve the first Python interpreter on PATH that actually executes
-/// successfully (exit-success on `--version`). This filters out the
-/// Microsoft Store stub on Windows (`python3.exe` / `python.exe` in
-/// `%LOCALAPPDATA%\Microsoft\WindowsApps\`) which is on PATH and passes
-/// `which::which` but exits non-zero when run without the Store package
-/// installed behind it.
-async fn working_python_path() -> Option<String> {
-    for name in &["python3", "python", "py"] {
-        // Resolve via `which` first so we get the absolute path and
-        // honour PATHEXT shims. If `which` fails, try a bare spawn.
-        let candidate: Option<String> = if let Ok(p) = which::which(name) {
-            Some(p.to_string_lossy().into_owned())
-        } else {
-            None
-        };
-        let Some(path) = candidate else { continue };
-        // Verify the candidate actually runs — the Store stub on Windows
-        // passes `which` but exits 9009 when there is no real interpreter.
-        let ok = tokio_command(&path)
-            .arg("--version")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .await
-            .map(|s| s.success())
-            .unwrap_or(false);
-        if ok {
-            return Some(path);
-        }
-    }
-    None
-}
-
-/// Probe whether `module` is importable under the first Python we can
-/// resolve. Honours FLEETIFY_EMBEDDED_PYTHON for forward-compat with a
-/// bundled interpreter. 5-second timeout — startup + stdlib import is
-/// sub-second on real machines.
-pub async fn python_module_installed(module: &str) -> PythonProbe {
-    let python_path: Option<String> = match std::env::var("FLEETIFY_EMBEDDED_PYTHON") {
-        Ok(p) if std::path::Path::new(&p).exists() => Some(p),
-        _ => working_python_path().await,
-    };
-    let Some(py) = python_path else {
-        return PythonProbe {
-            installed: false,
-            path: None,
-        };
-    };
-    let installed = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        tokio_command(&py)
-            .args(["-c", &format!("import {module}")])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status(),
-    )
-    .await
-    .map(|r| r.map(|s| s.success()).unwrap_or(false))
-    .unwrap_or(false);
-    PythonProbe {
-        installed,
-        path: Some(py),
-    }
-}
-
-/// Resolve `<bin>` on PATH and return its absolute path. Uses the
-/// `which` crate so Windows `.cmd` / `.bat` / `.ps1` shims (which
-/// `npm install -g` creates for codex / claude) resolve via
-/// PATHEXT — `tokio::process::Command::new("codex-cli")` otherwise fails
-/// on Windows because it doesn't honour PATHEXT for bare names. This
-/// is exactly the "Not Installed" symptom users hit when the CLI is
-/// installed but the renderer claims otherwise.
-async fn cli_path(bin: &str) -> Option<String> {
-    // 1. `which` honours PATHEXT — finds codex.cmd / claude.cmd / etc.
-    if let Ok(p) = which::which(bin) {
-        // 2. Verify with `--version` against the absolute path so we
-        //    don't claim "installed" for a broken shim. Best-effort:
-        //    when `--version` fails (some pre-release builds don't
-        //    implement it) we still report the path — the user sees
-        //    "installed" instead of a misleading "not installed".
-        let _ = tokio_command(&p).arg("--version").output().await;
-        return Some(p.to_string_lossy().into_owned());
-    }
-    // 3. Last-ditch Unix fallback: bare-name spawn (which might fail
-    //    if `which` itself isn't on PATH but the binary still is).
-    let out = tokio_command(bin).arg("--version").output().await.ok()?;
-    if out.status.success() {
-        Some(bin.to_string())
-    } else {
-        None
-    }
-}
-
-async fn check_claude_cli() -> Value {
-    let Some(p) = cli_path("claude").await else {
-        return json!({ "installed": false, "authenticated": false, "path": null });
-    };
-    let cd = home().join(".claude");
-    let indicators = [
-        cd.join("projects"),
-        cd.join("sessions"),
-        cd.join("history.jsonl"),
-        home().join(".config/anthropic/credentials.json"),
-    ];
-    let mut authed = indicators.iter().any(|x| x.exists());
-    if !authed && std::env::var("ANTHROPIC_API_KEY").is_ok() {
-        authed = true;
-    }
-    json!({ "installed": true, "authenticated": authed, "path": p })
-}
-
-async fn check_codex_cli() -> Value {
-    // Binary is `codex`, not `codex-cli` — the renderer keys the scan by
-    // provider id, but the CLI resolves under its own binary name.
-    let Some(p) = cli_path("codex").await else {
-        return json!({ "installed": false, "authenticated": false, "path": null });
-    };
-    let authed =
-        home().join(".codex/auth.json").exists() || std::env::var("OPENAI_API_KEY").is_ok();
-    json!({ "installed": true, "authenticated": authed, "path": p })
-}
-
-async fn check_kimi_cli() -> Value {
-    let Some(p) = cli_path("kimi-code").await else {
-        return json!({ "installed": false, "authenticated": false, "path": null });
-    };
-    let authed = home().join(".kimi/auth.json").exists() || std::env::var("KIMI_API_KEY").is_ok();
-    json!({ "installed": true, "authenticated": authed, "path": p })
-}
-
-async fn check_agy_cli() -> Value {
-    let Some(p) = cli_path("antigravity-cli").await else {
-        return json!({ "installed": false, "authenticated": false, "path": null });
-    };
-    // Agy nests under `~/.gemini/antigravity-cli/` and writes
-    // `installation_id` on first onboarded launch. Fall back to the
-    // shared `oauth_creds.json` (also written by Gemini CLI) or a
-    // Google API key for headless setups.
-    let authed = home()
-        .join(".gemini/antigravity-cli/installation_id")
-        .exists()
-        || home().join(".gemini/oauth_creds.json").exists()
-        || std::env::var("GOOGLE_API_KEY").is_ok();
-    json!({ "installed": true, "authenticated": authed, "path": p })
-}
-
-/// Detect the Antigravity SDK installation. Two parts:
-///   1. **Installed**: Python is on PATH AND `google-antigravity` can be
-///      imported. We probe by spawning `python -c "import google.antigravity"`
-///      with a short timeout — fast when the module is present, returns
-///      non-zero when it's not.
-///   2. **Authenticated**: a Gemini API key exists in the OS keyring under
-///      `Fleetify-Provider-antigravity-sdk` OR the `GEMINI_API_KEY` env var
-///      is set. Either one satisfies the auth gate; the bridge prefers
-///      the keyring at dispatch time.
-async fn check_antigravity_sdk_cli() -> Value {
-    // Locate ANY usable Python — `FLEETIFY_EMBEDDED_PYTHON` first
-    // (manual override / future lazy-fetch slot), then system PATH.
-    // Both common executable names are tried; Windows usually resolves
-    // "python", macOS/Linux "python3". `cli_path` reuses
-    // `which::which` so it honours PATHEXT for .cmd shims on Windows.
-    let python_path: Option<String> = match std::env::var("FLEETIFY_EMBEDDED_PYTHON") {
-        Ok(p) if std::path::Path::new(&p).exists() => Some(p),
-        _ => match cli_path("python3").await {
-            Some(p) => Some(p),
-            None => cli_path("python").await,
-        },
-    };
-
-    let Some(py) = python_path else {
-        return json!({ "installed": false, "authenticated": false, "path": null });
-    };
-
-    // Module-import probe. 5s is generous — a fresh interpreter startup
-    // + import of google.antigravity is sub-second on every machine
-    // I've tested. If it spins longer than this, something is wrong
-    // (broken venv, Python repair pending) and we'd rather surface
-    // "Not installed" than block the Settings → Agents tile.
-    let installed_pkg = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        tokio_command(&py)
-            .args(["-c", "import google.antigravity"])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status(),
-    )
-    .await
-    .map(|r| r.map(|s| s.success()).unwrap_or(false))
-    .unwrap_or(false);
-
-    if !installed_pkg {
-        // Python exists but the SDK package isn't installed. Surface
-        // installed=false so the Settings card shows the "pip install"
-        // button rather than masquerading as ready-to-use.
-        return json!({ "installed": false, "authenticated": false, "path": py });
-    }
-
-    // Keyring presence check. Mirrors how the bridge reads its key.
-    let key_in_keyring = keyring::Entry::new("Fleetify-Provider-antigravity-sdk", "default")
-        .ok()
-        .and_then(|e| e.get_password().ok())
-        .map(|s| !s.is_empty())
-        .unwrap_or(false);
-    let authed = key_in_keyring
-        || std::env::var("GEMINI_API_KEY")
-            .map(|s| !s.is_empty())
-            .unwrap_or(false);
-    json!({ "installed": true, "authenticated": authed, "path": py })
+    let snapshot = agent_scan(&state.agent_scan_cache, force).await;
+    Json(Value::Object(snapshot.into_iter().collect()))
 }
 
 /// Result of verifying a Cloudflare Workers AI token against an account.
@@ -2020,89 +1694,52 @@ async fn check_ollama(base_url: Option<&str>) -> Value {
     json!({ "running": true, "installed": true, "models": models, "base_url": base })
 }
 
-/// Build a `{installed, authenticated, path}` value for a CLI agent the
-/// legacy `/providers/scan` shape didn't originally carry (OpenCode, Cursor,
-/// GitHub Copilot, Hermes). `path` is resolved by the caller — the
-/// shell-installer agents land off a GUI process's PATH, so they come in via
-/// their bridge's `resolve_*_bin` rather than a bare lookup. Auth reuses the
-/// catalog's `auth_indicators` (via `indicators_authenticated`) so the
-/// onboarding probe agrees exactly with the Settings → Agents scan.
-fn cli_agent_scan(id: &str, path: Option<String>) -> Value {
-    let Some(p) = path else {
-        return json!({ "installed": false, "authenticated": false, "path": null });
-    };
-    let authed = crate::providers::list_cli_agents()
-        .into_iter()
-        .find(|s| s.id == id)
-        .map(|spec| indicators_authenticated(&home(), spec.auth_indicators))
-        .unwrap_or(false);
-    json!({ "installed": true, "authenticated": authed, "path": p })
-}
-
-/// Grok Build's `{installed, authenticated, path}` bucket. Identical shape to
-/// `cli_agent_scan`, but auth OR-s the keyring-stored shared xAI key on top of
-/// the catalog's `auth_indicators` — mirroring `scan_all_agents`'
-/// `ScanProbe::GrokCli` branch verbatim so `/providers/scan` (onboarding) and
-/// `/agents/scan` (Settings) agree on whether grok-build is authenticated.
-fn cli_agent_scan_grok(path: Option<String>) -> Value {
-    let Some(p) = path else {
-        return json!({ "installed": false, "authenticated": false, "path": null });
-    };
-    let keyring_authed = crate::providers::keys::get_key("grok").is_some();
-    let authed = keyring_authed
-        || crate::providers::list_cli_agents()
-            .into_iter()
-            .find(|s| s.id == "grok-build")
-            .map(|spec| indicators_authenticated(&home(), spec.auth_indicators))
-            .unwrap_or(false);
-    json!({ "installed": true, "authenticated": authed, "path": p })
-}
-
-async fn scan_providers() -> Json<Value> {
-    // The legacy scan endpoint doesn't have access to ProvidersConfig
-    // (it lives in the Tauri shell's fleet.config.json, not the
-    // backend's AppState), so we fall back to the localhost default
-    // here. The new `providers_ollama_probe` IPC honours the user's
-    // configured URL for the Settings surface.
-    let (claude, codex, kimi, agy, agy_sdk, ollama, opencode_path) = tokio::join!(
-        check_claude_cli(),
-        check_codex_cli(),
-        check_kimi_cli(),
-        check_agy_cli(),
-        check_antigravity_sdk_cli(),
-        check_ollama(None),
-        cli_path("opencode"),
-    );
-    // OpenCode / Cursor / GitHub Copilot / Hermes — previously probe-less in
-    // onboarding ("Set up in Settings"). Resolve through the same bridge
-    // helpers dispatch + the Settings scan use so off-PATH installs are
-    // detected and the Install button's completion poll agrees with reality.
-    let opencode = cli_agent_scan("opencode", opencode_path);
-    let cursor = cli_agent_scan("cursor-cli", crate::bridges::cursor::resolve_cursor_bin());
-    let github_copilot = cli_agent_scan(
-        "github-copilot",
-        crate::bridges::github_copilot::resolve_copilot_bin(),
-    );
-    let hermes = cli_agent_scan("hermes-agent", crate::bridges::hermes::resolve_hermes_bin());
-    let grok = cli_agent_scan_grok(crate::bridges::grok_cli::resolve_grok_bin());
-    Json(json!({
-        "claude_code": claude,
-        "codex_cli": codex,
-        "kimi_code": kimi,
-        "antigravity_cli": agy,
-        "antigravity_sdk": agy_sdk,
-        "opencode": opencode,
-        "cursor_cli": cursor,
-        "github_copilot": github_copilot,
-        "hermes_agent": hermes,
-        "grok_build": grok,
-        "ollama": ollama,
-        "env_keys": {
+/// Onboarding's `/providers/scan` payload: one `{installed, authenticated,
+/// path}` bucket per CLI agent, keyed by the id with `-` → `_`
+/// (`claude-code` → `claude_code`), plus Ollama and the env-key inventory.
+/// The buckets are cut from the same scan Settings → Agents reads, so
+/// onboarding and Settings can't disagree.
+fn providers_scan_payload(agents: &HashMap<String, Value>, ollama: Value) -> Value {
+    let mut out = serde_json::Map::new();
+    for spec in crate::providers::list_cli_agents() {
+        let row = agents.get(spec.id);
+        let flag = |key: &str| {
+            row.and_then(|r| r.get(key))
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        };
+        out.insert(
+            spec.id.replace('-', "_"),
+            json!({
+                "installed": flag("installed"),
+                "authenticated": flag("authenticated"),
+                "path": row.and_then(|r| r.get("path")).cloned().unwrap_or(Value::Null),
+            }),
+        );
+    }
+    out.insert("ollama".into(), ollama);
+    out.insert(
+        "env_keys".into(),
+        json!({
             "anthropic": std::env::var("ANTHROPIC_API_KEY").is_ok(),
             "openai": std::env::var("OPENAI_API_KEY").is_ok(),
             "groq": std::env::var("GROQ_API_KEY").is_ok(),
-        },
-    }))
+        }),
+    );
+    Value::Object(out)
+}
+
+async fn scan_providers(State(state): State<AppState>) -> Json<Value> {
+    // The legacy scan endpoint doesn't have access to ProvidersConfig
+    // (it lives in the Tauri shell's fleet.config.json, not the
+    // backend's AppState), so Ollama falls back to the localhost default
+    // here. The new `providers_ollama_probe` IPC honours the user's
+    // configured URL for the Settings surface.
+    let (agents, ollama) = tokio::join!(
+        agent_scan(&state.agent_scan_cache, false),
+        check_ollama(None)
+    );
+    Json(providers_scan_payload(&agents, ollama))
 }
 
 /// Faithful with `app/utils/models.py` MODEL_CATALOG_BY_PROVIDER — the
@@ -2377,14 +2014,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn cli_agent_scan_reports_not_installed_without_path() {
-        let v = cli_agent_scan("opencode", None);
-        assert_eq!(v["installed"], serde_json::json!(false));
-        assert_eq!(v["authenticated"], serde_json::json!(false));
-        assert!(v["path"].is_null());
-    }
-
     // ── Remote-catalog disk cache (offline / cold-start fallback) ──
     fn home_guard<R>(home: &std::path::Path, f: impl FnOnce() -> R) -> R {
         let _g = crate::test_support::home_lock()
@@ -2460,16 +2089,6 @@ mod tests {
     }
 
     #[test]
-    fn cli_agent_scan_marks_installed_with_path() {
-        let v = cli_agent_scan("opencode", Some("/usr/bin/opencode".to_string()));
-        assert_eq!(v["installed"], serde_json::json!(true));
-        assert_eq!(v["path"], serde_json::json!("/usr/bin/opencode"));
-        // `authenticated` depends on the host's opencode auth file / env var,
-        // so assert the shape (a bool), not a fixed value.
-        assert!(v["authenticated"].is_boolean());
-    }
-
-    #[test]
     fn remote_catalog_prewarm_set_excludes_live_probe_agents_and_covers_remote_sources() {
         let ids = remote_catalog_prewarm_ids();
         // Live-probe CLI agents resolve their lineup from a local CLI/ACP call
@@ -2505,94 +2124,59 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn scan_providers_exposes_new_cli_buckets() {
-        let Json(v) = scan_providers().await;
-        // The four CLI agents that were probe-less in onboarding now carry a
-        // {installed, authenticated} bucket so the picker can show an Install
-        // button + completion state instead of "Set up in Settings".
-        for key in [
-            "opencode",
-            "cursor_cli",
-            "github_copilot",
-            "hermes_agent",
-            "grok_build",
-        ] {
-            let bucket = v.get(key).unwrap_or_else(|| panic!("missing bucket {key}"));
-            assert!(
-                bucket.get("installed").is_some_and(|b| b.is_boolean()),
-                "{key}.installed must be a bool"
-            );
-            assert!(
-                bucket.get("authenticated").is_some_and(|b| b.is_boolean()),
-                "{key}.authenticated must be a bool"
-            );
+    /// Onboarding's buckets are cut from the Settings scan, so the two can't
+    /// disagree (they did: onboarding probed `kimi-code` and
+    /// `antigravity-cli`, binaries that don't exist).
+    #[test]
+    fn providers_scan_payload_mirrors_the_agent_scan() {
+        let mut agents = HashMap::new();
+        agents.insert(
+            "kimi-code".to_string(),
+            json!({"installed": true, "authenticated": true, "path": "/usr/bin/kimi"}),
+        );
+        agents.insert(
+            "antigravity-cli".to_string(),
+            json!({"installed": true, "authenticated": false, "path": "/home/u/.local/bin/agy"}),
+        );
+        let v = providers_scan_payload(&agents, json!({"running": false}));
+        assert_eq!(v["kimi_code"]["installed"], true);
+        assert_eq!(v["kimi_code"]["authenticated"], true);
+        assert_eq!(v["kimi_code"]["path"], "/usr/bin/kimi");
+        assert_eq!(v["antigravity_cli"]["installed"], true);
+        assert_eq!(v["antigravity_cli"]["authenticated"], false);
+        // Every CLI agent has a bucket, scanned or not.
+        for spec in crate::providers::list_cli_agents() {
+            let key = spec.id.replace('-', "_");
+            let bucket = v
+                .get(&key)
+                .unwrap_or_else(|| panic!("missing bucket {key}"));
+            assert!(bucket["installed"].is_boolean());
+            assert!(bucket["authenticated"].is_boolean());
         }
-        // Legacy buckets remain intact.
-        assert!(v.get("claude_code").is_some());
+        assert_eq!(v["claude_code"]["installed"], false);
         assert!(v.get("ollama").is_some());
         assert!(v.get("env_keys").is_some());
     }
 
     #[tokio::test]
-    async fn scan_probe_for_id_returns_bin_only_for_legacy_clis() {
-        let probes: Vec<(&str, ScanProbe)> = crate::providers::list_cli_agents()
-            .iter()
-            .map(|s| (s.id, scan_probe_for(s.id, s.bin)))
-            .collect();
-        for (id, probe) in probes {
-            match (id, probe) {
-                ("claude-code", ScanProbe::BinOnly { bin }) => assert_eq!(bin, "claude"),
-                ("codex-cli", ScanProbe::BinOnly { bin }) => assert_eq!(bin, "codex"),
-                ("kimi-code", ScanProbe::BinOnly { bin }) => assert_eq!(bin, "kimi"),
-                ("opencode", ScanProbe::BinOnly { bin }) => assert_eq!(bin, "opencode"),
-                ("github-copilot", ScanProbe::GitHubCopilotCli) => {}
-                ("antigravity-cli", ScanProbe::AgyCli) => {}
-                ("antigravity-sdk", ScanProbe::PythonModule { module }) => {
-                    assert_eq!(module, "google.antigravity");
-                }
-                ("cursor-cli", ScanProbe::CursorCli) => {}
-                ("hermes-agent", ScanProbe::HermesCli) => {}
-                ("grok-build", ScanProbe::GrokCli) => {}
-                (other, _) => panic!("unmapped CLI id in scan_probe_for: {other}"),
-            }
-        }
+    async fn agent_scan_cache_goes_stale() {
+        let cache = AgentScanCache::default();
+        cache.set(HashMap::new()).await;
+        assert!(cache.get_fresh(Duration::from_secs(60)).await.is_some());
+        assert!(cache.get_fresh(Duration::ZERO).await.is_none());
+        // Auto routing still gets the stale scan.
+        assert!(cache.get().await.is_some());
     }
 
     #[tokio::test]
-    async fn scan_probe_for_agy_uses_agy_cli_variant() {
-        let probe = scan_probe_for("antigravity-cli", "agy");
-        assert!(
-            matches!(probe, ScanProbe::AgyCli),
-            "agy must use AgyCli probe so installation_id fallback works"
-        );
-    }
-
-    #[tokio::test]
-    async fn scan_probe_for_cursor_uses_cursor_cli_variant() {
-        let probe = scan_probe_for("cursor-cli", "cursor-agent");
-        assert!(
-            matches!(probe, ScanProbe::CursorCli),
-            "cursor must use CursorCli probe (binary is off-PATH on Windows)"
-        );
-    }
-
-    #[tokio::test]
-    async fn scan_probe_for_hermes_uses_hermes_cli_variant() {
-        let probe = scan_probe_for("hermes-agent", "hermes-agent");
-        assert!(
-            matches!(probe, ScanProbe::HermesCli),
-            "hermes must use HermesCli probe (binary is off-PATH on Windows)"
-        );
-    }
-
-    #[tokio::test]
-    async fn scan_probe_for_grok_uses_grok_cli_variant() {
-        let probe = scan_probe_for("grok-build", "grok");
-        assert!(
-            matches!(probe, ScanProbe::GrokCli),
-            "grok must use GrokCli probe (binary off-PATH at ~/.local/bin, keyring auth)"
-        );
+    async fn scan_rows_carry_login_kind_and_whether_sign_in_is_required() {
+        let snapshot = scan_all_agents().await;
+        assert_eq!(snapshot["opencode"]["auth_required"], false);
+        assert_eq!(snapshot["claude-code"]["auth_required"], true);
+        assert_eq!(snapshot["claude-code"]["login_kind"], "browser");
+        assert_eq!(snapshot["hermes-agent"]["login_kind"], "terminal");
+        assert_eq!(snapshot["antigravity-sdk"]["login_kind"], "api_key");
+        assert_eq!(snapshot["claude-code"]["login_hint"], "claude auth login");
     }
 
     #[test]
@@ -2613,27 +2197,6 @@ mod tests {
         let (models, current) = discover_agent_models("totally-unknown", "").await;
         assert!(models.is_empty());
         assert!(current.is_none());
-    }
-
-    #[test]
-    fn agy_cli_probe_returns_installed_when_installation_id_exists() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let marker = tmp.path().join(".gemini/antigravity-cli/installation_id");
-        std::fs::create_dir_all(marker.parent().unwrap()).expect("mkdir");
-        std::fs::write(&marker, "fake-id").expect("write marker");
-        assert!(
-            agy_installed_via_marker(tmp.path()),
-            "installation_id present => installed"
-        );
-    }
-
-    #[test]
-    fn agy_cli_probe_returns_false_when_marker_absent() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        assert!(
-            !agy_installed_via_marker(tmp.path()),
-            "no marker => not installed via marker path"
-        );
     }
 
     #[test]
@@ -2664,15 +2227,6 @@ mod tests {
         assert!(p.install_hint.contains("npm"));
     }
 
-    #[tokio::test]
-    async fn scan_probe_for_antigravity_sdk_uses_python_module() {
-        let probe = scan_probe_for("antigravity-sdk", "python3");
-        match probe {
-            ScanProbe::PythonModule { module } => assert_eq!(module, "google.antigravity"),
-            other => panic!("expected PythonModule probe, got {:?}", other),
-        }
-    }
-
     #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn python_module_probe_returns_installed_for_stdlib_module() {
@@ -2694,7 +2248,7 @@ mod tests {
             eprintln!("skipping: no working python on PATH");
             return;
         }
-        let result = python_module_installed("json").await;
+        let result = cli_auth::python_module_installed("json").await;
         assert!(
             result.installed,
             "json (stdlib) must import successfully when Python is present"
@@ -2722,62 +2276,12 @@ mod tests {
             eprintln!("skipping: no working python on PATH");
             return;
         }
-        let result = python_module_installed("definitely_not_a_real_module_2026").await;
+        let result = cli_auth::python_module_installed("definitely_not_a_real_module_2026").await;
         assert!(!result.installed, "bogus module must not import");
         assert!(
             result.path.is_some(),
             "python is still installed, only the module is missing"
         );
-    }
-
-    #[test]
-    fn check_json_expiry_missing_file_returns_false() {
-        let p = std::env::temp_dir().join("fleet-test-missing.json");
-        // Make sure it doesn't exist from a prior run
-        std::fs::remove_file(&p).ok();
-        assert!(!check_json_expiry(&p, "expiry_date", ExpiryUnit::Millis));
-    }
-
-    #[test]
-    fn check_json_expiry_invalid_json_returns_false() {
-        let p = std::env::temp_dir().join("fleet-test-bad-json.json");
-        std::fs::write(&p, "{ not json").unwrap();
-        assert!(!check_json_expiry(&p, "expiry_date", ExpiryUnit::Millis));
-        std::fs::remove_file(&p).ok();
-    }
-
-    #[test]
-    fn check_json_expiry_missing_field_returns_false() {
-        let p = std::env::temp_dir().join("fleet-test-missing-field.json");
-        std::fs::write(&p, r#"{"foo": 1}"#).unwrap();
-        assert!(!check_json_expiry(&p, "expiry_date", ExpiryUnit::Millis));
-        std::fs::remove_file(&p).ok();
-    }
-
-    #[test]
-    fn check_json_expiry_past_value_returns_false() {
-        let p = std::env::temp_dir().join("fleet-test-past.json");
-        std::fs::write(&p, r#"{"expiry_date": 1000}"#).unwrap();
-        assert!(!check_json_expiry(&p, "expiry_date", ExpiryUnit::Millis));
-        std::fs::remove_file(&p).ok();
-    }
-
-    #[test]
-    fn check_json_expiry_future_value_returns_true() {
-        let p = std::env::temp_dir().join("fleet-test-future.json");
-        // Year ~33658 in millis = absurdly future, won't expire during the test
-        std::fs::write(&p, r#"{"expiry_date": 1000000000000000}"#).unwrap();
-        assert!(check_json_expiry(&p, "expiry_date", ExpiryUnit::Millis));
-        std::fs::remove_file(&p).ok();
-    }
-
-    #[test]
-    fn check_json_expiry_unit_seconds_converts_correctly() {
-        let p = std::env::temp_dir().join("fleet-test-seconds.json");
-        // 1_000_000_000_000 seconds = year ~33658
-        std::fs::write(&p, r#"{"expiry_date": 1000000000000}"#).unwrap();
-        assert!(check_json_expiry(&p, "expiry_date", ExpiryUnit::Seconds));
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]

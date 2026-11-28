@@ -95,49 +95,77 @@ pub struct ProviderExtras {
     pub supports_streaming: bool,
 }
 
-/// File / env-var indicator that tells us a CLI agent is logged in. Backs
-/// the "Detected" / "Login required" pill in Settings → Agents. Order
-/// matters — the first hit wins, so put the cheapest / most specific
-/// check first.
+/// A sign-in signal for a CLI agent: a credential the agent itself reads.
+/// Backs the "Signed in" / "Sign in" state in Settings → Agents, onboarding
+/// and the per-account list (evaluated by `providers::cli_auth`). Any single
+/// indicator firing means signed in.
+///
+/// Only credentials count, never usage artifacts: a signed-out run still
+/// creates `~/.claude/projects`, and installers write template configs.
+/// Agents with their own `auth status` command are asked that first (see
+/// `cli_auth::status_probe_for`); their indicators are the fallback.
 ///
 /// Variants use struct form because serde's internally-tagged enums refuse
 /// newtype variants wrapping a primitive (the renderer reads the catalog
 /// as JSON, so this needs to serialize cleanly).
 #[derive(Debug, Clone, Copy, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ExpiryUnit {
-    Millis,
-    Seconds,
-}
-
-#[derive(Debug, Clone, Copy, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AuthIndicator {
     /// Path relative to the user's home dir (`~`). Existence ⇒ authed.
     HomeDir { path: &'static str },
-    /// Environment variable presence ⇒ authed. Used for headless / CI
-    /// flows that skip the interactive `login` browser dance.
+    /// Environment variable set to a non-empty value ⇒ authed. Used for
+    /// headless / CI flows that skip the interactive `login` browser dance.
     EnvVar { name: &'static str },
-    /// Read a JSON file under `$HOME/<path>`, look up `field` as a
-    /// number, and treat the indicator as satisfied only when that
-    /// number — interpreted as `unit` since the Unix epoch — is in
-    /// the future. Missing file, invalid JSON, missing field, or
-    /// non-numeric value all evaluate to `false`.
-    JsonExpiry {
-        path: &'static str,
-        field: &'static str,
-        unit: ExpiryUnit,
-    },
     /// Read a JSON file under `$HOME/<path>` and treat the indicator as
-    /// satisfied when `field` is present and non-null. Used for CLI agents
-    /// that record login state as a config field rather than a separate
-    /// credentials file (Cursor writes an `authInfo` object into
-    /// `~/.cursor/cli-config.json` only while logged in — the file itself
-    /// persists logged-out, so a plain `HomeDir` check would false-positive).
+    /// satisfied when `field` holds something (not null, `""`, `[]` or
+    /// `{}`). Used for CLI agents that record login state as a config field
+    /// rather than a separate credentials file.
     JsonFieldPresent {
         path: &'static str,
         field: &'static str,
     },
+    /// A credential file inside the agent's own config directory, which the
+    /// agent lets users relocate with an env var (`CLAUDE_CONFIG_DIR`,
+    /// `CODEX_HOME`, `GROK_HOME`, …) — and which Fleetify itself sets for a
+    /// per-account login. The directory is `$<env>/<env_subdir>` when `env`
+    /// is set, else `~/<home_dir>`. With `field`, the file must be JSON whose
+    /// `field` holds something; without, the file must hold something (a JSON
+    /// file must not be empty, `{}` or `[]`).
+    ConfigFile {
+        env: &'static str,
+        env_subdir: &'static str,
+        home_dir: &'static str,
+        file: &'static str,
+        field: Option<&'static str>,
+    },
+    /// One of `names` is set: in the environment, or in the agent's dotenv
+    /// file (`$<env>/<file>`, else `~/<home_dir>/<file>`). For agents that
+    /// keep provider keys in their own `.env` (Hermes).
+    ProviderKey {
+        env: &'static str,
+        home_dir: &'static str,
+        file: &'static str,
+        names: &'static [&'static str],
+    },
+    /// The agent's YAML config points `<section>.base_url` at a loopback
+    /// address: a local model server, which needs no key.
+    YamlLocalEndpoint {
+        env: &'static str,
+        home_dir: &'static str,
+        file: &'static str,
+        section: &'static str,
+    },
+    /// A login the agent stored in the OS credential store under
+    /// (`service`, `user`) in the `go-keyring` layout (Antigravity CLI).
+    /// Existence only: the secret is never read.
+    OsCredential {
+        service: &'static str,
+        user: &'static str,
+    },
+    /// A key the user saved in Fleetify for `provider`, which the bridge
+    /// hands the agent at spawn (Grok Build's xAI key, the Antigravity SDK's
+    /// Gemini key).
+    FleetifyKey { provider: &'static str },
 }
 
 /// Per-OS install command set. Resolved at scan time by
@@ -845,116 +873,243 @@ const PERPLEXITY_MODELS: &[ModelSpec] = &[
 ];
 
 // ─── CLI-agent auth indicators ───────────────────────────────────────────
+//
+// Each list names the credentials the agent itself authenticates with, as
+// verified against the CLI (2026-11-28). See `AuthIndicator` for the rules:
+// usage artifacts such as `~/.claude/projects` never count.
 
+// Claude Code answers `claude auth status --json` (see `cli_auth`); these are
+// the fallback for builds without it. The OAuth login lives in
+// `<config>/.credentials.json` (`claudeAiOauth`) on Linux and Windows, and in
+// the macOS keychain, where `.claude.json`'s `oauthAccount` is the on-disk
+// trace. `<config>` is `$CLAUDE_CONFIG_DIR`, else `~/.claude` (with
+// `.claude.json` at the home root).
 const CLAUDE_INDICATORS: &[AuthIndicator] = &[
-    AuthIndicator::HomeDir {
-        path: ".claude/projects",
+    AuthIndicator::ConfigFile {
+        env: "CLAUDE_CONFIG_DIR",
+        env_subdir: "",
+        home_dir: ".claude",
+        file: ".credentials.json",
+        field: Some("claudeAiOauth"),
     },
-    AuthIndicator::HomeDir {
-        path: ".claude/sessions",
-    },
-    AuthIndicator::HomeDir {
-        path: ".claude/history.jsonl",
-    },
-    AuthIndicator::HomeDir {
-        path: ".config/anthropic/credentials.json",
+    AuthIndicator::ConfigFile {
+        env: "CLAUDE_CONFIG_DIR",
+        env_subdir: "",
+        home_dir: "",
+        file: ".claude.json",
+        field: Some("oauthAccount"),
     },
     AuthIndicator::EnvVar {
         name: "ANTHROPIC_API_KEY",
     },
-];
-
-const CODEX_INDICATORS: &[AuthIndicator] = &[
-    AuthIndicator::HomeDir {
-        path: ".codex/auth.json",
-    },
     AuthIndicator::EnvVar {
-        name: "OPENAI_API_KEY",
+        name: "CLAUDE_CODE_OAUTH_TOKEN",
     },
 ];
 
+// Codex answers `codex login status`; this is the fallback. `auth.json` in
+// `$CODEX_HOME` (else `~/.codex`) carries ChatGPT `tokens` or a stored
+// `OPENAI_API_KEY`. An `OPENAI_API_KEY` in the environment alone does not sign
+// Codex in (it reports "Not logged in"), so it isn't an indicator.
+const CODEX_INDICATORS: &[AuthIndicator] = &[
+    AuthIndicator::ConfigFile {
+        env: "CODEX_HOME",
+        env_subdir: "",
+        home_dir: ".codex",
+        file: "auth.json",
+        field: Some("tokens"),
+    },
+    AuthIndicator::ConfigFile {
+        env: "CODEX_HOME",
+        env_subdir: "",
+        home_dir: ".codex",
+        file: "auth.json",
+        field: Some("OPENAI_API_KEY"),
+    },
+];
+
+// Kimi Code (`@moonshot-ai/kimi-code`) keeps its device-flow token in
+// `$KIMI_CODE_HOME` (else `~/.kimi-code`) `/credentials/kimi-code.json`. A
+// revoked token stays on disk as a tombstone with an empty `access_token`, and
+// `kimi logout` deletes the file, so the token field is the signal.
 const KIMI_CLI_INDICATORS: &[AuthIndicator] = &[
-    AuthIndicator::HomeDir {
-        path: ".kimi/auth.json",
+    AuthIndicator::ConfigFile {
+        env: "KIMI_CODE_HOME",
+        env_subdir: "",
+        home_dir: ".kimi-code",
+        file: "credentials/kimi-code.json",
+        field: Some("access_token"),
     },
     AuthIndicator::EnvVar {
         name: "KIMI_API_KEY",
     },
 ];
 
-// OpenCode stores provider credentials at `~/.local/share/opencode/auth.json`
-// (XDG-style, even on Windows under `%USERPROFILE%`). NB: free `opencode/*`
-// models work with zero credentials, so a missing auth.json only means "no
-// paid provider linked", not "agent unusable" — the pill is advisory.
+// OpenCode runs its free `opencode/*` models with no credentials at all, so it
+// never needs a sign-in (`cli_auth::sign_in_required`). These record whether a
+// paid provider is linked: `$XDG_DATA_HOME/opencode/auth.json`, else
+// `~/.local/share/opencode/auth.json` (also under `%USERPROFILE%` on Windows).
 const OPENCODE_CLI_INDICATORS: &[AuthIndicator] = &[
-    AuthIndicator::HomeDir {
-        path: ".local/share/opencode/auth.json",
+    AuthIndicator::ConfigFile {
+        env: "XDG_DATA_HOME",
+        env_subdir: "opencode",
+        home_dir: ".local/share/opencode",
+        file: "auth.json",
+        field: None,
     },
     AuthIndicator::EnvVar {
         name: "OPENCODE_API_KEY",
     },
 ];
 
-/// Hermes stores its configured provider/model in `~/.hermes/config.yaml`
-/// (api-key + `hermes model` setups) or `~/.hermes/auth.json` (OAuth
-/// providers: Nous Portal, Codex, Qwen, MiniMax…). Either present ⇒ a
-/// provider is configured and ACP `session/new`/`prompt` will work.
+/// Hermes' home: `$HERMES_HOME`, else `~/.hermes` (`%LOCALAPPDATA%\hermes` on
+/// Windows).
+#[cfg(not(windows))]
+const HERMES_HOME_DIR: &str = ".hermes";
+#[cfg(windows)]
+const HERMES_HOME_DIR: &str = "AppData/Local/hermes";
+
+/// The provider keys Hermes resolves a model with (its `hermes_cli/auth.py`
+/// registry, 2026-11-28). Tool keys such as `FIRECRAWL_API_KEY` are left out:
+/// they don't configure a model.
+const HERMES_PROVIDER_KEYS: &[&str] = &[
+    "OPENROUTER_API_KEY",
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_TOKEN",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "AZURE_FOUNDRY_API_KEY",
+    "AZURE_ANTHROPIC_KEY",
+    "AI_GATEWAY_API_KEY",
+    "DEEPSEEK_API_KEY",
+    "XAI_API_KEY",
+    "GLM_API_KEY",
+    "ZAI_API_KEY",
+    "Z_AI_API_KEY",
+    "KIMI_API_KEY",
+    "KIMI_CODING_API_KEY",
+    "KIMI_CN_API_KEY",
+    "MINIMAX_API_KEY",
+    "MINIMAX_CN_API_KEY",
+    "DASHSCOPE_API_KEY",
+    "ALIBABA_CODING_PLAN_API_KEY",
+    "NVIDIA_API_KEY",
+    "HF_TOKEN",
+    "OLLAMA_API_KEY",
+    "LM_API_KEY",
+    "STEPFUN_API_KEY",
+    "ARCEEAI_API_KEY",
+    "GMI_API_KEY",
+    "KILOCODE_API_KEY",
+    "XIAOMI_API_KEY",
+    "OPENCODE_ZEN_API_KEY",
+    "OPENCODE_GO_API_KEY",
+    "TOKENHUB_API_KEY",
+    "TOKENPLAN_API_KEY",
+    "ACTUAL_API_KEY",
+];
+
+/// Hermes has a model provider configured: an OAuth / pooled login in
+/// `auth.json` (`active_provider`), a provider key in the environment or its
+/// `.env` (where `hermes model` writes it), or a local model server in
+/// `config.yaml`. The installer copies template `config.yaml` and `.env` files
+/// into place, so their existence alone means nothing.
 const HERMES_CLI_INDICATORS: &[AuthIndicator] = &[
-    AuthIndicator::HomeDir {
-        path: ".hermes/config.yaml",
+    AuthIndicator::ConfigFile {
+        env: "HERMES_HOME",
+        env_subdir: "",
+        home_dir: HERMES_HOME_DIR,
+        file: "auth.json",
+        field: Some("active_provider"),
     },
-    AuthIndicator::HomeDir {
-        path: ".hermes/auth.json",
+    AuthIndicator::ProviderKey {
+        env: "HERMES_HOME",
+        home_dir: HERMES_HOME_DIR,
+        file: ".env",
+        names: HERMES_PROVIDER_KEYS,
+    },
+    AuthIndicator::YamlLocalEndpoint {
+        env: "HERMES_HOME",
+        home_dir: HERMES_HOME_DIR,
+        file: "config.yaml",
+        section: "model",
     },
 ];
 
 // Cursor CLI records login state as an `authInfo` object inside
-// `~/.cursor/cli-config.json` (email/userId/authId). The object is present
-// only while logged in and is removed by `cursor-agent logout` (verified
-// against Cursor Agent 2026.05.28) — but the config file itself persists when
-// logged out, so we check the field, not the file. `CURSOR_API_KEY` covers
-// headless / CI auth that skips the interactive browser login.
+// `cli-config.json` (email/userId/authId). The object is present only while
+// logged in and is removed by `cursor-agent logout` (verified against Cursor
+// Agent 2026.05.28), while the file itself persists, so the field is the
+// signal. The config dir is `$CURSOR_CONFIG_DIR`, else `$XDG_CONFIG_HOME/cursor`
+// when set, else `~/.cursor`. `CURSOR_API_KEY` / `CURSOR_AUTH_TOKEN` cover
+// headless auth (cursor.com/docs/cli/acp).
 const CURSOR_CLI_INDICATORS: &[AuthIndicator] = &[
-    AuthIndicator::JsonFieldPresent {
-        path: ".cursor/cli-config.json",
-        field: "authInfo",
+    AuthIndicator::ConfigFile {
+        env: "CURSOR_CONFIG_DIR",
+        env_subdir: "",
+        home_dir: ".cursor",
+        file: "cli-config.json",
+        field: Some("authInfo"),
+    },
+    AuthIndicator::ConfigFile {
+        env: "XDG_CONFIG_HOME",
+        env_subdir: "cursor",
+        home_dir: ".cursor",
+        file: "cli-config.json",
+        field: Some("authInfo"),
     },
     AuthIndicator::EnvVar {
         name: "CURSOR_API_KEY",
     },
+    AuthIndicator::EnvVar {
+        name: "CURSOR_AUTH_TOKEN",
+    },
 ];
 
-// Grok Build CLI — ACP agent that auths out-of-band via an injected
-// `XAI_API_KEY` (the bridge passes it through to the subprocess env).
-// Presence of that env var is the only on-disk-free login signal.
-const GROK_CLI_INDICATORS: &[AuthIndicator] = &[AuthIndicator::EnvVar {
-    name: "XAI_API_KEY",
-}];
+// Grok Build: `grok login` (browser or device OAuth) stores the session in
+// `$GROK_HOME` (else `~/.grok`) `/auth.json`, and `grok logout` clears it. An
+// xAI API key also works: from the environment, or the key the user saved in
+// Fleetify, which the bridge injects as `XAI_API_KEY`.
+const GROK_CLI_INDICATORS: &[AuthIndicator] = &[
+    AuthIndicator::ConfigFile {
+        env: "GROK_HOME",
+        env_subdir: "",
+        home_dir: ".grok",
+        file: "auth.json",
+        field: None,
+    },
+    AuthIndicator::EnvVar {
+        name: "XAI_API_KEY",
+    },
+    AuthIndicator::EnvVar {
+        name: "GROK_CODE_XAI_API_KEY",
+    },
+    AuthIndicator::FleetifyKey { provider: "grok" },
+];
 
-// Antigravity CLI's auth state lives in `~/.gemini/oauth_creds.json`.
-// The file's `expiry_date` (Unix millis) is the only on-disk signal
-// we can read without spawning agy — agy's CLI has no `auth status`
-// subcommand (verified against agy 1.0.x). Past-expiry means the
-// next dispatch will print "Authentication required. Please visit
-// the URL...", which the bridge now turns into an in-chat info card
-// and a browser-open. We want the Settings → Providers pill to
-// agree with that reality, so we evaluate the same expiry here.
-//
-// `installation_id` is intentionally NOT an auth indicator — it's
-// agy's "I've been here" install marker. Install detection lives
-// in `ScanProbe::AgyCli` (see scan_probe_for), which already
-// checks the marker file. Mixing install with login was a bug.
-const AGY_CLI_INDICATORS: &[AuthIndicator] = &[AuthIndicator::JsonExpiry {
-    path: ".gemini/oauth_creds.json",
-    field: "expiry_date",
-    unit: ExpiryUnit::Millis,
-}];
+// Antigravity CLI (agy 1.5) keeps its Google login in the OS credential store,
+// service `gemini`, user `antigravity` (written with go-keyring). Its access
+// token expires hourly and is refreshed from the stored refresh token, so an
+// expiry date says nothing about being signed in. Older agy builds wrote
+// `~/.gemini/oauth_creds.json`; its refresh token is the equivalent signal.
+// The `installation_id` marker is agy's first-run marker, not a login.
+const AGY_CLI_INDICATORS: &[AuthIndicator] = &[
+    AuthIndicator::OsCredential {
+        service: "gemini",
+        user: "antigravity",
+    },
+    AuthIndicator::JsonFieldPresent {
+        path: ".gemini/oauth_creds.json",
+        field: "refresh_token",
+    },
+];
 
-// Antigravity SDK auth detection. The bridge reads `GEMINI_API_KEY` from
-// the keychain at dispatch time (service: `Fleetify-Provider-antigravity-sdk`)
-// AND the env var as a fallback for scripted launches. Whichever surface
-// has a key, the agent counts as "authed" for the Settings → Agents tile.
+// Antigravity SDK: a Gemini API key, saved in Fleetify (Settings → Agents)
+// or set in the environment for scripted launches.
 const ANTIGRAVITY_SDK_INDICATORS: &[AuthIndicator] = &[
+    AuthIndicator::FleetifyKey {
+        provider: "antigravity-sdk",
+    },
     AuthIndicator::EnvVar {
         name: "GEMINI_API_KEY",
     },
@@ -970,14 +1125,20 @@ const OLLAMA_CLI_INDICATORS: &[AuthIndicator] = &[];
 
 // ─── GitHub Copilot CLI ──────────────────────────────────────────────────
 
+// Copilot looks for credentials in this order: `COPILOT_GITHUB_TOKEN`,
+// `GH_TOKEN`, `GITHUB_TOKEN`, the token `copilot login` stored (OS keychain,
+// service `copilot-cli`, or plaintext), then the GitHub CLI's login. A stored
+// login is listed in `config.json`'s `logged_in_users` (`$COPILOT_HOME`, else
+// `~/.copilot`), which logout empties; the file itself exists after any run.
+// The GitHub CLI fallback is `gh`'s `hosts.yml` (`cli_auth` checks it).
 const GITHUB_COPILOT_INDICATORS: &[AuthIndicator] = &[
-    // OAuth + app state file (created on first `copilot` run; may be empty
-    // when token lives in the OS keychain, but its presence still signals
-    // the CLI has been used).
-    AuthIndicator::HomeDir {
-        path: ".copilot/config.json",
+    AuthIndicator::ConfigFile {
+        env: "COPILOT_HOME",
+        env_subdir: "",
+        home_dir: ".copilot",
+        file: "config.json",
+        field: Some("logged_in_users"),
     },
-    // Headless / CI auth — precedence per GitHub docs.
     AuthIndicator::EnvVar {
         name: "COPILOT_GITHUB_TOKEN",
     },
@@ -1775,7 +1936,9 @@ pub static CATALOG: &[ProviderSpec] = &[
         auth_indicators: CLAUDE_INDICATORS,
         install_hint: "npm install -g @anthropic-ai/claude-code",
         install_hints: None,
-        login_hint: "claude login",
+        // `claude login` is not a command: it starts a session with the
+        // prompt "login" (verified on Claude Code 2.1).
+        login_hint: "claude auth login",
     },
     ProviderSpec {
         id: "codex-cli",
@@ -1878,7 +2041,11 @@ pub static CATALOG: &[ProviderSpec] = &[
         bin: "grok",
         auth_indicators: GROK_CLI_INDICATORS,
         install_hint: "curl -fsSL https://x.ai/cli/install.sh | bash",
-        install_hints: None,
+        install_hints: Some(InstallHints {
+            windows: "irm https://x.ai/cli/install.ps1 | iex",
+            macos: "curl -fsSL https://x.ai/cli/install.sh | bash",
+            linux: "curl -fsSL https://x.ai/cli/install.sh | bash",
+        }),
         // The actual login command (device-OAuth flow). Must be a tokenizable
         // command, not prose: the Settings login PTY and the in-chat
         // login-recovery flow both spawn `login_hint` verbatim.
@@ -2150,9 +2317,10 @@ mod tests {
         // Models are sourced live from the ACP session (like OpenCode).
         assert!(c.default_models.is_empty());
         // Login state is the `authInfo` field, not a file/env existence check.
-        assert!(c.auth_indicators.iter().any(
-            |i| matches!(i, AuthIndicator::JsonFieldPresent { field, .. } if *field == "authInfo")
-        ));
+        assert!(c.auth_indicators.iter().any(|i| matches!(
+            i,
+            AuthIndicator::ConfigFile { field: Some(field), .. } if *field == "authInfo"
+        )));
         // Shell-installer agent: per-OS hints, empty universal hint.
         assert!(c.install_hint.is_empty() && c.install_hints.is_some());
     }
@@ -2814,29 +2982,47 @@ mod tests {
     }
 
     #[test]
-    fn auth_indicator_json_expiry_serde() {
-        let v = AuthIndicator::JsonExpiry {
-            path: ".gemini/oauth_creds.json",
-            field: "expiry_date",
-            unit: ExpiryUnit::Millis,
+    fn auth_indicator_config_file_serde() {
+        let v = AuthIndicator::ConfigFile {
+            env: "CODEX_HOME",
+            env_subdir: "",
+            home_dir: ".codex",
+            file: "auth.json",
+            field: Some("tokens"),
         };
-        let s = serde_json::to_string(&v).unwrap();
-        let j: serde_json::Value = serde_json::from_str(&s).unwrap();
-        assert_eq!(j["kind"], "json_expiry");
-        assert_eq!(j["path"], ".gemini/oauth_creds.json");
-        assert_eq!(j["field"], "expiry_date");
-        assert_eq!(j["unit"], "millis");
+        let j = serde_json::to_value(v).unwrap();
+        assert_eq!(j["kind"], "config_file");
+        assert_eq!(j["env"], "CODEX_HOME");
+        assert_eq!(j["home_dir"], ".codex");
+        assert_eq!(j["file"], "auth.json");
+        assert_eq!(j["field"], "tokens");
     }
 
+    /// Usage artifacts are not logins: a signed-out `claude -p` run creates
+    /// `projects/` and `sessions/`, and the old indicators read that as
+    /// "signed in".
     #[test]
-    fn expiry_unit_serializes_snake_case() {
-        assert_eq!(
-            serde_json::to_string(&ExpiryUnit::Millis).unwrap(),
-            "\"millis\""
-        );
-        assert_eq!(
-            serde_json::to_string(&ExpiryUnit::Seconds).unwrap(),
-            "\"seconds\""
-        );
+    fn claude_indicators_are_credentials_not_usage_artifacts() {
+        let c = CATALOG.iter().find(|p| p.id == "claude-code").unwrap();
+        for ind in c.auth_indicators {
+            if let AuthIndicator::HomeDir { path } = ind {
+                panic!("claude-code must not treat {path} as a login");
+            }
+        }
+        assert_eq!(c.login_hint, "claude auth login");
+    }
+
+    /// The Antigravity CLI's access token expires hourly and is refreshed, so
+    /// the indicators must not depend on an expiry date.
+    #[test]
+    fn agy_auth_reads_the_os_credential_store() {
+        let a = CATALOG.iter().find(|p| p.id == "antigravity-cli").unwrap();
+        assert!(a.auth_indicators.iter().any(|i| matches!(
+            i,
+            AuthIndicator::OsCredential {
+                service: "gemini",
+                user: "antigravity"
+            }
+        )));
     }
 }

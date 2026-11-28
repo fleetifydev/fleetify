@@ -196,18 +196,31 @@ export interface AuthRequiredBlock {
 }
 
 /**
- * Surfaces when a CLI agent failed to start because it isn't signed in and
- * recovery is a `<bin> login` command (not an in-chat OOB code). The renderer's
- * GrokLoginCard runs that login in a PTY, shows its device-flow progress, and
- * re-sends the user's original prompt once login succeeds. Pushed by
- * `pushGrokLogin` on the backend's `login_required` event.
+ * Surfaces when a session's CLI agent can't answer because it isn't signed in
+ * (the backend's `login_required` event). The renderer's CliLoginCard signs
+ * it in — the agent's browser / device login, its login command in a
+ * terminal, or an API key field — then re-sends the user's prompt. Pushed by
+ * `pushCliLogin`; the card records its progress here so a remount re-attaches
+ * to the running login instead of starting another.
  */
-export interface GrokLoginBlock {
-  type: "grok_login";
-  /** Logical provider id (`"grok-build"`) — selects the login command + brand. */
+export interface CliLoginBlock {
+  type: "cli_login";
+  /** Catalog id of the CLI agent (`"claude-code"`, `"grok-build"`, …). */
   provider: string;
-  /** Session whose prompt resumes after login completes. */
+  /** Session whose prompt resumes after the sign-in. */
   session_id: string;
+  /** The session's account to sign in; absent ⇒ System (the real HOME). */
+  account_id?: string;
+  /** What the agent said ("Not logged in · Please run /login"). */
+  detail?: string;
+  /** How to sign it in (`cli_auth::LoginKind`). */
+  login_kind?: "browser" | "terminal" | "api_key";
+  /** The running login process, once started. */
+  pty_id?: string;
+  /** Why the login couldn't start. */
+  error?: string;
+  /** Set once the sign-in succeeded; the card then shows a one-line result. */
+  signed_in?: boolean;
 }
 
 export type ContentBlock =
@@ -224,7 +237,7 @@ export type ContentBlock =
   | ResourceCardBlock
   | CitationBlock
   | AuthRequiredBlock
-  | GrokLoginBlock
+  | CliLoginBlock
   | SpawnFormBlock;
 
 export interface ChatMessage {
@@ -349,12 +362,15 @@ export interface WSAuthRequired {
   opened_in_browser: boolean;
 }
 
-/** Agent failed to start because it isn't signed in and recovery is a CLI
- *  login command (Grok). The renderer shows GrokLoginCard, which runs the
- *  login PTY and resumes the prompt on success. */
+/** The session's CLI agent isn't signed in. The renderer shows CliLoginCard,
+ *  which signs it in and resumes the prompt on success. */
 export interface WSLoginRequired {
   type: "login_required";
   provider: string;
+  detail?: string;
+  /** The session's account, when it isn't System. */
+  account_id?: string;
+  login_kind?: "browser" | "terminal" | "api_key";
 }
 
 export interface WSDispatchAck {

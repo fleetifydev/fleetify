@@ -2917,6 +2917,30 @@ pub async fn shell_install_provider(tool_key: String) -> serde_json::Value {
         };
         return shell_installer_result(res, "hermes-agent");
     }
+    // Grok Build installs via xAI's scripts (irm|iex on Windows, curl|bash
+    // on Unix), per its getting-started guide. Mirrors the catalog's grok
+    // `install_hints`; without this branch Install answered "unknown
+    // provider".
+    if tool_key == "grok-build" {
+        let res = if cfg!(windows) {
+            fleetify_core::process::tokio_command("powershell")
+                .args([
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-Command",
+                    "irm https://x.ai/cli/install.ps1 | iex",
+                ])
+                .output()
+                .await
+        } else {
+            fleetify_core::process::tokio_command("sh")
+                .args(["-c", "curl -fsSL https://x.ai/cli/install.sh | bash"])
+                .output()
+                .await
+        };
+        return shell_installer_result(res, "grok-build");
+    }
     let pkg = NPM_PROVIDER_PKG
         .iter()
         .find(|(k, _)| *k == tool_key)
@@ -3804,62 +3828,75 @@ pub async fn providers_delete_account_key(
     serde_json::json!({ "ok": true })
 }
 
-/// Launch a CLI agent's own login flow inside a PTY whose HOME (+XDG/Windows
-/// equivalents) point at the account's isolated dir, so the agent writes its
-/// credentials into that account's home. Returns a `pty_id` the renderer binds
-/// to a terminal view (the user completes the OAuth / device-code flow there);
-/// on exit the renderer refreshes the agent scan so the account flips to
-/// "Detected". CLI agents only — HTTP providers use `providers_set_account_key`.
-#[tauri::command]
-pub async fn providers_open_account_login(
-    app: tauri::AppHandle,
-    id: String,
-    account_id: String,
-) -> serde_json::Value {
-    let Some(spec) = fleetify_backend::providers::find_agent(&id) else {
-        return serde_json::json!({ "ok": false, "code": "NOT_CLI_AGENT", "error": format!("{id} is not a CLI agent") });
+/// The command that signs agent `id` in (`cli_auth::login_spec`), with its
+/// binary resolved the way the agent's bridge resolves it, so login,
+/// detection and spawn agree (off-PATH installs of agy, grok, cursor, hermes
+/// and copilot included). Errors are IPC replies.
+fn agent_login_command(
+    id: &str,
+) -> Result<
+    (
+        String,
+        Vec<String>,
+        fleetify_backend::providers::cli_auth::LoginKind,
+    ),
+    serde_json::Value,
+> {
+    use fleetify_backend::providers::cli_auth::{self, LoginKind};
+    let Some(spec) = fleetify_backend::providers::find_agent(id) else {
+        return Err(
+            serde_json::json!({ "ok": false, "code": "NOT_CLI_AGENT", "error": format!("{id} is not a CLI agent") }),
+        );
     };
-    // The login command comes straight from the catalog's login_hint
-    // (e.g. "claude login", "opencode auth login"). Empty ⇒ interactive bin.
-    let tokens: Vec<String> = if spec.login_hint.trim().is_empty() {
-        vec![spec.bin.to_string()]
-    } else {
-        spec.login_hint
-            .split_whitespace()
-            .map(String::from)
-            .collect()
+    let Some(login) = cli_auth::login_spec(id) else {
+        return Err(
+            serde_json::json!({ "ok": false, "code": "NO_LOGIN", "error": "no login command for this agent" }),
+        );
     };
-    if tokens.is_empty() {
-        return serde_json::json!({ "ok": false, "code": "NO_LOGIN", "error": "no login command for this agent" });
+    if login.kind == LoginKind::ApiKey || login.argv.is_empty() {
+        return Err(serde_json::json!({
+            "ok": false,
+            "code": "API_KEY",
+            "error": format!("{} signs in with an API key, not a login command", spec.display_name),
+        }));
     }
-    // Resolve the binary to an absolute path, sharing the bridges' per-agent
-    // resolvers so off-PATH installs (cursor/hermes/copilot) are found.
-    let program = match spec.id {
-        "cursor-cli" => fleetify_backend::bridges::cursor::resolve_cursor_bin(),
-        "hermes-agent" => fleetify_backend::bridges::hermes::resolve_hermes_bin(),
-        "github-copilot" => fleetify_backend::bridges::github_copilot::resolve_copilot_bin(),
-        _ => which::which(&tokens[0])
-            .ok()
-            .map(|p| p.to_string_lossy().into_owned()),
-    }
-    .unwrap_or_else(|| tokens[0].clone());
-    let args: Vec<String> = tokens[1..].to_vec();
+    let program =
+        cli_auth::resolve_bin(spec.id, spec.bin).unwrap_or_else(|| login.argv[0].to_string());
+    let args = login.argv[1..].iter().map(|a| a.to_string()).collect();
+    Ok((program, args, login.kind))
+}
 
-    // Resolve the account's config dir. A discovered account (`dir:.claude-2`)
-    // points at the existing `~/.claude-2`; a managed account gets a dir under
-    // ~/.fleetify/accounts/. Create it so the login flow has somewhere to write.
+/// Where a CLI account's login writes its credentials, and the env that
+/// points the agent there. `None` for the System account: the real HOME and
+/// the inherited environment, which is what the chat bridge uses for it.
+/// A discovered account (`dir:.claude-2`) is the existing `~/.claude-2`; a
+/// managed one gets a dir under ~/.fleetify/accounts/. Config-dir agents
+/// (claude/codex) isolate via their native env var (CLAUDE_CONFIG_DIR /
+/// CODEX_HOME) pointed at that dir; others get the full HOME/XDG bundle.
+/// Matches services::accounts::resolve_env at dispatch.
+/// Where an account's login runs: its home dir (the cwd) and the env that
+/// points the agent there.
+struct LoginTarget {
+    home: PathBuf,
+    env: HashMap<String, String>,
+}
+
+fn account_login_target(
+    id: &str,
+    account_id: &str,
+) -> Result<Option<LoginTarget>, serde_json::Value> {
+    if fleetify_backend::services::accounts::is_system(Some(account_id)) {
+        return Ok(None);
+    }
     let home = match account_id.strip_prefix("dir:") {
         Some(name) => fleetify_core::user_home().join(name),
-        None => fleetify_backend::services::accounts::account_home_dir(&id, &account_id),
+        None => fleetify_backend::services::accounts::account_home_dir(id, account_id),
     };
     if let Err(e) = std::fs::create_dir_all(&home) {
-        return serde_json::json!({ "ok": false, "code": "MKDIR", "error": e.to_string() });
+        return Err(serde_json::json!({ "ok": false, "code": "MKDIR", "error": e.to_string() }));
     }
-    // Config-dir agents (claude/codex) isolate via their native env var
-    // (CLAUDE_CONFIG_DIR / CODEX_HOME) pointed at this dir; others get the full
-    // HOME/XDG bundle. Matches services::accounts::resolve_env at dispatch.
-    let mut env: HashMap<String, String> =
-        match fleetify_backend::services::accounts::config_dir_spec(&id) {
+    let env: HashMap<String, String> =
+        match fleetify_backend::services::accounts::config_dir_spec(id) {
             Some((env_var, _)) => {
                 std::iter::once((env_var.to_string(), home.to_string_lossy().into_owned()))
                     .collect()
@@ -3868,6 +3905,33 @@ pub async fn providers_open_account_login(
                 .into_iter()
                 .collect(),
         };
+    Ok(Some(LoginTarget { home, env }))
+}
+
+/// Launch a CLI agent's own login flow in a PTY the renderer binds to a
+/// terminal view (the user completes the OAuth / device-code flow or the
+/// agent's menu there). For a saved account, HOME (+XDG/Windows equivalents)
+/// or the agent's config-dir env var point at the account's isolated dir, so
+/// the agent writes its credentials into that account. For the System
+/// account (`"system"`) it runs in the real HOME, where the chat bridge reads
+/// them. Returns a `pty_id`; on exit the renderer refreshes the scan so the
+/// account flips to signed in. CLI agents only — HTTP providers use
+/// `providers_set_account_key`, and the Antigravity SDK takes an API key.
+#[tauri::command]
+pub async fn providers_open_account_login(
+    app: tauri::AppHandle,
+    id: String,
+    account_id: String,
+) -> serde_json::Value {
+    let (program, args, _) = match agent_login_command(&id) {
+        Ok(c) => c,
+        Err(e) => return e,
+    };
+    let (cwd, mut env) = match account_login_target(&id, &account_id) {
+        Ok(Some(t)) => (t.home, t.env),
+        Ok(None) => (fleetify_core::user_home(), HashMap::new()),
+        Err(e) => return e,
+    };
     // Force a sane TERM so the agent's prompts render predictably under ConPTY.
     env.insert("TERM".into(), "xterm-256color".into());
 
@@ -3875,7 +3939,7 @@ pub async fn providers_open_account_login(
         app,
         program,
         args,
-        Some(home.to_string_lossy().into_owned()),
+        Some(cwd.to_string_lossy().into_owned()),
         Some(env),
         None,
         None,
@@ -3885,55 +3949,40 @@ pub async fn providers_open_account_login(
     }
 }
 
-/// Launch a CLI agent's own login flow against the user's REAL home — the
-/// System/default credential store. Unlike [`providers_open_account_login`]
-/// (which relocates HOME to an isolated per-account dir for the Settings
-/// "add account" flow), this inherits the real environment, so the agent
-/// writes its credentials exactly where the chat bridge will read them
-/// (`accounts::resolve_env` returns an empty env for the System account, i.e.
-/// the bridge runs in the real HOME too). Powers the in-chat login-recovery
-/// card: e.g. Grok's `session/new` `-32000 Authentication required` triggers
-/// `grok login` here, then the original prompt resumes once login succeeds.
-/// Returns a `pty_id` the renderer binds to via `pty:data`/`pty:exit`.
+/// Run a CLI agent's browser / device login without a terminal, for the
+/// in-chat sign-in card (shown when a session's agent turns out to be signed
+/// out). `account_id` is the session's account: `None` / `"system"` signs in
+/// the real HOME, a saved account signs in its own dir, so the chat bridge
+/// finds the login on the retry either way.
+///
+/// Piped (NOT a PTY): these logins print their URL / device code and need no
+/// TTY, and piped output is clean — a ConPTY wraps it in cursor escape codes
+/// that mangle the URL. Stdin stays open: Claude Code's login can fall back
+/// to a pasted code. Interactive logins (`login_kind` "terminal") go through
+/// [`providers_open_account_login`] instead. Returns a `pty_id` the renderer
+/// polls via `pty_buffer` and binds `pty:exit` to.
 #[tauri::command]
-pub async fn agent_login_default(app: tauri::AppHandle, id: String) -> serde_json::Value {
-    let Some(spec) = fleetify_backend::providers::find_agent(&id) else {
-        return serde_json::json!({ "ok": false, "code": "NOT_CLI_AGENT", "error": format!("{id} is not a CLI agent") });
+pub async fn agent_login_default(
+    app: tauri::AppHandle,
+    id: String,
+    account_id: Option<String>,
+) -> serde_json::Value {
+    let (program, args, _) = match agent_login_command(&id) {
+        Ok(c) => c,
+        Err(e) => return e,
     };
-    // The login command comes from the catalog's login_hint (e.g. "grok login",
-    // "claude login"). Empty ⇒ the interactive bin itself.
-    let tokens: Vec<String> = if spec.login_hint.trim().is_empty() {
-        vec![spec.bin.to_string()]
-    } else {
-        spec.login_hint
-            .split_whitespace()
-            .map(String::from)
-            .collect()
+    let (cwd, env) = match account_login_target(&id, account_id.as_deref().unwrap_or("system")) {
+        Ok(Some(t)) => (t.home, Some(t.env)),
+        Ok(None) => (fleetify_core::user_home(), None),
+        Err(e) => return e,
     };
-    if tokens.is_empty() {
-        return serde_json::json!({ "ok": false, "code": "NO_LOGIN", "error": "no login command for this agent" });
-    }
-    // Resolve the binary to an absolute path, sharing the bridges' per-agent
-    // resolvers so off-PATH installs are found (grok writes ~/.local/bin/grok).
-    let program = match spec.id {
-        "grok-build" => fleetify_backend::bridges::grok_cli::resolve_grok_bin(),
-        "cursor-cli" => fleetify_backend::bridges::cursor::resolve_cursor_bin(),
-        "hermes-agent" => fleetify_backend::bridges::hermes::resolve_hermes_bin(),
-        "github-copilot" => fleetify_backend::bridges::github_copilot::resolve_copilot_bin(),
-        _ => which::which(&tokens[0])
-            .ok()
-            .map(|p| p.to_string_lossy().into_owned()),
-    }
-    .unwrap_or_else(|| tokens[0].clone());
-    let args: Vec<String> = tokens[1..].to_vec();
-    let cwd = fleetify_core::user_home().to_string_lossy().into_owned();
-
-    // Piped (NOT a PTY): a device-OAuth login writes its URL/code to stderr and
-    // needs no TTY, and piped output is clean — a ConPTY wraps it in cursor
-    // escape codes that mangle the URL. `env: None` ⇒ inherit the real
-    // environment (real HOME/PATH); NO per-account HOME override, so the login
-    // and the chat bridge share one credential store.
-    match pty::spawn_piped(app, program, args, Some(cwd), None) {
+    match pty::spawn_piped(
+        app,
+        program,
+        args,
+        Some(cwd.to_string_lossy().into_owned()),
+        env,
+    ) {
         Ok(pty_id) => serde_json::json!({ "ok": true, "pty_id": pty_id }),
         Err(e) => serde_json::json!({ "ok": false, "code": "SPAWN", "error": e }),
     }

@@ -114,6 +114,17 @@ pub fn autonomy_mode_from_permission(permission_mode: &str) -> &'static str {
     }
 }
 
+/// Did Google reject the Gemini key? ("API key not valid. Please pass a
+/// valid API key." / `API_KEY_INVALID` / an expired key.) Entering a new key
+/// fixes it, so it's a sign-in, not an error.
+fn is_rejected_key_error(msg: &str) -> bool {
+    let m = msg.to_ascii_lowercase();
+    m.contains("api key not valid")
+        || m.contains("api_key_invalid")
+        || m.contains("api key expired")
+        || m.contains("invalid api key")
+}
+
 impl AntigravitySdkBridge {
     pub fn new(
         session_id: impl Into<String>,
@@ -193,23 +204,21 @@ impl AntigravitySdkBridge {
         candidate.exists().then_some(candidate)
     }
 
-    /// Fetch the user's Gemini API key from the OS keyring (the same
-    /// store every HTTP provider uses for its key). Falls back to the
-    /// `GEMINI_API_KEY` env var when nothing's persisted — useful for
-    /// scripted / CI launches.
+    /// The user's Gemini API key: the one saved in Settings → Agents (the
+    /// shell stores it in the OS keychain under the user's account and pushes
+    /// it into `providers::keys`), else `GEMINI_API_KEY` / `GOOGLE_API_KEY`
+    /// for scripted / CI launches. The same order the Settings scan checks,
+    /// so "signed in" there means a key here.
     fn read_api_key() -> Option<String> {
-        if let Ok(k) = std::env::var("GEMINI_API_KEY") {
-            if !k.is_empty() {
+        if let Some(k) = crate::providers::keys::get_key("antigravity-sdk") {
+            if !k.trim().is_empty() {
                 return Some(k);
             }
         }
-        // Keyring entry name mirrors providers_link's convention. We
-        // call via the keyring crate directly here rather than going
-        // through providers_link to keep this module dispatch-only.
-        keyring::Entry::new("Fleetify-Provider-antigravity-sdk", "default")
-            .ok()
-            .and_then(|e| e.get_password().ok())
-            .filter(|s| !s.is_empty())
+        ["GEMINI_API_KEY", "GOOGLE_API_KEY"]
+            .iter()
+            .filter_map(|name| std::env::var(name).ok())
+            .find(|k| !k.trim().is_empty())
     }
 
     pub async fn send_message(
@@ -280,14 +289,11 @@ impl AntigravitySdkBridge {
                     tools_count: 0,
                 })
                 .await;
+            // No key yet: the sign-in card asks for one and resends.
             let _ = tx
-                .send(BridgeEvent::Error {
-                    error: "Gemini API key not set. Open Settings → Agents → \
-                         Antigravity SDK and paste a key from Google AI Studio \
-                         (https://aistudio.google.com/apikey). The CLI \
-                         (`Antigravity`) uses OAuth and doesn't need this — \
-                         the SDK requires its own key."
-                        .into(),
+                .send(BridgeEvent::LoginRequired {
+                    provider: "antigravity-sdk".into(),
+                    detail: Some("Gemini API key not set".into()),
                 })
                 .await;
             let _ = tx
@@ -592,7 +598,16 @@ impl AntigravitySdkBridge {
                             .and_then(|s| s.as_str())
                             .unwrap_or("Antigravity SDK error (no message)")
                             .to_string();
-                        let _ = tx.send(BridgeEvent::Error { error: msg }).await;
+                        // A rejected key is fixed by entering a new one.
+                        let ev = if is_rejected_key_error(&msg) {
+                            BridgeEvent::LoginRequired {
+                                provider: "antigravity-sdk".into(),
+                                detail: Some(msg),
+                            }
+                        } else {
+                            BridgeEvent::Error { error: msg }
+                        };
+                        let _ = tx.send(ev).await;
                     }
                     "done" => {
                         // Sidecar signals end-of-turn. We still wait
@@ -665,6 +680,17 @@ impl AntigravitySdkBridge {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rejected_gemini_keys_ask_for_a_new_key() {
+        assert!(is_rejected_key_error(
+            "400 API key not valid. Please pass a valid API key. [reason: API_KEY_INVALID]"
+        ));
+        assert!(is_rejected_key_error(
+            "API key expired. Please renew the API key."
+        ));
+        assert!(!is_rejected_key_error("429 Resource has been exhausted"));
+    }
 
     #[test]
     fn autonomy_mode_maps_permission_mode_to_wire_value() {

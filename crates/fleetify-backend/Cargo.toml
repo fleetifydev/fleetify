@@ -70,6 +70,9 @@ portable-pty = "0.8"
 # wslview (open 5.3.5 unix.rs): the same crate.
 [target.'cfg(target_os = "linux")'.dependencies]
 is-wsl = "0.4"
+# Existence check for logins other CLIs keep in the Secret Service (agy's
+# go-keyring item). Already in the tree through `keyring`.
+dbus-secret-service = "4"
 
 # Windows-only: read the user's canonical (Machine + User) registry PATH so
 # spawned CLI agents get the clean PATH a fresh terminal would have — NOT the

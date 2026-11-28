@@ -102,9 +102,12 @@ pub fn spec_for(provider_id: &str) -> Option<&'static ProviderContainerSpec> {
         },
         "kimi-code" => &ProviderContainerSpec {
             binary: "kimi",
-            auth_env: &["MOONSHOT_API_KEY"],
+            // Kimi Code's own key; MOONSHOT_API_KEY serves its Moonshot
+            // platform providers. Its device-flow login lives in
+            // `~/.kimi-code/credentials/` (kimi-code 2.8), not `~/.kimi`.
+            auth_env: &["KIMI_API_KEY", "MOONSHOT_API_KEY"],
             sandbox_args: &[],
-            credential_home: Some(".kimi"),
+            credential_home: Some(".kimi-code"),
             install_sh: Some("npm install -g @moonshot-ai/kimi-code@latest"),
             support: ContainerSupport::Supported,
         },

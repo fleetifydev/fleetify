@@ -12,7 +12,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Loader2, Trash2, Plus, TerminalSquare } from "lucide-react";
 import { providers as providersApi, type AccountInfo } from "@/lib/providers-api";
-import { AccountLoginTerminal } from "./account-login-terminal";
+import { LoginTerminalModal } from "./login-terminal-modal";
 
 /** First letter for the monogram avatar (email → "G", label → first char). */
 function initial(s: string): string {
@@ -23,20 +23,24 @@ function initial(s: string): string {
 interface Props {
   providerId: string;
   kind: "cli" | "http";
+  /** Display name for the sign-in dialog ("Claude Code"). */
+  providerName?: string;
   /** Called after any change so the parent can refresh its own auth pill. */
   onChanged?: () => void;
 }
 
-export function AccountsManager({ providerId, kind, onChanged }: Props) {
+export function AccountsManager({ providerId, kind, providerName, onChanged }: Props) {
   const [accounts, setAccounts] = useState<AccountInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [newLabel, setNewLabel] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [login, setLogin] = useState<{ ptyId: string; label: string } | null>(null);
+  const [loginError, setLoginError] = useState<string | null>(null);
   const [keyDraft, setKeyDraft] = useState<Record<string, string>>({});
 
+  // Only the first load shows "Loading…"; later reloads keep the rows on
+  // screen so an open sign-in dialog (and the user's place) survives.
   const load = useCallback(async () => {
-    setLoading(true);
     const list = await providersApi.listAccounts(providerId);
     setAccounts(list);
     setLoading(false);
@@ -59,17 +63,31 @@ export function AccountsManager({ providerId, kind, onChanged }: Props) {
     setBusy(null);
     setNewLabel("");
     if (res.ok && res.account) {
-      await refresh();
-      if (kind === "cli") void startLogin(res.account.id, label);
+      // Open the sign-in first: the new row shows up on the next load, and
+      // the parent hears about it when the dialog closes.
+      if (kind === "cli") await startLogin(res.account.id, label);
+      await (kind === "cli" ? load() : refresh());
     }
   }
 
   async function startLogin(accountId: string, label: string) {
+    setLoginError(null);
     const res = await providersApi.openAccountLogin(providerId, accountId);
     if (res.ok) setLogin({ ptyId: res.pty_id, label });
+    else setLoginError(res.error || "The sign-in couldn't start.");
   }
 
-  async function makeDefault(accountId: string) {
+  async function makeDefault(acc: AccountInfo) {
+    if (
+      kind === "cli" &&
+      !acc.authenticated &&
+      !window.confirm(
+        `"${acc.label}" isn't signed in. Make it the main account anyway? New sessions will ask you to sign in first.`,
+      )
+    ) {
+      return;
+    }
+    const accountId = acc.id;
     setBusy(accountId);
     await providersApi.setDefaultAccount(providerId, accountId);
     setBusy(null);
@@ -153,7 +171,7 @@ export function AccountsManager({ providerId, kind, onChanged }: Props) {
                     </>
                   )}
 
-                  {kind === "cli" && !acc.system && (
+                  {kind === "cli" && (
                     <button className="acct-btn" onClick={() => void startLogin(acc.id, acc.label)}>
                       <TerminalSquare size={13} />
                       {acc.authenticated ? "Re-login" : "Sign in"}
@@ -161,7 +179,7 @@ export function AccountsManager({ providerId, kind, onChanged }: Props) {
                   )}
 
                   {!acc.is_default && (
-                    <button className="acct-btn" disabled={busy === acc.id} onClick={() => void makeDefault(acc.id)}>
+                    <button className="acct-btn" disabled={busy === acc.id} onClick={() => void makeDefault(acc)}>
                       Set main
                     </button>
                   )}
@@ -200,22 +218,24 @@ export function AccountsManager({ providerId, kind, onChanged }: Props) {
         </button>
       </div>
 
-      {/* CLI login terminal modal. */}
-      {login && (
-        <div className="acct-modal-scrim" onClick={() => setLogin(null)}>
-          <div className="acct-modal" onClick={(e) => e.stopPropagation()}>
-            <div className="acct-modal-head">
-              <TerminalSquare size={14} />
-              <span style={{ fontWeight: 550 }}>Sign in</span>
-              <span style={{ color: "var(--c-dim)" }}>· {login.label}</span>
-              <div style={{ flex: 1 }} />
-              <button className="acct-btn" onClick={() => setLogin(null)}>Done</button>
-            </div>
-            <div style={{ flex: 1, minHeight: 0 }}>
-              <AccountLoginTerminal ptyId={login.ptyId} onExit={() => void refresh()} />
-            </div>
-          </div>
+      {loginError && (
+        <div className="acct-error" role="alert">
+          {loginError}
         </div>
+      )}
+
+      {/* CLI login terminal. A login can also finish in the browser after the
+          process is gone, so closing the dialog refreshes too. */}
+      {login && (
+        <LoginTerminalModal
+          ptyId={login.ptyId}
+          title={providerName ? `${providerName} · ${login.label}` : login.label}
+          onExit={() => void refresh()}
+          onClose={() => {
+            setLogin(null);
+            void refresh();
+          }}
+        />
       )}
     </div>
   );
@@ -298,19 +318,5 @@ const accountsCss = `
 .acct-add-input:focus { border-color: var(--c-brd2); }
 .acct-add-input::placeholder { color: var(--c-ghost); }
 
-.acct-modal-scrim {
-  position: fixed; inset: 0; background: rgba(0,0,0,0.55);
-  backdrop-filter: blur(2px); display: flex; align-items: center;
-  justify-content: center; z-index: 1000;
-}
-.acct-modal {
-  width: min(760px, 92vw); height: min(480px, 80vh);
-  display: flex; flex-direction: column; border-radius: 12px; overflow: hidden;
-  background: #161616; border: 1px solid var(--c-brd2);
-  box-shadow: 0 24px 60px rgba(0,0,0,0.5);
-}
-.acct-modal-head {
-  display: flex; align-items: center; gap: 8px; padding: 10px 14px;
-  border-bottom: 1px solid var(--c-brd); font-size: 13px; color: var(--c-high);
-}
+.acct-error { font-size: 11.5px; color: rgb(248,113,113); }
 `;

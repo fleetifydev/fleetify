@@ -1,10 +1,15 @@
 /**
  * AccountLoginTerminal — an xterm bound to an *existing* PTY (the one
- * `providers.openAccountLogin` spawned for a CLI agent's `… login` flow inside
- * the account's isolated HOME). Unlike `XtermShell` it does NOT spawn its own
- * shell; it attaches to `ptyId` and relays I/O so the user can complete the
- * OAuth / device-code dance, then fires `onExit` when the login process ends so
- * the parent can refresh the account's authenticated state.
+ * `providers.openAccountLogin` spawned for a CLI agent's login flow, in the
+ * account's isolated HOME or the real one). Unlike `XtermShell` it does NOT
+ * spawn its own shell; it attaches to `ptyId` and relays I/O so the user can
+ * complete the OAuth / device-code dance or the agent's menu, then fires
+ * `onExit` when the login process ends so the parent can refresh the
+ * account's signed-in state.
+ *
+ * A login prints its URL within milliseconds, before the `pty:data` listener
+ * is registered (Tauri drops events nobody listens to), so the terminal
+ * replays the PTY's buffered output once it subscribes.
  */
 import { useEffect, useRef } from "react";
 import { Terminal } from "@xterm/xterm";
@@ -12,13 +17,17 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
 import { openLink } from "@/lib/links";
+import { unseenTail } from "@/lib/pty-replay";
 
 interface Props {
   ptyId: string;
   onExit?: (exitCode: number) => void;
+  /** Leave the login running when the terminal unmounts (the in-chat card
+   *  re-attaches after a remount and stops the process itself). */
+  keepAlive?: boolean;
 }
 
-export function AccountLoginTerminal({ ptyId, onExit }: Props) {
+export function AccountLoginTerminal({ ptyId, onExit, keepAlive = false }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const onExitRef = useRef(onExit);
   onExitRef.current = onExit;
@@ -61,11 +70,26 @@ export function AccountLoginTerminal({ ptyId, onExit }: Props) {
       }
       if (api) {
         api.ptyResize(ptyId, Math.max(20, term.cols || 80), Math.max(5, term.rows || 24));
-        unsubData = api.onPtyData(ptyId, (chunk) => term.write(chunk));
+        // Hold live chunks until the buffered output is written, so the
+        // early lines land first and nothing prints twice.
+        let synced = false;
+        let pending = "";
+        unsubData = api.onPtyData(ptyId, (chunk) => {
+          if (synced) term.write(chunk);
+          else pending += chunk;
+        });
         unsubExit = api.onPtyExit(ptyId, ({ exitCode }) => {
           term.write(`\r\n\x1b[2m[login process exited — code ${exitCode}]\x1b[0m\r\n`);
           onExitRef.current?.(exitCode);
         });
+        void (async () => {
+          const snap = await api.ptyBuffer?.(ptyId).catch(() => null);
+          const head = snap?.ok ? snap.data : "";
+          if (head) term.write(head);
+          term.write(unseenTail(head, pending));
+          synced = true;
+          pending = "";
+        })();
       }
     });
 
@@ -85,14 +109,14 @@ export function AccountLoginTerminal({ ptyId, onExit }: Props) {
       onData.dispose();
       onResize.dispose();
       // Kill the login PTY if the user closes the dialog before completing.
-      window.electronAPI?.ptyKill(ptyId);
+      if (!keepAlive) window.electronAPI?.ptyKill(ptyId);
       try {
         term.dispose();
       } catch {
         /* already disposed */
       }
     };
-  }, [ptyId]);
+  }, [ptyId, keepAlive]);
 
   return (
     <div

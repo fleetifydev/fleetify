@@ -231,14 +231,6 @@ interface Window {
        *  state and let the scan poll detect manual install. */
       openedBrowser?: boolean;
     }>;
-    authProvider: (
-      toolKey: string
-    ) => Promise<{
-      ok: boolean;
-      urlOpened?: boolean;
-      exitCode?: number | null;
-      error?: string;
-    }>;
     checkGithubAuth: () => Promise<{
       ok: boolean;
       username?: string;
@@ -317,9 +309,6 @@ interface Window {
       | { ok: true; path: string }
       | { ok: false; error: string }
     >;
-    onAuthUrl: (
-      cb: (info: { toolKey: string; url: string }) => void
-    ) => () => void;
     openExternal: (url: string) => Promise<boolean>;
     showItemInFolder: (path: string) => Promise<boolean>;
     /** Open a local folder, or a document file (Markdown, JSON, TOML, YAML,

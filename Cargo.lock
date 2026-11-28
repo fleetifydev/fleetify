@@ -1669,6 +1669,7 @@ dependencies = [
  "base64 0.22.1",
  "chromiumoxide",
  "chrono",
+ "dbus-secret-service",
  "dotenvy",
  "fleetify-core",
  "futures-util",

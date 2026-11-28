@@ -1068,9 +1068,11 @@ impl HermesBridge {
             if let Some(fut) = cold_starter {
                 if let Err(e) = fut.await {
                     let _ = bridge_tx
-                        .send(BridgeEvent::Error {
-                            error: format!("Hermes start-up failed: {e}"),
-                        })
+                        .send(BridgeEvent::sign_in_or_error(
+                            "hermes-agent",
+                            &e.to_string(),
+                            format!("Hermes start-up failed: {e}"),
+                        ))
                         .await;
                     let _ = bridge_tx
                         .send(BridgeEvent::Status {
@@ -1174,9 +1176,11 @@ impl HermesBridge {
 
             if let Err(e) = prompt_res {
                 let _ = bridge_tx
-                    .send(BridgeEvent::Error {
-                        error: format!("Hermes prompt failed: {e}"),
-                    })
+                    .send(BridgeEvent::sign_in_or_error(
+                        "hermes-agent",
+                        &e.to_string(),
+                        format!("Hermes prompt failed: {e}"),
+                    ))
                     .await;
             }
 

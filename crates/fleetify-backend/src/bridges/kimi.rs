@@ -578,9 +578,11 @@ impl KimiBridge {
             if let Some(fut) = cold_starter {
                 if let Err(e) = fut.await {
                     let _ = bridge_tx
-                        .send(BridgeEvent::Error {
-                            error: format!("Kimi start-up failed: {e}"),
-                        })
+                        .send(BridgeEvent::sign_in_or_error(
+                            "kimi-code",
+                            &e.to_string(),
+                            format!("Kimi start-up failed: {e}"),
+                        ))
                         .await;
                     let _ = bridge_tx
                         .send(BridgeEvent::Status {
@@ -672,9 +674,11 @@ impl KimiBridge {
 
             if let Err(e) = prompt_res {
                 let _ = bridge_tx
-                    .send(BridgeEvent::Error {
-                        error: format!("Kimi prompt failed: {e}"),
-                    })
+                    .send(BridgeEvent::sign_in_or_error(
+                        "kimi-code",
+                        &e.to_string(),
+                        format!("Kimi prompt failed: {e}"),
+                    ))
                     .await;
             }
 

@@ -749,10 +749,13 @@ impl GitHubCopilotBridge {
                 match bridge_self.cold_start(bridge_tx.clone(), account_env).await {
                     Ok(v) => v,
                     Err(e) => {
+                        let err = e.to_string();
                         let _ = bridge_tx
-                            .send(BridgeEvent::Error {
-                                error: e.to_string(),
-                            })
+                            .send(BridgeEvent::sign_in_or_error(
+                                "github-copilot",
+                                &err,
+                                err.clone(),
+                            ))
                             .await;
                         let _ = bridge_tx
                             .send(BridgeEvent::Status {
@@ -779,10 +782,13 @@ impl GitHubCopilotBridge {
                         .await;
                 }
                 Err(e) => {
+                    let err = e.to_string();
                     let _ = bridge_tx
-                        .send(BridgeEvent::Error {
-                            error: e.to_string(),
-                        })
+                        .send(BridgeEvent::sign_in_or_error(
+                            "github-copilot",
+                            &err,
+                            err.clone(),
+                        ))
                         .await;
                     let _ = bridge_tx
                         .send(BridgeEvent::Status {

@@ -1011,6 +1011,9 @@ async fn run_compaction(
     }
 }
 
+/// Prefix on a re-sent prompt after a sign-in (see `run_send_flow`).
+const RESUME_MARKER: &str = "[fleet:resume]";
+
 async fn run_send_flow(
     st: AppState,
     sink: Sink,
@@ -1025,9 +1028,15 @@ async fn run_send_flow(
 
     // Hidden side-channel markers (parity): auto-intro / enhance are not
     // persisted; compaction app-owned path is Phase 3 (we still strip it).
+    // `[fleet:resume]` re-sends a prompt whose turn stopped at a sign-in card
+    // (`LoginRequired`): its user row is already saved, so it isn't again.
     let mut text = user_text;
     let mut persist_user = true;
-    for marker in ["[fleet:auto-intro]", "[fleet:enhance-prompt]"] {
+    for marker in [
+        "[fleet:auto-intro]",
+        "[fleet:enhance-prompt]",
+        RESUME_MARKER,
+    ] {
         if text.starts_with(marker) {
             text = text
                 .trim_start_matches(marker)
@@ -2092,6 +2101,21 @@ async fn run_send_flow(
     .await;
     let home_override =
         crate::services::accounts::resolve_home(&st.auth.pool, session.account_id.as_deref()).await;
+    // The account a sign-in card must sign in, so the retry finds the login:
+    // the session's pinned account, else the provider's main account (what
+    // resolve_env just used), else System (`None`).
+    let login_account_id: Option<String> = match session.account_id.as_deref() {
+        Some(id) if crate::services::accounts::is_system(Some(id)) => None,
+        Some(id) => Some(id.to_string()),
+        None => {
+            crate::services::accounts::default_account_for(
+                &st.auth.pool,
+                &session.tool,
+                session.user_id.as_deref().unwrap_or(""),
+            )
+            .await
+        }
+    };
     let mut bridge_ctx = crate::bridges::BridgeContext {
         model_override: if resolution.model.is_empty() {
             None
@@ -2193,6 +2217,15 @@ async fn run_send_flow(
         let mut payload = ev.to_json();
         if let Value::Object(ref mut m) = payload {
             m.insert("session_id".into(), json!(sid));
+            if let BridgeEvent::LoginRequired { provider, .. } = &ev {
+                // How the card signs it in, and which account.
+                if let Some(login) = crate::providers::cli_auth::login_spec(provider) {
+                    m.insert("login_kind".into(), json!(login.kind));
+                }
+                if let Some(acc) = &login_account_id {
+                    m.insert("account_id".into(), json!(acc));
+                }
+            }
         }
         send_json(&sink, payload).await;
 

@@ -31,6 +31,8 @@ pub struct ParseState {
     streamed_tool_ids: HashSet<String>,
     tool_input_buffers: HashMap<i64, ToolBuf>,
     tool_states: HashMap<String, Value>, // tool_id → last input
+    /// This turn ended in a sign-in failure, already sent as `LoginRequired`.
+    pub login_required: bool,
 }
 
 impl ParseState {
@@ -44,8 +46,52 @@ impl ParseState {
             streamed_tool_ids: HashSet::new(),
             tool_input_buffers: HashMap::new(),
             tool_states: HashMap::new(),
+            login_required: false,
         }
     }
+}
+
+/// The joined text blocks of an `assistant` event.
+fn assistant_text(event: &Value) -> String {
+    event
+        .get("message")
+        .and_then(|m| m.get("content"))
+        .and_then(|c| c.as_array())
+        .map(|blocks| {
+            blocks
+                .iter()
+                .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("text"))
+                .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default()
+}
+
+/// Does this Claude Code message say "sign in" (a `/login` or a fresh
+/// `claude auth login` fixes it)? A bad *external* credential
+/// (`ANTHROPIC_API_KEY`: "Invalid API key · Fix external API key") is the
+/// same error code, but signing in doesn't fix it, so it doesn't count.
+fn asks_to_sign_in(text: &str) -> bool {
+    !text.contains("Fix external")
+        && (text.contains("/login")
+            || text.contains("claude auth login")
+            || text.contains("Sign in again"))
+}
+
+/// The text of a Claude Code sign-in failure, or `None`. Claude Code reports
+/// it as a synthetic assistant message flagged
+/// `"error": "authentication_failed"` (with `is_api_error_message`), e.g.
+/// "Not logged in · Please run /login", "Login expired · Please run /login",
+/// "OAuth token revoked · Please run /login" (verified on Claude Code 2.1).
+pub fn sign_in_failure(event: &Value) -> Option<String> {
+    let flagged = event.get("error").and_then(|e| e.as_str()) == Some("authentication_failed")
+        || event.get("is_api_error_message").and_then(|b| b.as_bool()) == Some(true);
+    if !flagged {
+        return None;
+    }
+    let text = assistant_text(event);
+    asks_to_sign_in(&text).then_some(text)
 }
 
 fn s(v: &Value, k: &str) -> Option<String> {
@@ -195,6 +241,18 @@ pub fn parse_event(event: &Value, st: &mut ParseState) -> Vec<BridgeEvent> {
             }
         }
         "assistant" => {
+            // Signed out: hand the user a sign-in card instead of showing
+            // Claude Code's "Please run /login" as if it were the reply.
+            if let Some(detail) = sign_in_failure(event) {
+                if !st.login_required {
+                    st.login_required = true;
+                    out.push(BridgeEvent::LoginRequired {
+                        provider: "claude-code".into(),
+                        detail: Some(detail),
+                    });
+                }
+                return out;
+            }
             let blocks = event
                 .get("message")
                 .and_then(|m| m.get("content"))
@@ -318,6 +376,22 @@ pub fn parse_event(event: &Value, st: &mut ParseState) -> Vec<BridgeEvent> {
             }
         }
         "result" => {
+            if st.login_required {
+                return out; // nothing ran; there's no cost to report
+            }
+            // Builds that don't flag the assistant message still end with an
+            // error result carrying the same "Please run /login" text.
+            if event.get("is_error").and_then(|b| b.as_bool()) == Some(true) {
+                let text = s(event, "result").unwrap_or_default();
+                if asks_to_sign_in(&text) {
+                    st.login_required = true;
+                    out.push(BridgeEvent::LoginRequired {
+                        provider: "claude-code".into(),
+                        detail: Some(text),
+                    });
+                    return out;
+                }
+            }
             let usage = event.get("usage").cloned().unwrap_or(json!({}));
             let g = |k: &str| usage.get(k).and_then(|x| x.as_i64()).unwrap_or(0);
             let input_tokens = g("input_tokens");
@@ -1144,7 +1218,9 @@ impl ClaudeBridge {
             };
             // The CLI has exited: its MCP config goes now.
             drop(mcp_config);
-            if code.unwrap_or(0) != 0 {
+            // A signed-out turn exits non-zero by design; the sign-in card
+            // already explains it, so its stderr isn't an error to show.
+            if code.unwrap_or(0) != 0 && !st.login_required {
                 if let Some(mut e) = stderr {
                     let mut buf = String::new();
                     let _ = tokio::io::AsyncReadExt::read_to_string(&mut e, &mut buf).await;
@@ -1204,6 +1280,100 @@ impl ClaudeBridge {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The two events a signed-out Claude Code 2.1 turn prints, captured
+    /// from `claude -p hi --output-format stream-json --verbose` with an
+    /// empty CLAUDE_CONFIG_DIR (trimmed to the fields that matter).
+    fn signed_out_events() -> (Value, Value) {
+        (
+            json!({
+                "type": "assistant",
+                "message": {
+                    "model": "<synthetic>",
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "Not logged in \u{b7} Please run /login"}],
+                },
+                "error": "authentication_failed",
+                "is_api_error_message": true,
+            }),
+            json!({
+                "type": "result",
+                "subtype": "success",
+                "is_error": true,
+                "result": "Not logged in \u{b7} Please run /login",
+                "total_cost_usd": 0,
+                "usage": {"input_tokens": 0, "output_tokens": 0},
+            }),
+        )
+    }
+
+    #[test]
+    fn signed_out_turn_asks_for_a_sign_in_instead_of_replying() {
+        let (assistant, result) = signed_out_events();
+        let mut st = ParseState::new("s1");
+        let evs = parse_event(&assistant, &mut st);
+        assert_eq!(evs.len(), 1);
+        match &evs[0] {
+            BridgeEvent::LoginRequired { provider, detail } => {
+                assert_eq!(provider, "claude-code");
+                assert_eq!(
+                    detail.as_deref(),
+                    Some("Not logged in \u{b7} Please run /login")
+                );
+            }
+            other => panic!("expected LoginRequired, got {:?}", other.to_json()),
+        }
+        assert!(st.login_required);
+        // The error result that follows adds nothing: no second card, no cost.
+        assert!(parse_event(&result, &mut st).is_empty());
+    }
+
+    #[test]
+    fn error_result_alone_still_asks_for_a_sign_in() {
+        let (_, result) = signed_out_events();
+        let mut st = ParseState::new("s1");
+        let evs = parse_event(&result, &mut st);
+        assert!(matches!(
+            evs.as_slice(),
+            [BridgeEvent::LoginRequired { provider, .. }] if provider == "claude-code"
+        ));
+    }
+
+    #[test]
+    fn bad_external_api_key_is_not_a_sign_in_problem() {
+        let ev = json!({
+            "type": "assistant",
+            "message": {"content": [{"type": "text", "text": "Invalid API key \u{b7} Fix external API key"}]},
+            "error": "authentication_failed",
+            "is_api_error_message": true,
+        });
+        let mut st = ParseState::new("s1");
+        let evs = parse_event(&ev, &mut st);
+        assert!(!st.login_required);
+        assert!(matches!(evs.as_slice(), [BridgeEvent::MessageDelta { .. }]));
+    }
+
+    #[test]
+    fn expired_and_revoked_logins_ask_for_a_sign_in() {
+        for text in [
+            "Login expired \u{b7} Please run /login",
+            "OAuth token revoked \u{b7} Please run /login",
+            "Authentication required \u{b7} Sign in again to continue",
+        ] {
+            let ev = json!({
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": text}]},
+                "error": "authentication_failed",
+            });
+            assert!(sign_in_failure(&ev).is_some(), "{text}");
+        }
+        // An ordinary reply that happens to mention /login is not flagged.
+        let reply = json!({
+            "type": "assistant",
+            "message": {"content": [{"type": "text", "text": "Run /login to switch accounts."}]},
+        });
+        assert!(sign_in_failure(&reply).is_none());
+    }
 
     #[cfg(unix)]
     #[test]
