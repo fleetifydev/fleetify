@@ -13,6 +13,7 @@
 pub mod capabilities;
 pub mod catalog;
 pub mod catalog_snapshot;
+pub mod cli_auth;
 pub mod helpers;
 pub mod keys;
 

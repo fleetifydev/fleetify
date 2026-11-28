@@ -44,8 +44,14 @@ const INIT_TIMEOUT_SECS: u64 = 30;
 /// on Unix. Returns an absolute path, or `None` when not installed (the caller
 /// surfaces an install hint). Shared with `routers::providers` scan detection.
 pub fn resolve_cursor_bin() -> Option<String> {
-    for name in ["cursor-agent", "agent"] {
-        if let Ok(p) = which::which(name) {
+    if let Ok(p) = which::which("cursor-agent") {
+        return Some(p.to_string_lossy().into_owned());
+    }
+    // `agent` is a generic name other CLIs claim too (Grok's installer links
+    // `~/.local/bin/agent` to the Grok binary), so it only counts when it
+    // resolves into Cursor's own install.
+    if let Ok(p) = which::which("agent") {
+        if is_cursor_install(&p) {
             return Some(p.to_string_lossy().into_owned());
         }
     }
@@ -66,11 +72,23 @@ pub fn resolve_cursor_bin() -> Option<String> {
             .join(".local")
             .join("bin")
             .join(name);
-        if p.exists() {
+        if p.exists() && (name == "cursor-agent" || is_cursor_install(&p)) {
             return Some(p.to_string_lossy().into_owned());
         }
     }
     None
+}
+
+/// Does `path` (after following symlinks) live in Cursor's install, e.g.
+/// `~/.local/share/cursor-agent/versions/<v>/cursor-agent` or
+/// `%LOCALAPPDATA%\cursor-agent\agent.cmd`?
+fn is_cursor_install(path: &std::path::Path) -> bool {
+    let real = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    real.components().any(|c| {
+        c.as_os_str()
+            .to_string_lossy()
+            .eq_ignore_ascii_case("cursor-agent")
+    })
 }
 
 /// Discover Cursor's model catalog WITHOUT starting a chat turn: spawn
@@ -1264,6 +1282,29 @@ async fn translate_session_update(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Grok's installer links `~/.local/bin/agent` to the Grok binary; that
+    /// must not read as Cursor being installed.
+    #[cfg(unix)]
+    #[test]
+    fn agent_alias_counts_only_inside_cursors_install() {
+        let t = tempfile::tempdir().unwrap();
+        let grok = t.path().join(".grok/downloads/grok-linux-x86_64");
+        std::fs::create_dir_all(grok.parent().unwrap()).unwrap();
+        std::fs::write(&grok, "").unwrap();
+        let grok_alias = t.path().join("grok-agent");
+        std::os::unix::fs::symlink(&grok, &grok_alias).unwrap();
+        assert!(!is_cursor_install(&grok_alias));
+
+        let cursor = t
+            .path()
+            .join(".local/share/cursor-agent/versions/2026.05.28/cursor-agent");
+        std::fs::create_dir_all(cursor.parent().unwrap()).unwrap();
+        std::fs::write(&cursor, "").unwrap();
+        let cursor_alias = t.path().join("cursor-alias");
+        std::os::unix::fs::symlink(&cursor, &cursor_alias).unwrap();
+        assert!(is_cursor_install(&cursor_alias));
+    }
 
     #[test]
     fn plan_maps_to_plan_mode_others_none() {

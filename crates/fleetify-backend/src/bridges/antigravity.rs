@@ -57,6 +57,26 @@ use super::BridgeEvent;
 use fleetify_core::user_home;
 use std::path::PathBuf;
 
+/// Resolve the `agy` binary: PATH first, then where the official installers
+/// put it without updating a running GUI's PATH (`~/.local/bin/agy` from
+/// install.sh, `%LOCALAPPDATA%\agy\bin\agy.exe` from install.ps1). Shared
+/// with the Settings scan, so detection and spawn agree.
+pub fn resolve_agy_bin() -> Option<String> {
+    if let Ok(p) = which::which("agy") {
+        return Some(p.to_string_lossy().into_owned());
+    }
+    let candidate = if cfg!(windows) {
+        std::env::var("LOCALAPPDATA")
+            .ok()
+            .map(|d| PathBuf::from(d).join("agy").join("bin").join("agy.exe"))
+    } else {
+        Some(user_home().join(".local").join("bin").join("agy"))
+    };
+    candidate
+        .filter(|p| p.is_file())
+        .map(|p| p.to_string_lossy().into_owned())
+}
+
 /// Returns `true` when `mode` means "skip all permission prompts" for the
 /// antigravity (agy) bridge — triggers `--dangerously-skip-permissions`.
 /// Native antigravity "always-proceed" is the autonomous tier.
@@ -788,10 +808,9 @@ impl AntigravityBridge {
         // and picks the FINAL outcome (reply vs timeout) accordingly.
         let auth_emitted = Arc::new(std::sync::atomic::AtomicBool::new(false));
         // Resolve agy to an absolute path — portable_pty's CommandBuilder
-        // does not reliably search PATH under Windows ConPTY.
-        let exe = which::which(&argv[0])
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|_| argv[0].clone());
+        // does not reliably search PATH under Windows ConPTY, and a fresh
+        // install isn't on a running app's PATH yet.
+        let exe = resolve_agy_bin().unwrap_or_else(|| argv[0].clone());
         let args: Vec<String> = argv[1..].to_vec();
 
         // Snapshot the transcript size BEFORE spawn so we can read out

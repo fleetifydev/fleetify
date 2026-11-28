@@ -193,23 +193,21 @@ impl AntigravitySdkBridge {
         candidate.exists().then_some(candidate)
     }
 
-    /// Fetch the user's Gemini API key from the OS keyring (the same
-    /// store every HTTP provider uses for its key). Falls back to the
-    /// `GEMINI_API_KEY` env var when nothing's persisted — useful for
-    /// scripted / CI launches.
+    /// The user's Gemini API key: the one saved in Settings → Agents (the
+    /// shell stores it in the OS keychain under the user's account and pushes
+    /// it into `providers::keys`), else `GEMINI_API_KEY` / `GOOGLE_API_KEY`
+    /// for scripted / CI launches. The same order the Settings scan checks,
+    /// so "signed in" there means a key here.
     fn read_api_key() -> Option<String> {
-        if let Ok(k) = std::env::var("GEMINI_API_KEY") {
-            if !k.is_empty() {
+        if let Some(k) = crate::providers::keys::get_key("antigravity-sdk") {
+            if !k.trim().is_empty() {
                 return Some(k);
             }
         }
-        // Keyring entry name mirrors providers_link's convention. We
-        // call via the keyring crate directly here rather than going
-        // through providers_link to keep this module dispatch-only.
-        keyring::Entry::new("Fleetify-Provider-antigravity-sdk", "default")
-            .ok()
-            .and_then(|e| e.get_password().ok())
-            .filter(|s| !s.is_empty())
+        ["GEMINI_API_KEY", "GOOGLE_API_KEY"]
+            .iter()
+            .filter_map(|name| std::env::var(name).ok())
+            .find(|k| !k.trim().is_empty())
     }
 
     pub async fn send_message(

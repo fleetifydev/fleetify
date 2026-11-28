@@ -207,14 +207,31 @@ pub async fn resolve_env(
     }
 }
 
-/// CLI account auth check: do the provider's catalog indicators fire against
-/// this account's home? `false` for unknown providers or HTTP providers.
-fn cli_authenticated(provider_id: &str, home: &Path) -> bool {
-    match crate::providers::find_agent(provider_id) {
-        Some(spec) => {
-            crate::routers::providers::indicators_authenticated(home, spec.auth_indicators)
-        }
-        None => false,
+/// Is a CLI account signed in? `env` is what the agent runs with for that
+/// account (empty for System): its own status command and credential checks
+/// run against it (`providers::cli_auth`), the same rules as the Settings
+/// scan. `false` for unknown or HTTP providers and uninstalled agents.
+async fn cli_authenticated(provider_id: &str, env: Vec<(String, String)>) -> bool {
+    use crate::providers::cli_auth;
+    let Some(spec) = crate::providers::find_agent(provider_id) else {
+        return false;
+    };
+    let ctx = if env.is_empty() {
+        cli_auth::AuthCtx::system()
+    } else {
+        cli_auth::AuthCtx::with_env(env)
+    };
+    let bin = cli_auth::detect_install(spec).await;
+    cli_auth::agent_signed_in(spec, bin.as_deref(), &ctx).await
+}
+
+/// The env a CLI account's agent runs with, from its home dir: the config-dir
+/// env var for Claude / Codex (the dir IS the config dir), else the full
+/// HOME/XDG bundle. Mirrors [`resolve_env`].
+fn account_dir_env(provider_id: &str, dir: &Path) -> Vec<(String, String)> {
+    match config_dir_spec(provider_id) {
+        Some((env_var, _)) => vec![(env_var.to_string(), dir.to_string_lossy().into_owned())],
+        None => account_env(dir),
     }
 }
 
@@ -298,22 +315,10 @@ async fn default_account_id(pool: &SqlitePool, provider_id: &str, user_id: &str)
     .flatten()
 }
 
-/// Does a config directory look like a signed-in account? Creds live in the OS
-/// keychain (not on disk) on macOS/Windows, so we treat the presence of the
-/// agent's working files (`projects/`, `history.jsonl`, `.claude.json`, or a
-/// `.credentials.json`) as "this dir is a real, used account".
-fn config_dir_authenticated(dir: &Path) -> bool {
-    dir.join("projects").is_dir()
-        || dir.join("history.jsonl").exists()
-        || dir.join(".claude.json").exists()
-        || dir.join(".credentials.json").exists()
-        || dir.join("auth.json").exists()
-}
-
 /// Scan the user's home for additional config dirs of a config-dir agent —
 /// `~/<basename>-<suffix>` siblings of the primary `~/<basename>` (which is the
-/// System account). Returns `(dir_name, abs_path, authenticated)` for each.
-fn discovered_config_dirs(provider_id: &str) -> Vec<(String, PathBuf, bool)> {
+/// System account). Returns `(dir_name, abs_path)` for each.
+fn discovered_config_dirs(provider_id: &str) -> Vec<(String, PathBuf)> {
     let Some((_, basename)) = config_dir_spec(provider_id) else {
         return Vec::new();
     };
@@ -326,9 +331,7 @@ fn discovered_config_dirs(provider_id: &str) -> Vec<(String, PathBuf, bool)> {
             // Match `~/.claude-2`, `~/.claude-work`, … but not the primary
             // `~/.claude` (System) nor unrelated dot-dirs.
             if name.starts_with(&prefix) && e.path().is_dir() {
-                let dir = e.path();
-                let auth = config_dir_authenticated(&dir);
-                out.push((name, dir, auth));
+                out.push((name, e.path()));
             }
         }
     }
@@ -360,7 +363,28 @@ pub async fn list(
         .await
         .unwrap_or_else(|| SYSTEM_ACCOUNT_ID.to_string());
 
-    let mut out = Vec::with_capacity(rows.len() + 1);
+    // Every CLI account is checked at once: Claude Code and Codex answer
+    // through their own status commands (~0.2 s each).
+    let is_cli = matches!(kind, AccountKind::Cli);
+    let discovered = discovered_config_dirs(provider_id);
+    let system_check = async { is_cli && cli_authenticated(provider_id, Vec::new()).await };
+    let discovered_checks = futures_util::future::join_all(
+        discovered
+            .iter()
+            .map(|(_, dir)| cli_authenticated(provider_id, account_dir_env(provider_id, dir))),
+    );
+    let row_checks = futures_util::future::join_all(rows.iter().map(|r| async move {
+        match (AccountKind::parse_kind(&r.kind), r.home_dir.as_deref()) {
+            (AccountKind::Cli, Some(h)) => {
+                cli_authenticated(provider_id, account_dir_env(provider_id, Path::new(h))).await
+            }
+            _ => false,
+        }
+    }));
+    let (system_authed, discovered_authed, rows_authed) =
+        tokio::join!(system_check, discovered_checks, row_checks);
+
+    let mut out = Vec::with_capacity(rows.len() + discovered.len() + 1);
     // Synthetic System account. Its friendly label is the signed-in email.
     let system_email = friendly_label(provider_id, None);
     out.push(AccountView {
@@ -370,15 +394,14 @@ pub async fn list(
         detail: system_email.as_ref().map(|_| "System".to_string()),
         kind: kind.as_str().to_string(),
         is_default: default_id == SYSTEM_ACCOUNT_ID,
-        authenticated: matches!(kind, AccountKind::Cli)
-            && cli_authenticated(provider_id, &fleetify_core::user_home()),
+        authenticated: system_authed,
         system: true,
     });
 
     // Auto-detected sibling config dirs (e.g. ~/.claude-2, ~/.claude-3) the user
     // already created with CLAUDE_CONFIG_DIR. Not DB rows — id is `dir:<name>`.
     // The label is the dir's signed-in email; can be made default via override.
-    for (name, dir, authed) in discovered_config_dirs(provider_id) {
+    for ((name, dir), authed) in discovered.into_iter().zip(discovered_authed) {
         let id = format!("{DISCOVERED_PREFIX}{name}");
         let email = friendly_label(provider_id, Some(&dir));
         out.push(AccountView {
@@ -393,15 +416,7 @@ pub async fn list(
         });
     }
 
-    for r in rows {
-        let authenticated = match AccountKind::parse_kind(&r.kind) {
-            AccountKind::Cli => r
-                .home_dir
-                .as_deref()
-                .map(|h| cli_authenticated(provider_id, Path::new(h)))
-                .unwrap_or(false),
-            AccountKind::Http => false,
-        };
+    for (r, authenticated) in rows.into_iter().zip(rows_authed) {
         // For CLI accounts, prefer the signed-in email; keep the user's label as
         // the detail line so a renamed account still shows who it is.
         let email = match AccountKind::parse_kind(&r.kind) {
