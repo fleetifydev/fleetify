@@ -4,9 +4,6 @@
 # vulnerability. Each one mirrors an ignore in deny.toml, where cargo-deny's
 # triage lives, and scripts/ci/check-advisory-ignores.test.mjs keeps the two
 # files in step.
-#
-# Not here, so OSV keeps counting it: RUSTSEC-2026-0459 (sqlx-sqlite 0.8's
-# bundled SQLite), which the sqlx 0.9 bump fixes.
 
 [[IgnoredVulns]]
 id = "RUSTSEC-2026-0594"

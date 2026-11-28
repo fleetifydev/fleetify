@@ -78,9 +78,12 @@ async fn migrate(pool: &SqlitePool) -> Result<()> {
         .execute(&mut *tx)
         .await?
         .rows_affected();
-    sqlx::query(&format!("PRAGMA user_version = {OUTBOX_VERSION}"))
-        .execute(&mut *tx)
-        .await?;
+    // Safe: OUTBOX_VERSION is a constant, and PRAGMA takes no bound value.
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "PRAGMA user_version = {OUTBOX_VERSION}"
+    )))
+    .execute(&mut *tx)
+    .await?;
     tx.commit().await?;
     if dropped > 0 {
         tracing::info!(

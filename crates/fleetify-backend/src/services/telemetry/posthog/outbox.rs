@@ -106,7 +106,8 @@ pub async fn mark_acked(event_ids: &[String]) -> Result<()> {
         .collect::<Vec<_>>()
         .join(",");
     let sql = format!("DELETE FROM posthog_events WHERE id IN ({placeholders})");
-    let mut q = sqlx::query(&sql);
+    // Safe: only `?` placeholders are formatted in; the ids are bound.
+    let mut q = sqlx::query(sqlx::AssertSqlSafe(sql));
     for id in event_ids {
         q = q.bind(id);
     }
@@ -125,7 +126,8 @@ pub async fn bump_attempts(event_ids: &[String]) -> Result<()> {
     let sql = format!(
         "UPDATE posthog_events SET attempt_count = attempt_count + 1 WHERE id IN ({placeholders})"
     );
-    let mut q = sqlx::query(&sql);
+    // Safe: only `?` placeholders are formatted in; the ids are bound.
+    let mut q = sqlx::query(sqlx::AssertSqlSafe(sql));
     for id in event_ids {
         q = q.bind(id);
     }
